@@ -33,6 +33,9 @@ class ScenarioRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(min_length=1, max_length=200)
+    simulation_area_id: str = Field(
+        min_length=64, max_length=64, alias="simulationAreaId"
+    )
     duration_seconds: float = Field(alias="durationSeconds")
     yieldstep_seconds: float = Field(alias="yieldstepSeconds")
     friction_scenario: Literal["low", "middle", "high"] = Field(
@@ -55,3 +58,7 @@ class GridSelectionRequest(BaseModel):
     friction_scenario: Literal["low", "middle", "high"] = Field(
         default="middle", alias="frictionScenario"
     )
+
+
+class SimulationAreaResolveRequest(BaseModel):
+    geometry: dict

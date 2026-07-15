@@ -1,11 +1,11 @@
-# Bayuquan fixed-model simulation
+# Bayuquan local-domain simulation
 
-This directory contains the first implementation stage of the Bayuquan Web GIS:
-a validated, configuration-driven ANUGA worker runtime using one immutable mesh.
+This directory contains the Bayuquan Web GIS runtime. Each Job uses an
+immutable, area-hashed local mesh generated from the full 30 m DEM.
 See [`WEB_GIS_IMPLEMENTATION_PLAN.md`](WEB_GIS_IMPLEMENTATION_PLAN.md) for the
 full product plan.
 
-## 1. Build fixed model mapping
+## Legacy fixed-model mapping
 
 ```bash
 bayuquan/build_grid_triangle_mapping.sh
@@ -15,6 +15,19 @@ This creates the shared mesh, authoritative 30 m cell-to-triangle mapping, and
 pixel-centre barycentric interpolation mapping in `OUTPUT/model/grid_mapping/`.
 Every run verifies the mesh SHA-256, triangle count, raster dimensions,
 resolution, and origin before simulation starts.
+
+### Build the static web DEM manually
+
+Docker Compose runs this step automatically through `model-assets`. To rebuild
+the COG directly:
+
+```bash
+uv run --extra data python bayuquan/build_web_map_assets.py \
+  bayuquan/elevation.tif OUTPUT/model/web/elevation_cog.tif --force
+```
+
+The output is tiled, compressed, contains internal overviews, and is exposed
+through `/api/model/dem/tilejson` rather than revealing its filesystem path.
 
 ## 2. Define a scenario
 
@@ -88,3 +101,14 @@ at `t=0`; it is not maintained during evolution.
 ```bash
 uv run --with pytest pytest -q bayuquan/tests
 ```
+
+## Local computational domains
+
+`bayuquan.simulation.area.SimulationAreaResolver` converts one WGS84 rectangle
+or simple polygon into a four-neighbour-connected mask of valid full-DEM cells.
+`SimulationAreaCatalog` caches the canonical area metadata, local GeoJSON grid,
+and deterministic ANUGA mesh under the configured shared simulation-area cache.
+
+Each selected 30×30 m cell is split along the southwest–northeast diagonal into
+two 450 m² triangles. A flat-water ANUGA regression verifies transmissive-boundary
+volume conservation on the generated mesh.

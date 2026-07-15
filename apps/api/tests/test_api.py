@@ -56,12 +56,115 @@ class FakeCatalog:
             "cellSizeM": 30,
             "selectableCellCount": 6,
             "gridUrl": "/api/model/grid",
+            "demTilejsonUrl": "/api/model/dem/tilejson",
             "boundaryCondition": "transmissive",
             "meshSha256": self.mapping.mesh_sha256,
         }
 
     def cell(self, cell_id):
         return self.cells.get(cell_id)
+
+
+class FakeAreaCatalog:
+    def metadata(self):
+        return {
+            "version": "dataset-",
+            "datasetVersion": "dataset-v1",
+            "crs": "EPSG:32651",
+            "gridRows": 2,
+            "gridColumns": 3,
+            "cellSizeM": 30,
+            "simulationAreaResolveUrl": (
+                "/api/model/simulation-areas/resolve"
+            ),
+            "demTilejsonUrl": "/api/model/dem/tilejson",
+            "boundaryCondition": "transmissive",
+            "maxSimulationAreaCells": 25_000,
+        }
+
+    def __init__(self):
+        self._mapping = GridTriangleMapping(
+            triangle_cell_index=np.arange(6, dtype=np.int32),
+            triangle_area_m2=np.full(6, 450.0),
+            nrows=2,
+            ncols=3,
+            cellsize=30,
+            xllcorner=100,
+            yllcorner=200,
+            mesh_sha256="b" * 64,
+        )
+
+    def area(self, area_hash):
+        if area_hash != "b" * 64:
+            raise KeyError(area_hash)
+        return SimpleNamespace(dataset_version="dataset-v1")
+
+    def mapping(self, area_hash):
+        self.area(area_hash)
+        return self._mapping
+
+    def snapshot(self, area_hash):
+        self.area(area_hash)
+        return {
+            "areaHash": area_hash,
+            "datasetVersion": "dataset-v1",
+            "meshRule": "square-sw-ne-v1",
+            "cellIds": ["r0000-c0000", "r0000-c0001"],
+        }
+
+    def resolve(self, geometry):
+        assert geometry["type"] == "Polygon"
+        return SimpleNamespace(
+            area_hash="b" * 64,
+            dataset_version="dataset-v1",
+            crs="EPSG:32651",
+            cell_count=2,
+            area_m2=1800,
+            cell_size_m=30,
+            window=(10, 11, 20, 22),
+            elevation_m={"minimum": 3.0, "maximum": 4.0, "mean": 3.5},
+        )
+
+    def resolve_selection(self, area_hash, cell_ids, friction_scenario):
+        assert area_hash == "b" * 64
+        assert cell_ids == ["r0010-c0020"]
+        assert friction_scenario == "middle"
+        return {
+            "cellIds": cell_ids,
+            "cellCount": 1,
+            "geometricAreaM2": 900,
+            "triangleCount": 2,
+            "effectiveTriangleAreaM2": 900,
+            "elevationM": {"minimum": 3, "maximum": 3, "mean": 3},
+            "buildingFraction": {"minimum": 0, "maximum": 0},
+            "manning": {"minimum": 0.04, "maximum": 0.04},
+        }
+
+    def grid(self, area_hash):
+        if area_hash != "b" * 64:
+            raise KeyError(area_hash)
+        return {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {
+                    "cell_id": "r0010-c0020",
+                    "elevation_m": 3,
+                    "building_fraction": 0,
+                    "manning_middle": 0.04,
+                },
+                "geometry": None,
+            }] + [{
+                "type": "Feature",
+                "properties": {
+                    "cell_id": f"r{row:04d}-c{column:04d}",
+                    "elevation_m": 5,
+                    "building_fraction": 0.1,
+                    "manning_middle": 0.05,
+                },
+                "geometry": None,
+            } for row in range(2) for column in range(3)],
+        }
 
 
 def settings(database_url: str) -> Settings:
@@ -83,6 +186,7 @@ def settings(database_url: str) -> Settings:
 def scenario(name="baseline"):
     return {
         "name": name,
+        "simulationAreaId": "b" * 64,
         "durationSeconds": 60,
         "yieldstepSeconds": 10,
         "frictionScenario": "middle",
@@ -105,34 +209,122 @@ def client(tmp_path):
     app = create_app(
         settings=settings(str(database.engine.url)),
         database=database,
-        catalog=FakeCatalog(),
+        area_catalog=FakeAreaCatalog(),
         dispatcher=dispatched.append,
     )
     return TestClient(app), dispatched
 
 
-def test_model_catalog_and_grid_are_available(tmp_path):
+def test_model_metadata_does_not_publish_a_full_domain_grid(tmp_path):
     test_client, _ = client(tmp_path)
     with test_client:
         model = test_client.get("/api/model")
         grid = test_client.get("/api/model/grid")
-        cell = test_client.get("/api/model/grid/r0000-c0001")
-        selection = test_client.post(
-            "/api/model/selection/resolve",
-            json={
-                "cellIds": ["r0000-c0000", "r0000-c0001"],
-                "frictionScenario": "middle",
-            },
-        )
 
     assert model.status_code == 200
-    assert model.json()["selectableCellCount"] == 6
-    assert grid.json()["type"] == "FeatureCollection"
-    assert cell.json()["effective_triangle_area_m2"] == 450
-    assert "triangle_ids" not in cell.json()
+    assert model.json()["datasetVersion"] == "dataset-v1"
+    assert model.json()["demTilejsonUrl"] == "/api/model/dem/tilejson"
+    assert grid.status_code == 404
+
+
+def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
+    test_client, _ = client(tmp_path)
+    geometry = {
+        "type": "Polygon",
+        "coordinates": [[[122, 40], [122.1, 40], [122.1, 40.1],
+                         [122, 40.1], [122, 40]]],
+    }
+
+    with test_client:
+        resolved = test_client.post(
+            "/api/model/simulation-areas/resolve", json={"geometry": geometry}
+        )
+        grid = test_client.get(
+            f"/api/model/simulation-areas/{'b' * 64}/grid"
+        )
+        selection = test_client.post(
+            f"/api/model/simulation-areas/{'b' * 64}/selection/resolve",
+            json={"cellIds": ["r0010-c0020"], "frictionScenario": "middle"},
+        )
+        missing = test_client.get(
+            f"/api/model/simulation-areas/{'c' * 64}/grid"
+        )
+
+    assert resolved.status_code == 201, resolved.text
+    assert resolved.json() == {
+        "id": "b" * 64,
+        "areaHash": "b" * 64,
+        "datasetVersion": "dataset-v1",
+        "crs": "EPSG:32651",
+        "cellCount": 2,
+        "areaM2": 1800,
+        "cellSizeM": 30,
+        "triangleCount": 4,
+        "window": {"rowStart": 10, "rowStop": 11,
+                   "columnStart": 20, "columnStop": 22},
+        "elevationM": {"minimum": 3.0, "maximum": 4.0, "mean": 3.5},
+        "gridUrl": f"/api/model/simulation-areas/{'b' * 64}/grid",
+        "boundaryCondition": "transmissive",
+    }
+    assert grid.status_code == 200
+    assert selection.status_code == 200
     assert selection.json()["triangleCount"] == 2
-    assert selection.json()["effectiveTriangleAreaM2"] == 900
-    assert selection.json()["manning"] == {"minimum": 0.05, "maximum": 0.05}
+    assert grid.json()["features"][0]["properties"]["cell_id"] == (
+        "r0010-c0020"
+    )
+    assert missing.status_code == 404
+
+
+def test_simulation_area_rejection_is_returned_as_validation_error(tmp_path):
+    test_client, _ = client(tmp_path)
+    test_client.app.state.area_catalog.resolve = lambda geometry: (_ for _ in ()).throw(
+        ValueError("simulation area cells must be four-neighbour connected")
+    )
+
+    with test_client:
+        response = test_client.post(
+            "/api/model/simulation-areas/resolve",
+            json={"geometry": {"type": "Polygon", "coordinates": []}},
+        )
+
+    assert response.status_code == 422
+    assert "four-neighbour connected" in response.text
+
+
+def test_model_dem_tiles_are_rendered_through_titiler(
+    tmp_path, monkeypatch
+):
+    tile = BytesIO()
+    Image.new("RGBA", (1, 1), (20, 80, 40, 255)).save(tile, "PNG")
+    requests = []
+
+    def render(url, *, params, timeout):
+        requests.append((url, params, timeout))
+        return SimpleNamespace(status_code=200, content=tile.getvalue())
+
+    monkeypatch.setattr("apps.api.main.httpx.get", render)
+    test_client, _ = client(tmp_path)
+    with test_client:
+        tilejson = test_client.get("/api/model/dem/tilejson")
+        rendered = test_client.get("/api/model/dem/tiles/13/6876/3092.png")
+
+    assert tilejson.status_code == 200
+    assert tilejson.json()["tiles"] == [
+        "/api/model/dem/tiles/{z}/{x}/{y}.png"
+    ]
+    assert rendered.status_code == 200
+    assert rendered.headers["content-type"] == "image/png"
+    assert rendered.headers["cache-control"] == "public, max-age=86400"
+    assert requests == [(
+        "http://unused/cog/tiles/WebMercatorQuad/13/6876/3092.png",
+        {
+            "url": "/data/model/web/elevation_cog.tif",
+            "bidx": 1,
+            "rescale": "-36,100",
+            "colormap_name": "terrain",
+        },
+        20,
+    )]
 
 
 def test_scenario_update_replaces_all_inlets_transactionally(tmp_path):
@@ -185,6 +377,16 @@ def test_job_keeps_immutable_snapshot_and_is_dispatched(tmp_path):
     assert job.status_code == 202, job.text
     assert dispatched == [job.json()["id"]]
     assert stored_job.json()["scenarioSnapshot"]["name"] == "baseline"
+    assert stored_job.json()["simulationAreaId"] == "b" * 64
+    assert stored_job.json()["scenarioSnapshot"]["simulationAreaId"] == (
+        "b" * 64
+    )
+    assert stored_job.json()["scenarioSnapshot"]["simulationArea"] == {
+        "areaHash": "b" * 64,
+        "datasetVersion": "dataset-v1",
+        "meshRule": "square-sw-ne-v1",
+        "cellIds": ["r0000-c0000", "r0000-c0001"],
+    }
     assert stored_job.json()["frameCount"] == 7
 
 

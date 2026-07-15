@@ -17,6 +17,7 @@ interface InletState {
   setSelectionMode: (mode: SelectionMode) => void
   selectCells: (cellIds: string[], operation?: 'toggle' | 'add' | 'remove') => void
   clearActive: () => void
+  clearAllSelections: () => void
 }
 
 let inletCounter = 1
@@ -88,6 +89,10 @@ export const useInletStore = create<InletState>((set, get) => ({
       }),
     }))
   },
+  clearAllSelections: () => set((state) => ({
+    inlets: state.inlets.map((inlet) => ({ ...inlet, cellIds: [] })),
+    selectionError: null,
+  })),
   clearActive: () => {
     const activeId = get().activeId
     if (activeId) get().updateInlet(activeId, { cellIds: [] })

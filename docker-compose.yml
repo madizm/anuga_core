@@ -7,6 +7,20 @@ services:
       api:
         condition: service_started
 
+  model-assets:
+    build:
+      context: .
+      dockerfile: bayuquan/Dockerfile.assets
+    command: >-
+      /data/elevation.tif
+      /workspace/OUTPUT/model/web/elevation_cog.tif
+      --buildings /workspace/OUTPUT/buildings/buildings.gpkg
+      --model-inputs-target /workspace/OUTPUT/model/web/model_inputs_cog.tif
+    working_dir: /opt/model-assets
+    volumes:
+      - ./bayuquan/elevation.tif:/data/elevation.tif:ro
+      - ./OUTPUT:/workspace/OUTPUT
+
   api:
     build: .
     command: >-
@@ -23,12 +37,16 @@ services:
       S3_SECRET_KEY: anuga-secret
       S3_BUCKET: simulation-jobs
       TITILER_URL: http://titiler
+      MODEL_DEM_URL: /data/model/web/elevation_cog.tif
     ports:
       - "8000:8000"
     working_dir: /opt/webgis
     volumes:
       - ./OUTPUT:/workspace/OUTPUT:ro
+      - ./OUTPUT/simulation_areas:/workspace/simulation_areas
     depends_on:
+      model-assets:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -45,6 +63,7 @@ services:
     working_dir: /opt/webgis
     volumes:
       - ./OUTPUT:/workspace/OUTPUT:ro
+      - ./OUTPUT/simulation_areas:/workspace/simulation_areas
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,7 +128,11 @@ services:
       GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
     ports:
       - "8001:80"
+    volumes:
+      - ./OUTPUT:/data:ro
     depends_on:
+      model-assets:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
 

@@ -1,32 +1,62 @@
-import type { FeatureCollection } from 'geojson'
+import type { FeatureCollection, Polygon } from 'geojson'
 import { useEffect, useRef, useState } from 'react'
-import maplibregl, { type Map, type MapMouseEvent, type PointLike } from 'maplibre-gl'
+import maplibregl, { type GeoJSONSource, type Map, type MapMouseEvent, type PointLike } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import type { FrictionScenario } from '../api/types'
 import { useInletStore } from '../inlets/inletStore'
 import { useLayerStore } from './mapStore'
 
 interface ModelMapProps {
   grid?: FeatureCollection
+  demTilejsonUrl?: string
+  frictionScenario: FrictionScenario
+  areaDrawMode?: 'rectangle' | 'polygon' | null
+  onAreaDrawn?: (geometry: Polygon) => void
 }
 
+const DEM_SOURCE = 'model-dem'
+const DEM_LAYER = 'model-dem-raster'
+const BUILDING_LAYER = 'model-buildings'
+const MANNING_LAYER = 'model-manning'
 const GRID_SOURCE = 'model-grid'
 const GRID_FILL = 'model-grid-fill'
 const GRID_LINE = 'model-grid-line'
+const AREA_SOURCE = 'simulation-area-draft'
+const AREA_FILL = 'simulation-area-draft-fill'
+const AREA_LINE = 'simulation-area-draft-line'
 
-export function ModelMap({ grid }: ModelMapProps) {
+const MANNING_RANGES: Record<FrictionScenario, [number, number]> = {
+  low: [0.03, 0.1],
+  middle: [0.04, 0.16],
+  high: [0.05, 0.2],
+}
+
+export function ModelMap({
+  grid,
+  demTilejsonUrl,
+  frictionScenario,
+  areaDrawMode = null,
+  onAreaDrawn,
+}: ModelMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
   const previousStates = useRef(new globalThis.Map<string, string>())
   const brushVisited = useRef(new Set<string>())
   const boxStart = useRef<MapMouseEvent['point'] | null>(null)
+  const areaStart = useRef<MapMouseEvent['lngLat'] | null>(null)
+  const polygonPoints = useRef<[number, number][]>([])
   const [box, setBox] = useState<React.CSSProperties | null>(null)
+  const [demReady, setDemReady] = useState(false)
   const [gridReady, setGridReady] = useState(false)
   const inlets = useInletStore((state) => state.inlets)
   const activeId = useInletStore((state) => state.activeId)
   const selectionMode = useInletStore((state) => state.selectionMode)
   const selectCells = useInletStore((state) => state.selectCells)
   const baseVisible = useLayerStore((state) => state.base)
+  const buildingsVisible = useLayerStore((state) => state.buildings)
+  const demVisible = useLayerStore((state) => state.dem)
   const gridVisible = useLayerStore((state) => state.grid)
+  const manningVisible = useLayerStore((state) => state.manning)
 
   useEffect(() => {
     if (!container.current || mapRef.current) return
@@ -69,10 +99,204 @@ export function ModelMap({ grid }: ModelMapProps) {
 
   useEffect(() => {
     const map = mapRef.current
+    if (!map) return
+    const install = () => {
+      if (map.getSource(AREA_SOURCE)) return
+      map.addSource(AREA_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: AREA_FILL,
+        type: 'fill',
+        source: AREA_SOURCE,
+        paint: { 'fill-color': '#00e5ff', 'fill-opacity': 0.13 },
+      })
+      map.addLayer({
+        id: AREA_LINE,
+        type: 'line',
+        source: AREA_SOURCE,
+        paint: {
+          'line-color': '#65f1ff',
+          'line-width': 2,
+          'line-dasharray': [2, 1],
+        },
+      })
+    }
+    if (map.isStyleLoaded()) install()
+    else map.once('load', install)
+    return () => { map.off('load', install) }
+  }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !areaDrawMode) return
+    const source = () => (
+      map.getSource(AREA_SOURCE) as GeoJSONSource | undefined
+    )
+    source()?.setData({ type: 'FeatureCollection', features: [] })
+    const show = (geometry: Polygon) => source()?.setData({
+      type: 'Feature', properties: {}, geometry,
+    })
+    const rectangle = (
+      start: MapMouseEvent['lngLat'],
+      end: MapMouseEvent['lngLat'],
+    ): Polygon => ({
+      type: 'Polygon',
+      coordinates: [[
+        [start.lng, start.lat],
+        [end.lng, start.lat],
+        [end.lng, end.lat],
+        [start.lng, end.lat],
+        [start.lng, start.lat],
+      ]],
+    })
+    const click = (event: MapMouseEvent) => {
+      if (areaDrawMode !== 'polygon') return
+      const point: [number, number] = [event.lngLat.lng, event.lngLat.lat]
+      const previous = polygonPoints.current.at(-1)
+      if (previous && previous[0] === point[0] && previous[1] === point[1]) return
+      polygonPoints.current.push(point)
+      if (polygonPoints.current.length >= 3) {
+        show({
+          type: 'Polygon',
+          coordinates: [[...polygonPoints.current, polygonPoints.current[0]]],
+        })
+      }
+    }
+    const doubleClick = (event: MapMouseEvent) => {
+      if (areaDrawMode !== 'polygon') return
+      event.preventDefault()
+      if (polygonPoints.current.length < 3) return
+      const geometry: Polygon = {
+        type: 'Polygon',
+        coordinates: [[...polygonPoints.current, polygonPoints.current[0]]],
+      }
+      show(geometry)
+      polygonPoints.current = []
+      onAreaDrawn?.(geometry)
+    }
+    const mouseDown = (event: MapMouseEvent) => {
+      if (areaDrawMode !== 'rectangle') return
+      areaStart.current = event.lngLat
+      map.dragPan.disable()
+    }
+    const mouseMove = (event: MapMouseEvent) => {
+      if (areaDrawMode === 'rectangle' && areaStart.current) {
+        show(rectangle(areaStart.current, event.lngLat))
+      }
+    }
+    const mouseUp = (event: MapMouseEvent) => {
+      if (areaDrawMode !== 'rectangle' || !areaStart.current) return
+      const geometry = rectangle(areaStart.current, event.lngLat)
+      areaStart.current = null
+      map.dragPan.enable()
+      show(geometry)
+      onAreaDrawn?.(geometry)
+    }
+    polygonPoints.current = []
+    if (map.getLayer(AREA_FILL)) map.moveLayer(AREA_FILL)
+    if (map.getLayer(AREA_LINE)) map.moveLayer(AREA_LINE)
+    map.getCanvas().style.cursor = 'crosshair'
+    map.doubleClickZoom.disable()
+    map.on('click', click)
+    map.on('dblclick', doubleClick)
+    map.on('mousedown', mouseDown)
+    map.on('mousemove', mouseMove)
+    map.on('mouseup', mouseUp)
+    return () => {
+      map.off('click', click)
+      map.off('dblclick', doubleClick)
+      map.off('mousedown', mouseDown)
+      map.off('mousemove', mouseMove)
+      map.off('mouseup', mouseUp)
+      map.getCanvas().style.cursor = ''
+      map.doubleClickZoom.enable()
+      map.dragPan.enable()
+      areaStart.current = null
+      polygonPoints.current = []
+    }
+  }, [areaDrawMode, onAreaDrawn])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !demTilejsonUrl) return
+    const install = () => {
+      if (map.getSource(DEM_SOURCE)) return
+      map.addSource(DEM_SOURCE, {
+        type: 'raster',
+        url: demTilejsonUrl,
+        tileSize: 256,
+      })
+      map.addLayer({
+        id: DEM_LAYER,
+        type: 'raster',
+        source: DEM_SOURCE,
+        layout: { visibility: demVisible ? 'visible' : 'none' },
+        paint: {
+          'raster-opacity': 0.82,
+          'raster-saturation': -0.18,
+          'raster-contrast': 0.14,
+          'raster-brightness-max': 0.78,
+          'raster-fade-duration': 180,
+        },
+      }, map.getLayer(MANNING_LAYER)
+        ? MANNING_LAYER
+        : map.getLayer(BUILDING_LAYER)
+          ? BUILDING_LAYER
+          : map.getLayer(GRID_FILL) ? GRID_FILL : undefined)
+      setDemReady(true)
+    }
+    if (map.isStyleLoaded()) install()
+    else map.once('load', install)
+    return () => { map.off('load', install) }
+  }, [demTilejsonUrl, demVisible])
+
+  useEffect(() => {
+    const map = mapRef.current
     if (!map || !grid) return
     const install = () => {
       if (map.getSource(GRID_SOURCE)) return
       map.addSource(GRID_SOURCE, { type: 'geojson', data: grid, promoteId: 'cell_id' })
+      const [manningMinimum, manningMaximum] = MANNING_RANGES[frictionScenario]
+      map.addLayer({
+        id: MANNING_LAYER,
+        type: 'fill',
+        source: GRID_SOURCE,
+        layout: { visibility: manningVisible ? 'visible' : 'none' },
+        paint: {
+          'fill-color': [
+            'interpolate', ['linear'], ['get', `manning_${frictionScenario}`],
+            manningMinimum, '#24758a',
+            (manningMinimum + manningMaximum) / 2, '#d4b64f',
+            manningMaximum, '#e5533d',
+          ],
+          'fill-opacity': 0.76,
+        },
+      })
+      map.addLayer({
+        id: BUILDING_LAYER,
+        type: 'fill',
+        source: GRID_SOURCE,
+        filter: ['>', ['get', 'building_fraction'], 0],
+        layout: { visibility: buildingsVisible ? 'visible' : 'none' },
+        paint: {
+          'fill-color': [
+            'interpolate', ['linear'], ['get', 'building_fraction'],
+            0, '#ffe17a',
+            0.25, '#ffc247',
+            0.5, '#ff8a3d',
+            1, '#e94735',
+          ],
+          'fill-opacity': [
+            'interpolate', ['linear'], ['get', 'building_fraction'],
+            0, 0,
+            0.1, 0.28,
+            0.5, 0.68,
+            1, 0.9,
+          ],
+        },
+      })
       map.addLayer({
         id: GRID_FILL,
         type: 'fill',
@@ -104,6 +328,13 @@ export function ModelMap({ grid }: ModelMapProps) {
     }
     if (map.getSource('base-map')) install()
     else map.once('styledata', install)
+  }, [grid, buildingsVisible, frictionScenario, manningVisible])
+
+  useEffect(() => {
+    const source = mapRef.current?.getSource(GRID_SOURCE) as (
+      GeoJSONSource | undefined
+    )
+    source?.setData(grid ?? { type: 'FeatureCollection', features: [] })
   }, [grid])
 
   useEffect(() => {
@@ -148,16 +379,37 @@ export function ModelMap({ grid }: ModelMapProps) {
     const map = mapRef.current
     if (!map?.getLayer('base-map')) return
     map.setLayoutProperty('base-map', 'visibility', baseVisible ? 'visible' : 'none')
+    if (map.getLayer(DEM_LAYER)) {
+      map.setLayoutProperty(DEM_LAYER, 'visibility', demVisible ? 'visible' : 'none')
+    }
+    if (map.getLayer(BUILDING_LAYER)) {
+      map.setLayoutProperty(BUILDING_LAYER, 'visibility', buildingsVisible ? 'visible' : 'none')
+    }
+    if (map.getLayer(MANNING_LAYER)) {
+      map.setLayoutProperty(MANNING_LAYER, 'visibility', manningVisible ? 'visible' : 'none')
+    }
     if (map.getLayer(GRID_FILL)) {
       const visibility = gridVisible ? 'visible' : 'none'
       map.setLayoutProperty(GRID_FILL, 'visibility', visibility)
       map.setLayoutProperty(GRID_LINE, 'visibility', visibility)
     }
-  }, [baseVisible, gridVisible, grid])
+  }, [baseVisible, buildingsVisible, demVisible, gridVisible, grid, manningVisible])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    if (!map?.getLayer(MANNING_LAYER)) return
+    const [minimum, maximum] = MANNING_RANGES[frictionScenario]
+    map.setPaintProperty(MANNING_LAYER, 'fill-color', [
+      'interpolate', ['linear'], ['get', `manning_${frictionScenario}`],
+      minimum, '#24758a',
+      (minimum + maximum) / 2, '#d4b64f',
+      maximum, '#e5533d',
+    ])
+  }, [frictionScenario])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || areaDrawMode) return
     const featureAt = (point: PointLike) => {
       if (!map.getLayer(GRID_FILL)) return undefined
       return map.queryRenderedFeatures(point, { layers: [GRID_FILL] })[0]
@@ -226,7 +478,9 @@ export function ModelMap({ grid }: ModelMapProps) {
       map.off('mousemove', onMouseMove)
       map.off('mouseup', onMouseUp)
     }
-  }, [activeId, selectionMode, selectCells])
+  }, [activeId, areaDrawMode, selectionMode, selectCells])
+
+  const [manningMinimum, manningMaximum] = MANNING_RANGES[frictionScenario]
 
   return (
     <div className="map-shell">
@@ -234,10 +488,40 @@ export function ModelMap({ grid }: ModelMapProps) {
         ref={container}
         className="model-map"
         aria-label="鲅鱼圈模型地图"
+        data-dem-ready={demReady}
         data-grid-ready={gridReady}
       />
       {box && <div className="selection-box" style={box} />}
       <div className="map-coordinate-chip">EPSG 32651 · 30 M GRID</div>
+      {((demVisible && demReady) || (buildingsVisible && gridReady) || (manningVisible && gridReady)) && (
+        <div className="map-legends">
+          {demVisible && demReady && (
+            <div className="dem-legend" aria-label="DEM 高程图例">
+              <span>DEM ELEVATION</span>
+              <i />
+              <div><b>0</b><b>25</b><b>50</b><b>75</b><b>100+ m</b></div>
+            </div>
+          )}
+          {buildingsVisible && gridReady && (
+            <div className="building-legend" aria-label="建筑覆盖率图例">
+              <span>BUILDING COVERAGE</span>
+              <i />
+              <div><b>0</b><b>25</b><b>50</b><b>75</b><b>100%</b></div>
+            </div>
+          )}
+          {manningVisible && gridReady && (
+            <div className="manning-legend" aria-label="曼宁糙率图例">
+              <span>MANNING · {frictionScenario.toUpperCase()}</span>
+              <i />
+              <div>
+                <b>{manningMinimum.toFixed(2)}</b>
+                <b>{((manningMinimum + manningMaximum) / 2).toFixed(2)}</b>
+                <b>{manningMaximum.toFixed(2)}</b>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

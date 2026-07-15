@@ -1,3 +1,4 @@
+import type { Polygon } from 'geojson'
 import type { FeatureCollection } from 'geojson'
 import type {
   ModelMetadata,
@@ -6,6 +7,7 @@ import type {
   SelectionStats,
   SimulationFrame,
   SimulationJob,
+  SimulationArea,
   FramePointValue,
   ValidationResult,
 } from './types'
@@ -18,9 +20,16 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   })
-  const body = await response.json()
+  const text = await response.text()
+  let body: Record<string, unknown>
+  try {
+    body = text ? JSON.parse(text) as Record<string, unknown> : {}
+  } catch {
+    if (!response.ok) throw new Error(text || `请求失败 (${response.status})`)
+    throw new Error('服务器返回了无效 JSON')
+  }
   if (!response.ok) {
-    const detail = body.detail
+    const detail = body.detail as string | { errors?: { message?: string }[] } | undefined
     throw new Error(
       typeof detail === 'string'
         ? detail
@@ -33,8 +42,15 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 export const api = {
   model: () => request<ModelMetadata>('/api/model'),
   grid: () => request<FeatureCollection>('/api/model/grid'),
-  resolveSelection: (cellIds: string[], frictionScenario: string) =>
-    request<SelectionStats>('/api/model/selection/resolve', {
+  resolveSimulationArea: (geometry: Polygon) =>
+    request<SimulationArea>('/api/model/simulation-areas/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ geometry }),
+    }),
+  simulationAreaGrid: (areaHash: string) =>
+    request<FeatureCollection>(`/api/model/simulation-areas/${areaHash}/grid`),
+  resolveSelection: (areaHash: string, cellIds: string[], frictionScenario: string) =>
+    request<SelectionStats>(`/api/model/simulation-areas/${areaHash}/selection/resolve`, {
       method: 'POST',
       body: JSON.stringify({ cellIds, frictionScenario }),
     }),

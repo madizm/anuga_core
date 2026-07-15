@@ -2,6 +2,7 @@
 
 from .cog_writer import CogWriter, WrittenCog
 from .frame_rasterizer import FrameRasterizer, RasterFrame
+from .local_frame_rasterizer import LocalFrameRasterizer
 from .interpolation import (
     RasterGrid,
     RasterInterpolationMapping,
@@ -12,6 +13,7 @@ from .interpolation import (
 __all__ = [
     "CogWriter",
     "FrameRasterizer",
+    "LocalFrameRasterizer",
     "RasterFrame",
     "RasterGrid",
     "RasterInterpolationMapping",

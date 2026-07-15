@@ -2,6 +2,10 @@
 
 > **实施状态更新日期：2026-07-15（CST）**
 
+> **架构替换（2026-07-15）**：固定 75×56 区域和固定 ANUGA mesh 的假设已废止。新流程先从全域 DEM 解析并锁定单个局部 `Simulation Area`，按其 `Cell Mask` 生成和缓存局部结构化 mesh，然后才允许编辑入口和提交任务。区域采用 Cell 中心点纳格、排除 NoData、四邻域连通、最多 25,000 Cell；详细决策见 `docs/adr/0001-local-computational-domains.md`。下文描述固定模型的章节是迁移基线，不再是目标领域模型。
+
+当前替换进度：区域解析与缓存、确定性局部 mesh、全域建筑/Manning COG、不可变 Scenario/Job 区域快照、局部 ANUGA Worker、动态窗口 FrameRasterizer、逐帧 COG 和“先区域、后入口”编辑器均已接通。建筑源覆盖范围外按已确认规则解释为无建筑并使用场景基础 Manning。真实 Docker E2E 已覆盖“绘制区域→局部网格→入口→Job→三帧实时播放”。
+
 ### 当前实施状态摘要
 
 | 阶段 | 状态 | 截至 2026-07-15 的实施结果 |
@@ -9,19 +13,20 @@
 | A：固定模型运行时 | 已完成 | 固定 mesh/NPZ、mesh hash 校验、多入口 Region/Inlet Operator、入口初始水位及水量报告均已实现。 |
 | B：固定栅格与逐帧 COG | 已完成 | 预计算重心插值、75×56 三波段 COG、逐 yieldstep 原子发布、DEM 对齐校验和 SWW 保留均已实现。 |
 | C：后端与任务队列 | 已完成 | FastAPI、SQLAlchemy/Alembic、PostGIS、Celery、Redis、MinIO、TiTiler、SSE 与 Docker Compose 已连通。 |
-| D：Web GIS 编辑器 | 基本完成 | 用户可在 MapLibre 中以单格、画刷和框选方式编辑多入口，无需修改 JSON 即可校验、保存和提交；独立 DEM/建筑可视化图层仍待补齐。 |
+| D：Web GIS 编辑器 | 已完成 | 用户可在 MapLibre 中编辑、校验和提交多入口；DEM、建筑覆盖率和随场景切换的曼宁糙率图层均已接入。 |
 | E：实时播放 | 已完成 | Job 进度、SSE 补帧、时间轴、跟随最新帧、三物理量切换、同步三联图、点选查询和双栅格缓冲已实现。 |
 | F：端到端与工程加固 | 进行中 | 已有真实 Docker Playwright 流程、数值/API 回归和构建优化；故障矩阵、资源限制、结构化指标及完整运维文档仍待完成。 |
 
 当前验证基线：
 
-- Python 测试：24 项通过；
-- 前端 Vitest：6 项通过；
-- Playwright：3 项通过，包括真实 20 秒 ANUGA Job、逐帧 COG、页面重载补帧、点选查询和三联视图；
+- 本次局部计算域 Python 回归：24 项通过，1 项因本机失效的 Meson editable ninja 路径跳过；
+- 前端 Vitest：8 项通过；
+- Playwright：3 项通过，包括区域绘制、局部网格/图层、入口选择，以及真实 20 秒局部 ANUGA Job、逐帧 COG、页面重载、点选查询和三联视图；
 - 完整 6 小时场景已通过 Docker 运行，生成 73 帧并达到 `COMPLETED`；
 - 已验证 MinIO 中后期帧 COG 可访问，帧 3、49、72 的瓦片均返回 HTTP 200；
 - TiTiler 已设置 `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`，避免运行中新增 COG 被 GDAL 的 S3 目录缓存误判为不存在；
 - API/Worker 的 Docker 原生 ANUGA 编译层已与服务源码分离，后续服务代码重建可复用编译缓存。
+- 独立 DEM COG、瓦片接口、高程图例、建筑覆盖率及曼宁糙率图层已完成接入。
 
 ## 1. 文档目的
 
@@ -1468,7 +1473,7 @@ simulation-jobs
 
 完成标准：通过 HTTP 创建场景并运行任务，第一帧在模拟结束前可访问。
 
-### 阶段 D：Web GIS 编辑器（基本完成）
+### 阶段 D：Web GIS 编辑器（已完成）
 
 交付：
 
@@ -1483,7 +1488,7 @@ simulation-jobs
 
 完成标准：用户无需编辑 JSON 即可提交多入口场景。
 
-实施备注：完成标准已达到；独立 DEM 和建筑物地图图层尚未接入前端图层控制器。
+实施备注：完成标准已达到；DEM 使用独立 COG 瓦片，建筑覆盖率和曼宁糙率使用固定网格属性渲染，并具有独立图例和图层控制。
 
 ### 阶段 E：实时播放（已完成）
 
@@ -1557,12 +1562,11 @@ simulation-jobs
 
 ## 24. 下一步
 
-截至 2026-07-15，阶段 A、B、C、E 已完成，阶段 D 达到核心完成标准。下一项工作集中在阶段 F 和阶段 D 的剩余项：
+截至 2026-07-15，阶段 A、B、C、D、E 已完成。下一项工作集中在阶段 F：
 
-1. 接入独立 DEM 和建筑覆盖率前端地图图层，完成阶段 D 的全部交付项；
-2. 建立 QUEUED、PREPARING、RUNNING、FAILED、TiTiler/MinIO 不可用及 SSE 断线的故障场景矩阵；
-3. 增加最大入口数、单入口网格数、总流量、速度、模拟时长、最小 yieldstep 和最大帧数限制；
-4. 完成 Worker 结构化 JSON 日志、耗时、内存、对象大小和水量平衡指标；
-5. 增加长时间轴播放、SSE 重连和中后期 COG 可访问性的自动回归，覆盖 GDAL S3 目录缓存问题；
-6. 编写部署、备份、恢复、升级、故障排查以及数据和固定模型版本说明；
-7. 在完整 Docker 环境运行最终数值回归和端到端验收，并归档验收报告。
+1. 建立 QUEUED、PREPARING、RUNNING、FAILED、TiTiler/MinIO 不可用及 SSE 断线的故障场景矩阵；
+2. 增加最大入口数、单入口网格数、总流量、速度、模拟时长、最小 yieldstep 和最大帧数限制；
+3. 完成 Worker 结构化 JSON 日志、耗时、内存、对象大小和水量平衡指标；
+4. 增加长时间轴播放、SSE 重连和中后期 COG 可访问性的自动回归，覆盖 GDAL S3 目录缓存问题；
+5. 编写部署、备份、恢复、升级、故障排查以及数据和固定模型版本说明；
+6. 在完整 Docker 环境运行最终数值回归和端到端验收，并归档验收报告。

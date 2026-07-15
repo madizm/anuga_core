@@ -1,3 +1,4 @@
+import type { FrictionScenario } from '../api/types'
 import { useInletStore, type SelectionMode } from '../inlets/inletStore'
 import { useLayerStore } from './mapStore'
 
@@ -7,7 +8,11 @@ const TOOLS: { mode: SelectionMode; icon: string; label: string; hint: string }[
   { mode: 'box', icon: '□', label: '框选', hint: '拖出矩形范围' },
 ]
 
-export function LayerPanel() {
+export function LayerPanel({ frictionScenario, areaReady, areaCellCount }: {
+  frictionScenario: FrictionScenario
+  areaReady: boolean
+  areaCellCount: number
+}) {
   const layers = useLayerStore()
   const mode = useInletStore((state) => state.selectionMode)
   const setMode = useInletStore((state) => state.setSelectionMode)
@@ -35,6 +40,7 @@ export function LayerPanel() {
             <button
               key={tool.mode}
               className={mode === tool.mode ? 'tool active' : 'tool'}
+              disabled={!areaReady}
               onClick={() => setMode(tool.mode)}
               title={tool.hint}
             >
@@ -47,22 +53,23 @@ export function LayerPanel() {
           <span><kbd>Alt</kbd> 删除</span>
         </div>
         <div className="quiet-actions">
-          <button className="quiet-button" onClick={locateActive}>定位入口</button>
-          <button className="quiet-button" onClick={clear}>清空入口</button>
+          <button className="quiet-button" disabled={!areaReady} onClick={locateActive}>定位入口</button>
+          <button className="quiet-button" disabled={!areaReady} onClick={clear}>清空入口</button>
         </div>
       </section>
 
       <section className="tool-section layer-list">
         <h3>模型图层</h3>
         <LayerRow label="深色底图" detail="OSM · 灰阶" checked={layers.base} onChange={(visible) => layers.setLayer('base', visible)} swatch="base" />
-        <LayerRow label="30 m 计算网格" detail="4,087 cells" checked={layers.grid} onChange={(visible) => layers.setLayer('grid', visible)} swatch="grid" />
-        <LayerRow label="建筑覆盖率" detail="即将接入" checked={false} onChange={() => undefined} swatch="building" disabled />
-        <LayerRow label="曼宁糙率" detail="low / mid / high" checked={false} onChange={() => undefined} swatch="friction" disabled />
+        <LayerRow label="DEM 高程" detail="30 m · terrain" checked={layers.dem} onChange={(visible) => layers.setLayer('dem', visible)} swatch="dem" />
+        <LayerRow label="30 m 局部网格" detail={areaReady ? `${areaCellCount.toLocaleString()} cells` : '选择区域后生成'} checked={layers.grid} disabled={!areaReady} onChange={(visible) => layers.setLayer('grid', visible)} swatch="grid" />
+        <LayerRow label="建筑覆盖率" detail="0–100% · 局部区域" checked={layers.buildings} disabled={!areaReady} onChange={(visible) => layers.setLayer('buildings', visible)} swatch="building" />
+        <LayerRow label="曼宁糙率" detail={`${frictionScenario} · coefficient`} checked={layers.manning} disabled={!areaReady} onChange={(visible) => layers.setLayer('manning', visible)} swatch="friction" />
       </section>
 
       <div className="model-stamp">
-        <span>FIXED MODEL</span>
-        <strong>BYQ · 30M</strong>
+        <span>LOCAL DOMAIN</span>
+        <strong>BYQ · 30 M</strong>
         <small>Transmissive boundary</small>
       </div>
     </aside>

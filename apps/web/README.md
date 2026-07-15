@@ -9,7 +9,7 @@ cyan inlet controls, explicit engineering units, and high-contrast risk states.
 Start the API stack, then Vite:
 
 ```bash
-docker compose up -d postgres redis minio api worker
+docker compose up -d postgres redis minio titiler api worker
 cd apps/web
 npm install
 npm run dev
@@ -19,10 +19,14 @@ Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
 
 ## Supported editor interactions
 
+- rectangle or simple-polygon local simulation-area selection;
+- server-resolved, area-hashed local 30 m computational grid;
 - single-cell toggle;
 - Shift-add and Alt-remove;
 - continuous brush selection;
 - rectangular selection;
+- fixed 30 m DEM COG tiles with terrain legend and visibility control;
+- building-coverage overlay and scenario-aware Manning surface layer;
 - multiple independently colored inlets;
 - overlap prevention and four-neighbour connectivity status;
 - discharge, velocity components/bearing, and initial water level;

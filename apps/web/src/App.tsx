@@ -1,7 +1,14 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
+import type { Polygon } from 'geojson'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from './api/client'
-import type { FrictionScenario, SavedScenario, ScenarioPayload, ValidationResult } from './api/types'
+import type {
+  FrictionScenario,
+  SavedScenario,
+  ScenarioPayload,
+  SimulationArea,
+  ValidationResult,
+} from './api/types'
 import { InletPanel } from './inlets/InletPanel'
 import { ResultWorkspace } from './jobs/ResultWorkspace'
 import { isFourNeighbourConnected, useInletStore } from './inlets/inletStore'
@@ -21,10 +28,46 @@ export default function App() {
     new URLSearchParams(window.location.search).get('job')
   ))
   const [message, setMessage] = useState<string | null>(null)
+  const [area, setArea] = useState<SimulationArea | null>(null)
+  const [areaDrawMode, setAreaDrawMode] = useState<'rectangle' | 'polygon' | null>(null)
+  const clearAllSelections = useInletStore((state) => state.clearAllSelections)
   const model = useQuery({ queryKey: ['model'], queryFn: api.model })
-  const grid = useQuery({ queryKey: ['model-grid'], queryFn: api.grid })
+  const grid = useQuery({
+    queryKey: ['simulation-area-grid', area?.areaHash],
+    queryFn: () => api.simulationAreaGrid(area!.areaHash),
+    enabled: Boolean(area),
+  })
+
+  const areaMutation = useMutation({
+    mutationFn: api.resolveSimulationArea,
+    onSuccess: (resolved) => {
+      setArea(resolved)
+      setAreaDrawMode(null)
+      setMessage(`局部计算域已生成：${resolved.cellCount.toLocaleString()} cells`)
+    },
+    onError: (error) => {
+      setAreaDrawMode(null)
+      setMessage(error.message)
+    },
+  })
+
+  const handleAreaDrawn = useCallback((geometry: Polygon) => {
+    setAreaDrawMode(null)
+    areaMutation.mutate(geometry)
+  }, [areaMutation])
+
+  const beginAreaDrawing = (mode: 'rectangle' | 'polygon') => {
+    const hasSelections = inlets.some((inlet) => inlet.cellIds.length > 0)
+    if (hasSelections && !window.confirm('重新选择模拟区域将清空全部入口网格，是否继续？')) return
+    if (hasSelections) clearAllSelections()
+    setArea(null)
+    setSaved(null)
+    setValidation(null)
+    setAreaDrawMode(mode)
+  }
 
   const payload = (): ScenarioPayload => ({
+    simulationAreaId: area?.areaHash ?? '',
     name,
     durationSeconds: duration,
     yieldstepSeconds: yieldstep,
@@ -72,7 +115,7 @@ export default function App() {
   const enabled = inlets.filter((inlet) => inlet.enabled)
   const selectedCells = enabled.reduce((total, inlet) => total + inlet.cellIds.length, 0)
   const totalDischarge = enabled.reduce((total, inlet) => total + inlet.dischargeM3s, 0)
-  const localReady = enabled.length > 0 && enabled.every(
+  const localReady = Boolean(area) && enabled.length > 0 && enabled.every(
     (inlet) => inlet.cellIds.length > 0 && isFourNeighbourConnected(inlet.cellIds) && inlet.dischargeM3s > 0,
   )
 
@@ -109,16 +152,35 @@ export default function App() {
       </header>
 
       <main className="workspace">
-        <LayerPanel />
+        <LayerPanel
+          frictionScenario={friction}
+          areaReady={Boolean(area)}
+          areaCellCount={area?.cellCount ?? 0}
+        />
         <section className="map-stage">
           {grid.isError ? (
-            <div className="map-error">无法加载固定模型网格</div>
+            <div className="map-error">无法加载局部计算网格</div>
           ) : (
-            <ModelMap grid={grid.data} />
+            <ModelMap
+              grid={grid.data}
+              demTilejsonUrl={model.data?.demTilejsonUrl}
+              frictionScenario={friction}
+              areaDrawMode={areaDrawMode}
+              onAreaDrawn={handleAreaDrawn}
+            />
           )}
-          {grid.isLoading && <div className="loading-grid"><span />正在装载 30 m 固定网格</div>}
+          <AreaControl
+            area={area}
+            drawMode={areaDrawMode}
+            resolving={areaMutation.isPending}
+            onDraw={beginAreaDrawing}
+          />
+          {area && grid.isLoading && <div className="loading-grid"><span />正在装载局部 30 m 网格</div>}
         </section>
-        <InletPanel frictionScenario={friction} />
+        <InletPanel
+          areaHash={area?.areaHash ?? null}
+          frictionScenario={friction}
+        />
       </main>
 
       <footer className="scenario-rail">
@@ -145,6 +207,43 @@ export default function App() {
         />
       )}
     </div>
+  )
+}
+
+function AreaControl({ area, drawMode, resolving, onDraw }: {
+  area: SimulationArea | null
+  drawMode: 'rectangle' | 'polygon' | null
+  resolving: boolean
+  onDraw: (mode: 'rectangle' | 'polygon') => void
+}) {
+  return (
+    <section className={area ? 'area-control locked' : 'area-control'}>
+      <div>
+        <span className="eyebrow">01 / SIMULATION AREA</span>
+        <strong>{resolving
+          ? '正在解析 DEM…'
+          : area
+            ? '局部计算域已锁定'
+            : drawMode
+              ? drawMode === 'rectangle' ? '拖动绘制矩形区域' : '逐点绘制，双击完成'
+              : '请先选择模拟区域'}</strong>
+        {area && <small>
+          {area.cellCount.toLocaleString()} cells · {(area.areaM2 / 1_000_000).toFixed(2)} km² · {area.triangleCount.toLocaleString()} triangles
+        </small>}
+      </div>
+      <div className="area-actions">
+        <button
+          className={drawMode === 'rectangle' ? 'active' : ''}
+          disabled={resolving}
+          onClick={() => onDraw('rectangle')}
+        >□ 矩形</button>
+        <button
+          className={drawMode === 'polygon' ? 'active' : ''}
+          disabled={resolving}
+          onClick={() => onDraw('polygon')}
+        >⬡ 多边形</button>
+      </div>
+    </section>
   )
 }
 
@@ -176,7 +275,7 @@ function RunCheck({ validation, onClose, onRun, running }: {
         )}
         <ul className="check-list">
           <li className="pass"><b>✓</b><span>外边界</span><strong>固定透射边界</strong></li>
-          <li className="pass"><b>✓</b><span>模型版本</span><strong>{summary?.fixedModelVersion}</strong></li>
+          <li className="pass"><b>✓</b><span>局部计算域</span><strong>{summary?.simulationAreaId.slice(0, 12)}</strong></li>
           {validation.warnings.map((warning) => <li className="warning" key={warning.code}><b>!</b><span>警告</span><strong>{warning.message}</strong></li>)}
           {validation.errors.map((error) => <li className="failure" key={error.code}><b>×</b><span>错误</span><strong>{error.message}</strong></li>)}
         </ul>

@@ -17,6 +17,7 @@ export interface Inlet {
 }
 
 export interface ScenarioPayload {
+  simulationAreaId: string
   name: string
   durationSeconds: number
   yieldstepSeconds: number
@@ -38,7 +39,8 @@ export interface ValidationResult {
     totalDischargeM3s: number
     totalInputVolumeM3: number
     frameCount: number
-    fixedModelVersion: string
+    simulationAreaId: string
+    datasetVersion: string
     boundaryCondition: string
   }
 }
@@ -49,10 +51,11 @@ export interface ModelMetadata {
   gridRows: number
   gridColumns: number
   cellSizeM: number
-  selectableCellCount: number
-  gridUrl: string
+  datasetVersion: string
+  simulationAreaResolveUrl: string
+  maxSimulationAreaCells: number
+  demTilejsonUrl: string
   boundaryCondition: string
-  meshSha256: string
 }
 
 export interface SavedScenario extends ScenarioPayload {
@@ -64,7 +67,7 @@ export interface SavedScenario extends ScenarioPayload {
 export interface SimulationJob {
   id: string
   scenarioId: string
-  fixedModelVersion: string
+  simulationAreaId: string
   scenarioSnapshot: ScenarioPayload
   status: 'QUEUED' | 'PREPARING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
   currentFrame: number
@@ -102,6 +105,26 @@ export interface FramePointValue {
   speedMps: number | null
 }
 
+
+export interface SimulationArea {
+  id: string
+  areaHash: string
+  datasetVersion: string
+  crs: string
+  cellCount: number
+  areaM2: number
+  cellSizeM: number
+  triangleCount: number
+  window: {
+    rowStart: number
+    rowStop: number
+    columnStart: number
+    columnStop: number
+  }
+  elevationM: { minimum: number; maximum: number; mean: number }
+  gridUrl: string
+  boundaryCondition: string
+}
 
 export interface SelectionStats {
   cellIds: string[]

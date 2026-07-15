@@ -13,6 +13,10 @@ from rasterio.io import MemoryFile
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 import httpx
+from bayuquan.simulation.area_catalog import (
+    SimulationAreaCatalog,
+    model_input_version,
+)
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi import status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -21,9 +25,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db import Database
-from .fixed_model.catalog import FixedModelCatalog
 from .models import (
-    FixedModelVersion,
     Scenario,
     SimulationFrame,
     SimulationJob,
@@ -36,7 +38,12 @@ from .scenarios.service import (
     scenario_snapshot,
     validate_scenario,
 )
-from .schemas import GridSelectionRequest, JobCreateRequest, ScenarioRequest
+from .schemas import (
+    GridSelectionRequest,
+    JobCreateRequest,
+    ScenarioRequest,
+    SimulationAreaResolveRequest,
+)
 
 
 JobDispatcher = Callable[[str], None]
@@ -46,27 +53,35 @@ def create_app(
     *,
     settings: Settings | None = None,
     database: Database | None = None,
-    catalog: FixedModelCatalog | None = None,
+    area_catalog: SimulationAreaCatalog | None = None,
     dispatcher: JobDispatcher | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
     database = database or Database(settings.database_url)
-    catalog = catalog or FixedModelCatalog(settings.project_root)
+    model_dem_path = settings.model_dem_path or (
+        settings.project_root / "OUTPUT/model/web/elevation_cog.tif"
+    )
+    area_cache = settings.simulation_area_cache or (
+        settings.project_root / "simulation_areas"
+    )
+    if area_catalog is None:
+        model_inputs_path = settings.model_inputs_path or (
+            settings.project_root / "OUTPUT/model/web/model_inputs_cog.tif"
+        )
+        area_catalog = SimulationAreaCatalog(
+            model_dem_path,
+            area_cache,
+            dataset_version=model_input_version(
+                model_inputs_path, settings.model_dataset_version
+            ),
+            model_inputs_path=model_inputs_path,
+            max_cells=settings.max_simulation_area_cells,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.auto_create_schema:
             database.create_schema()
-        with database.session_factory.begin() as session:
-            if session.get(FixedModelVersion, catalog.version_id) is None:
-                metadata = catalog.metadata()
-                session.add(FixedModelVersion(
-                    id=catalog.version_id,
-                    name="Bayuquan fixed 30 m model",
-                    crs="EPSG:32651",
-                    mesh_sha256=catalog.mapping.mesh_sha256,
-                    metadata_json=metadata,
-                ))
         yield
 
     app = FastAPI(
@@ -76,7 +91,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.database = database
-    app.state.catalog = catalog
+    app.state.area_catalog = area_catalog
     app.state.dispatcher = dispatcher or _celery_dispatcher(settings)
 
     def session_dependency() -> Session:
@@ -85,63 +100,118 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"status": "ok", "modelVersion": catalog.version_id}
+        return {
+            "status": "ok",
+            "datasetVersion": area_catalog.metadata()["datasetVersion"],
+        }
 
     @app.get("/api/model")
     def model_metadata() -> dict:
-        return catalog.metadata()
+        return area_catalog.metadata()
 
-    @app.get("/api/model/grid")
-    def model_grid() -> JSONResponse:
-        return JSONResponse(catalog.grid_geojson)
-
-    @app.get("/api/model/grid/{cell_id}")
-    def model_cell(cell_id: str) -> dict:
-        cell = catalog.cell(cell_id)
-        if cell is None:
-            raise HTTPException(status_code=404, detail="grid cell not found")
-        selection = catalog.mapping.resolve([cell_id])
-        return {
-            **cell,
-            "geometric_area_m2": selection.geometric_area_m2,
-            "effective_triangle_area_m2": (
-                selection.effective_triangle_area_m2
-            ),
-        }
-
-    @app.post("/api/model/selection/resolve")
-    def resolve_grid_selection(request: GridSelectionRequest) -> dict:
+    @app.post(
+        "/api/model/simulation-areas/resolve",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def resolve_simulation_area(
+        request: SimulationAreaResolveRequest,
+    ) -> dict:
         try:
-            selection = catalog.mapping.resolve(request.cell_ids)
+            area = area_catalog.resolve(request.geometry)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        cells = [catalog.cells[cell_id] for cell_id in selection.cell_ids]
-        elevations = [float(cell["elevation_m"]) for cell in cells]
-        buildings = [float(cell["building_fraction"]) for cell in cells]
-        manning_key = f"manning_{request.friction_scenario}"
-        manning = [float(cell[manning_key]) for cell in cells]
+        grid_url = f"/api/model/simulation-areas/{area.area_hash}/grid"
         return {
-            "cellIds": list(selection.cell_ids),
-            "cellCount": len(selection.cell_ids),
-            "geometricAreaM2": selection.geometric_area_m2,
-            "triangleCount": len(selection.triangle_ids),
-            "effectiveTriangleAreaM2": (
-                selection.effective_triangle_area_m2
-            ),
-            "elevationM": {
-                "minimum": min(elevations),
-                "maximum": max(elevations),
-                "mean": sum(elevations) / len(elevations),
+            "id": area.area_hash,
+            "areaHash": area.area_hash,
+            "datasetVersion": area.dataset_version,
+            "crs": area.crs,
+            "cellCount": area.cell_count,
+            "areaM2": area.area_m2,
+            "cellSizeM": area.cell_size_m,
+            "triangleCount": area.cell_count * 2,
+            "window": {
+                "rowStart": area.window[0],
+                "rowStop": area.window[1],
+                "columnStart": area.window[2],
+                "columnStop": area.window[3],
             },
-            "buildingFraction": {
-                "minimum": min(buildings),
-                "maximum": max(buildings),
-            },
-            "manning": {
-                "minimum": min(manning),
-                "maximum": max(manning),
-            },
+            "elevationM": area.elevation_m,
+            "gridUrl": grid_url,
+            "boundaryCondition": "transmissive",
         }
+
+    @app.get("/api/model/simulation-areas/{area_hash}/grid")
+    def simulation_area_grid(area_hash: str) -> JSONResponse:
+        try:
+            grid = area_catalog.grid(area_hash)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail="simulation area not found"
+            ) from error
+        return JSONResponse(grid)
+
+    @app.post(
+        "/api/model/simulation-areas/{area_hash}/selection/resolve"
+    )
+    def resolve_simulation_area_selection(
+        area_hash: str,
+        request: GridSelectionRequest,
+    ) -> dict:
+        try:
+            return area_catalog.resolve_selection(
+                area_hash,
+                request.cell_ids,
+                request.friction_scenario,
+            )
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail="simulation area not found"
+            ) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.get("/api/model/dem/tilejson")
+    def model_dem_tilejson() -> dict:
+        return {
+            "tilejson": "3.0.0",
+            "name": "Bayuquan DEM",
+            "tiles": ["/api/model/dem/tiles/{z}/{x}/{y}.png"],
+            "minzoom": 0,
+            "maxzoom": 18,
+        }
+
+    @app.get("/api/model/dem/tiles/{z}/{x}/{y}.png")
+    def model_dem_tile(z: int, x: int, y: int) -> Response:
+        upstream = (
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
+            f"{z}/{x}/{y}.png"
+        )
+        response = httpx.get(
+            upstream,
+            params={
+                "url": settings.model_dem_url,
+                "bidx": 1,
+                "rescale": "-36,100",
+                "colormap_name": "terrain",
+            },
+            timeout=20,
+        )
+        if response.status_code == 404:
+            return Response(
+                content=TRANSPARENT_TILE,
+                media_type="image/png",
+                headers={"cache-control": "public, max-age=86400"},
+            )
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502, detail="DEM tile renderer failed"
+            )
+        return Response(
+            content=response.content,
+            media_type="image/png",
+            headers={"cache-control": "public, max-age=86400"},
+        )
 
     @app.post("/api/scenarios", status_code=status.HTTP_201_CREATED)
     def create_scenario(
@@ -149,7 +219,7 @@ def create_app(
         session: Session = Depends(session_dependency),
     ) -> dict:
         payload = request.snapshot()
-        validation = validate_scenario(payload, catalog)
+        validation = validate_scenario(payload, area_catalog)
         if not validation["valid"]:
             raise HTTPException(status_code=422, detail=validation)
         scenario = save_scenario(session, request)
@@ -184,7 +254,7 @@ def create_app(
         scenario = get_scenario(session, scenario_id)
         if scenario is None:
             raise HTTPException(status_code=404, detail="scenario not found")
-        validation = validate_scenario(request.snapshot(), catalog)
+        validation = validate_scenario(request.snapshot(), area_catalog)
         if not validation["valid"]:
             raise HTTPException(status_code=422, detail=validation)
         scenario = save_scenario(session, request, scenario)
@@ -199,7 +269,7 @@ def create_app(
         scenario = get_scenario(session, scenario_id)
         if scenario is None:
             raise HTTPException(status_code=404, detail="scenario not found")
-        return validate_scenario(scenario_snapshot(scenario), catalog)
+        return validate_scenario(scenario_snapshot(scenario), area_catalog)
 
     @app.post(
         "/api/scenarios/{scenario_id}/jobs",
@@ -214,14 +284,17 @@ def create_app(
         if scenario is None:
             raise HTTPException(status_code=404, detail="scenario not found")
         snapshot = scenario_snapshot(scenario)
-        validation = validate_scenario(snapshot, catalog)
+        snapshot["simulationArea"] = area_catalog.snapshot(
+            scenario.simulation_area_hash
+        )
+        validation = validate_scenario(snapshot, area_catalog)
         if not validation["valid"]:
             raise HTTPException(status_code=422, detail=validation)
         if validation["warnings"] and not request.confirm_warnings:
             raise HTTPException(status_code=409, detail=validation)
         job = SimulationJob(
             scenario_id=scenario.id,
-            fixed_model_version_id=catalog.version_id,
+            simulation_area_hash=scenario.simulation_area_hash,
             status="QUEUED",
             scenario_snapshot=snapshot,
             frame_count=validation["summary"]["frameCount"],
@@ -462,7 +535,7 @@ def job_response(job: SimulationJob) -> dict:
     return {
         "id": job.id,
         "scenarioId": job.scenario_id,
-        "fixedModelVersion": job.fixed_model_version_id,
+        "simulationAreaId": job.simulation_area_hash,
         "scenarioSnapshot": job.scenario_snapshot,
         "status": job.status,
         "currentFrame": job.current_frame,

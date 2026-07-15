@@ -30,24 +30,13 @@ def uuid_string() -> str:
     return str(uuid.uuid4())
 
 
-class FixedModelVersion(Base):
-    __tablename__ = "fixed_model_versions"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    name: Mapped[str] = mapped_column(String(200))
-    crs: Mapped[str] = mapped_column(String(32))
-    mesh_sha256: Mapped[str] = mapped_column(String(64), unique=True)
-    metadata_json: Mapped[dict] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
-                                                 default=utcnow)
-
-
 class Scenario(Base):
     __tablename__ = "scenarios"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True,
                                     default=uuid_string)
     name: Mapped[str] = mapped_column(String(200))
+    simulation_area_hash: Mapped[str] = mapped_column(String(64))
     duration_seconds: Mapped[float] = mapped_column(Float)
     yieldstep_seconds: Mapped[float] = mapped_column(Float)
     friction_scenario: Mapped[str] = mapped_column(String(16))
@@ -110,9 +99,7 @@ class SimulationJob(Base):
                                     default=uuid_string)
     scenario_id: Mapped[str] = mapped_column(String(36),
                                              ForeignKey("scenarios.id"))
-    fixed_model_version_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("fixed_model_versions.id")
-    )
+    simulation_area_hash: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="QUEUED")
     scenario_snapshot: Mapped[dict] = mapped_column(JSON)
     current_frame: Mapped[int] = mapped_column(Integer, default=-1)

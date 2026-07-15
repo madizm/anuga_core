@@ -32,19 +32,27 @@ function NumericField({
   )
 }
 
-export function InletPanel({ frictionScenario }: { frictionScenario: string }) {
+export function InletPanel({ areaHash, frictionScenario }: {
+  areaHash: string | null
+  frictionScenario: string
+}) {
   const { inlets, activeId, addInlet, removeInlet, setActive, updateInlet, selectionError } = useInletStore()
   const active = inlets.find((item) => item.id === activeId)
 
   return (
-    <aside className="right-panel panel">
+    <aside className={areaHash ? 'right-panel panel' : 'right-panel panel area-unavailable'}>
       <div className="panel-heading">
         <div>
           <span className="eyebrow">INFLOW CONTROL</span>
           <h2>入口与参数</h2>
         </div>
-        <button className="icon-button add" onClick={addInlet} aria-label="新建入口">＋</button>
+        <button className="icon-button add" disabled={!areaHash} onClick={addInlet} aria-label="新建入口">＋</button>
       </div>
+
+      {!areaHash && <div className="area-required">
+        <b>步骤 01 未完成</b>
+        <span>锁定模拟区域后才可选择入口网格</span>
+      </div>}
 
       <div className="inlet-tabs" role="tablist" aria-label="入口列表">
         {inlets.map((inlet, index) => (
@@ -67,6 +75,7 @@ export function InletPanel({ frictionScenario }: { frictionScenario: string }) {
         <InletEditor
           inlet={active}
           canDelete={inlets.length > 1}
+          areaHash={areaHash}
           frictionScenario={frictionScenario}
           onUpdate={(patch) => updateInlet(active.id, patch)}
           onDelete={() => removeInlet(active.id)}
@@ -82,12 +91,14 @@ export function InletPanel({ frictionScenario }: { frictionScenario: string }) {
 function InletEditor({
   inlet,
   canDelete,
+  areaHash,
   frictionScenario,
   onUpdate,
   onDelete,
 }: {
   inlet: Inlet
   canDelete: boolean
+  areaHash: string | null
   frictionScenario: string
   onUpdate: (patch: Partial<Inlet>) => void
   onDelete: () => void
@@ -95,9 +106,11 @@ function InletEditor({
   const connected = isFourNeighbourConnected(inlet.cellIds)
   const area = inlet.cellIds.length * 900
   const stats = useQuery({
-    queryKey: ['selection-stats', inlet.cellIds, frictionScenario],
-    queryFn: () => api.resolveSelection(inlet.cellIds, frictionScenario),
-    enabled: connected,
+    queryKey: ['selection-stats', areaHash, inlet.cellIds, frictionScenario],
+    queryFn: () => api.resolveSelection(
+      areaHash!, inlet.cellIds, frictionScenario,
+    ),
+    enabled: Boolean(areaHash) && connected,
   })
   return (
     <div className="inlet-editor">

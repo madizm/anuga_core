@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+import numpy as np
 
 from celery import Celery
 from redis import Redis
@@ -18,11 +19,12 @@ from apps.api.models import (
     SimulationJob,
     utcnow,
 )
-from bayuquan.raster import CogWriter, FrameRasterizer
-from bayuquan.raster import RasterInterpolationMapping
-from bayuquan.simulation.fixed_model import FixedModelPaths
-from bayuquan.simulation.grid_mapping import GridTriangleMapping
-from bayuquan.simulation.runner import run_simulation
+from bayuquan.raster import CogWriter, LocalFrameRasterizer
+from bayuquan.simulation.area_catalog import (
+    SimulationAreaCatalog,
+    model_input_version,
+)
+from bayuquan.simulation.local_runner import run_local_simulation
 from bayuquan.simulation.spec import ScenarioSpec
 
 from .storage import ObjectStorage
@@ -43,7 +45,22 @@ class JobRunner:
         self.database = Database(settings.database_url)
         self.storage = ObjectStorage(settings)
         self.redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        self.paths = FixedModelPaths.under(settings.project_root)
+        self.model_inputs_path = settings.model_inputs_path or (
+            settings.project_root / "OUTPUT/model/web/model_inputs_cog.tif"
+        )
+        self.area_catalog = SimulationAreaCatalog(
+            settings.model_dem_path or (
+                settings.project_root / "OUTPUT/model/web/elevation_cog.tif"
+            ),
+            settings.simulation_area_cache or (
+                settings.project_root / "simulation_areas"
+            ),
+            dataset_version=model_input_version(
+                self.model_inputs_path, settings.model_dataset_version
+            ),
+            model_inputs_path=self.model_inputs_path,
+            max_cells=settings.max_simulation_area_cells,
+        )
 
     def run(self, job_id: str) -> None:
         with self.database.session_factory.begin() as session:
@@ -69,15 +86,20 @@ class JobRunner:
 
         try:
             self.storage.ensure_bucket()
-            mapping = GridTriangleMapping.load(self.paths.mapping)
+            area_hash = snapshot["simulationAreaId"]
+            area = self.area_catalog.area(area_hash)
+            mapping = self.area_catalog.mapping(area_hash)
             spec = ScenarioSpec.from_dict(snapshot, mapping)
-            raster_mapping = RasterInterpolationMapping.load(
-                self.paths.raster_mapping,
-                mesh_path=self.paths.mesh,
-                triangle_count=len(mapping.triangle_cell_index),
+            with np.load(
+                self.area_catalog.mesh_path(area_hash), allow_pickle=False
+            ) as mesh:
+                triangle_cells = mesh["triangle_cell_index"]
+            rasterizer = LocalFrameRasterizer(
+                area,
+                triangle_cells,
+                np.full(len(triangle_cells), 450.0),
             )
-            rasterizer = FrameRasterizer(raster_mapping)
-            writer = CogWriter(raster_mapping.grid)
+            writer = CogWriter(rasterizer.grid)
 
             prefix = f"bayuquan-{job_id}-"
             with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
@@ -127,9 +149,11 @@ class JobRunner:
                         "wetAreaM2": frame.wet_area_m2,
                     })
 
-                report = run_simulation(
+                report = run_local_simulation(
                     spec,
-                    self.paths,
+                    area_hash,
+                    self.area_catalog,
+                    self.model_inputs_path,
                     output,
                     frame_sink=publish_frame,
                 )

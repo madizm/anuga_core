@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from bayuquan.simulation.spec import ScenarioSpec, ScenarioValidationError
 
-from ..fixed_model.catalog import FixedModelCatalog
+from bayuquan.simulation.area_catalog import SimulationAreaCatalog
 from ..models import Scenario, ScenarioInlet, ScenarioInletCell
 from ..schemas import ScenarioRequest
 
@@ -23,14 +23,26 @@ MAX_FRAMES = 2000
 INITIAL_LEVEL_WARNING_M = 20.0
 
 
-def validate_scenario(payload: dict, catalog: FixedModelCatalog) -> dict:
+def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
     errors = []
     warnings = []
     spec = None
+    area = None
+    area_hash = payload.get("simulationAreaId")
     try:
-        spec = ScenarioSpec.from_dict(payload, catalog.mapping)
-    except ScenarioValidationError as error:
+        if not isinstance(area_hash, str):
+            raise ScenarioValidationError("simulationAreaId is required")
+        area = catalog.area(area_hash)
+        spec = ScenarioSpec.from_dict(payload, catalog.mapping(area_hash))
+    except (KeyError, ScenarioValidationError) as error:
         errors.append({"code": "INVALID_SCENARIO", "message": str(error)})
+
+    cell_properties = {}
+    if area is not None:
+        cell_properties = {
+            feature["properties"]["cell_id"]: feature["properties"]
+            for feature in catalog.grid(area_hash)["features"]
+        }
 
     enabled = [item for item in payload.get("inlets", [])
                if item.get("enabled", True)]
@@ -49,9 +61,9 @@ def validate_scenario(payload: dict, catalog: FixedModelCatalog) -> dict:
         level = inlet.get("initialWaterLevelM")
         if level is not None:
             elevations = [
-                float(catalog.cells[cell]["elevation_m"])
+                float(cell_properties[cell]["elevation_m"])
                 for cell in inlet.get("cellIds", [])
-                if cell in catalog.cells
+                if cell in cell_properties
             ]
             excessive_level = (
                 elevations
@@ -93,7 +105,8 @@ def validate_scenario(payload: dict, catalog: FixedModelCatalog) -> dict:
             spec.total_discharge_m3s * spec.duration_seconds
         ),
         "frameCount": spec.frame_count,
-        "fixedModelVersion": catalog.version_id,
+        "simulationAreaId": area_hash,
+        "datasetVersion": area.dataset_version,
         "boundaryCondition": "transmissive",
     }
     return {
@@ -123,6 +136,7 @@ def save_scenario(
         scenario = Scenario()
         session.add(scenario)
     scenario.name = request.name
+    scenario.simulation_area_hash = request.simulation_area_id
     scenario.duration_seconds = request.duration_seconds
     scenario.yieldstep_seconds = request.yieldstep_seconds
     scenario.friction_scenario = request.friction_scenario
@@ -177,6 +191,7 @@ def scenario_snapshot(scenario: Scenario) -> dict:
         inlets.append(item)
     return {
         "name": scenario.name,
+        "simulationAreaId": scenario.simulation_area_hash,
         "durationSeconds": scenario.duration_seconds,
         "yieldstepSeconds": scenario.yieldstep_seconds,
         "frictionScenario": scenario.friction_scenario,
