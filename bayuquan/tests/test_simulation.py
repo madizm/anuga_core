@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import hashlib
+
+import numpy as np
+import pytest
+
+from bayuquan.simulation.grid_mapping import (
+    GridMappingError,
+    GridTriangleMapping,
+)
+from bayuquan.simulation.spec import ScenarioSpec, ScenarioValidationError
+
+
+def mapping():
+    return GridTriangleMapping(
+        triangle_cell_index=np.array([0, 1, 1, 2, 4], dtype=np.int32),
+        triangle_area_m2=np.array([400, 300, 350, 450, 200], dtype=float),
+        nrows=2,
+        ncols=3,
+        cellsize=30,
+        xllcorner=100,
+        yllcorner=200,
+        mesh_sha256="unused",
+    )
+
+
+def inlet(inlet_id="a", cells=None, **overrides):
+    result = {
+        "id": inlet_id,
+        "name": inlet_id,
+        "enabled": True,
+        "cellIds": cells or ["r0000-c0000", "r0000-c0001"],
+        "dischargeM3s": 10,
+        "velocityMode": "zero",
+        "initialWaterLevelM": None,
+    }
+    result.update(overrides)
+    return result
+
+
+def scenario(*inlets):
+    return {
+        "name": "test",
+        "durationSeconds": 60,
+        "yieldstepSeconds": 10,
+        "frictionScenario": "middle",
+        "inlets": list(inlets),
+    }
+
+
+def test_resolve_returns_normalized_cells_and_all_mapped_triangles():
+    selection = mapping().resolve(["r0000-c0001", "r0000-c0000"])
+
+    assert selection.cell_ids == ("r0000-c0000", "r0000-c0001")
+    np.testing.assert_array_equal(selection.triangle_ids, [0, 1, 2])
+    assert selection.geometric_area_m2 == 1800
+    assert selection.effective_triangle_area_m2 == 1050
+    assert not selection.triangle_ids.flags.writeable
+
+
+@pytest.mark.parametrize(
+    "cells, message",
+    [
+        ([], "at least one"),
+        (["r0000-c0000", "r0000-c0000"], "duplicate"),
+        (["r0000-c0000", "r0000-c0002"], "connected"),
+        (["r0001-c0000"], "not selectable"),
+        (["bad"], "invalid cell ID"),
+    ],
+)
+def test_resolve_rejects_invalid_selections(cells, message):
+    with pytest.raises(GridMappingError, match=message):
+        mapping().resolve(cells)
+
+
+def test_scenario_normalizes_bearing_velocity_and_ignores_disabled_inlets():
+    data = scenario(
+        inlet(
+            velocityMode="bearing",
+            speedMps=2,
+            bearingDegrees=90,
+        ),
+        inlet("disabled", enabled=False, cells=["r0000-c0002"]),
+    )
+
+    spec = ScenarioSpec.from_dict(data, mapping())
+
+    assert len(spec.inlets) == 1
+    assert spec.inlets[0].velocity_u_mps == pytest.approx(2)
+    assert spec.inlets[0].velocity_v_mps == pytest.approx(0, abs=1e-12)
+    assert spec.frame_count == 7
+    assert spec.total_discharge_m3s == 10
+
+
+def test_scenario_rejects_overlapping_enabled_inlets():
+    data = scenario(
+        inlet("west"),
+        inlet("east", ["r0000-c0001", "r0000-c0002"]),
+    )
+
+    with pytest.raises(ScenarioValidationError, match="overlap.*r0000-c0001"):
+        ScenarioSpec.from_dict(data, mapping())
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        ({"durationSeconds": 0}, "durationSeconds"),
+        ({"yieldstepSeconds": 61}, "yieldstepSeconds"),
+        ({"frictionScenario": "extreme"}, "frictionScenario"),
+        ({"inlets": []}, "at least one"),
+    ],
+)
+def test_scenario_rejects_invalid_top_level_values(change, message):
+    data = scenario(inlet())
+    data.update(change)
+    with pytest.raises(ScenarioValidationError, match=message):
+        ScenarioSpec.from_dict(data, mapping())
+
+
+def test_validate_mesh_checks_hash_and_triangle_count(tmp_path):
+    mesh = tmp_path / "mesh.msh"
+    mesh.write_bytes(b"fixed mesh")
+    model = mapping()
+    model.mesh_sha256 = hashlib.sha256(mesh.read_bytes()).hexdigest()
+
+    model.validate_mesh(mesh, 5)
+    with pytest.raises(GridMappingError, match="triangle count"):
+        model.validate_mesh(mesh, 4)
+    mesh.write_bytes(b"changed")
+    with pytest.raises(GridMappingError, match="SHA-256"):
+        model.validate_mesh(mesh, 5)

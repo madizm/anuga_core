@@ -1,0 +1,1 @@
+"""Bayuquan FastAPI service."""

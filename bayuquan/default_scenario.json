@@ -1,0 +1,22 @@
+{
+  "name": "鲅鱼圈固定网格恒定入流基线",
+  "durationSeconds": 21600,
+  "yieldstepSeconds": 300,
+  "frictionScenario": "middle",
+  "inlets": [
+    {
+      "id": "inlet-001",
+      "name": "北侧入口",
+      "enabled": true,
+      "cellIds": [
+        "r0000-c0000",
+        "r0000-c0001",
+        "r0001-c0001"
+      ],
+      "dischargeM3s": 100.0,
+      "velocityMode": "zero",
+      "initialWaterLevelM": null,
+      "displayColor": "#00D8FF"
+    }
+  ]
+}

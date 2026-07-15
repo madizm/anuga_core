@@ -64,6 +64,18 @@ data = [
     'openpyxl',
     'tomli; python_version < "3.11"',
 ]
+web-gis = [
+    'fastapi>=0.115',
+    'httpx>=0.27',
+    'uvicorn[standard]>=0.30',
+    'sqlalchemy>=2.0',
+    'alembic>=1.14',
+    'psycopg[binary]>=3.2',
+    'celery[redis]>=5.4',
+    'redis>=5.0',
+    'rasterio>=1.4',
+    'boto3>=1.35',
+]
 dev = [
     'pytest',
     'psutil',

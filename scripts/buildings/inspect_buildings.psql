@@ -1,0 +1,78 @@
+\pset pager off
+
+SELECT f_table_schema,
+       f_table_name,
+       f_geometry_column,
+       type AS declared_geometry_type,
+       srid AS declared_srid
+FROM geometry_columns
+WHERE f_table_schema = 'res'
+  AND f_table_name IN (
+      'rural_non_residential_building',
+      'rural_residential_building_collective',
+      'rural_residential_building_independent',
+      'urban_non_residential_building',
+      'urban_residential_building'
+  )
+ORDER BY f_table_name;
+
+WITH source_buildings AS (
+    SELECT 'rural_non_residential'::text AS source_code, id::text AS source_id, geo_parse
+    FROM res.rural_non_residential_building
+    UNION ALL
+    SELECT 'rural_residential_collective', id::text, geo_parse
+    FROM res.rural_residential_building_collective
+    UNION ALL
+    SELECT 'rural_residential_independent', id::text, geo_parse
+    FROM res.rural_residential_building_independent
+    UNION ALL
+    SELECT 'urban_non_residential', id::text, geo_parse
+    FROM res.urban_non_residential_building
+    UNION ALL
+    SELECT 'urban_residential', id::text, geo_parse
+    FROM res.urban_residential_building
+)
+SELECT source_code,
+       count(*) AS source_rows,
+       count(geo_parse) AS geometries,
+       count(*) FILTER (WHERE source_id IS NULL) AS null_ids,
+       count(DISTINCT source_id) AS distinct_ids,
+       count(*) FILTER (WHERE geo_parse IS NOT NULL AND ST_IsEmpty(geo_parse)) AS empty_geometries,
+       count(*) FILTER (WHERE geo_parse IS NOT NULL AND NOT ST_IsValid(geo_parse)) AS invalid_geometries,
+       string_agg(DISTINCT GeometryType(geo_parse), ', ' ORDER BY GeometryType(geo_parse)) AS geometry_types,
+       string_agg(DISTINCT ST_SRID(geo_parse)::text, ', ' ORDER BY ST_SRID(geo_parse)::text) AS stored_srids,
+       ST_Extent(geo_parse) AS extent
+FROM source_buildings
+GROUP BY source_code
+ORDER BY source_code;
+
+WITH source_buildings AS (
+    SELECT 'rural_non_residential'::text AS source_code, geo_parse
+    FROM res.rural_non_residential_building
+    UNION ALL
+    SELECT 'rural_residential_collective', geo_parse
+    FROM res.rural_residential_building_collective
+    UNION ALL
+    SELECT 'rural_residential_independent', geo_parse
+    FROM res.rural_residential_building_independent
+    UNION ALL
+    SELECT 'urban_non_residential', geo_parse
+    FROM res.urban_non_residential_building
+    UNION ALL
+    SELECT 'urban_residential', geo_parse
+    FROM res.urban_residential_building
+),
+duplicate_groups AS (
+    SELECT md5(ST_AsBinary(ST_Force2D(geo_parse))) AS geometry_hash,
+           count(*) AS copies,
+           count(DISTINCT source_code) AS source_count
+    FROM source_buildings
+    WHERE geo_parse IS NOT NULL
+      AND NOT ST_IsEmpty(geo_parse)
+    GROUP BY md5(ST_AsBinary(ST_Force2D(geo_parse)))
+    HAVING count(*) > 1
+)
+SELECT count(*) AS duplicate_geometry_groups,
+       coalesce(sum(copies - 1), 0) AS additional_duplicate_rows,
+       count(*) FILTER (WHERE source_count > 1) AS cross_source_duplicate_groups
+FROM duplicate_groups;

@@ -1,0 +1,1 @@
+"""Bayuquan Celery simulation worker."""

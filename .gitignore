@@ -226,3 +226,9 @@ doc/source/generated
 anuga/__config__.py
 anuga/version.py
 benchmarks/results/
+
+node_modules/
+*.tsbuildinfo
+/apps/web/vite.config.js
+/apps/web/vite.config.d.ts
+/uv.lock

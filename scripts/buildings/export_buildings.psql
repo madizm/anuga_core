@@ -1,0 +1,58 @@
+WITH source_buildings AS (
+    SELECT 'rural_non_residential'::text AS source_code,
+           id::text AS source_id,
+           geo_parse
+    FROM res.rural_non_residential_building
+
+    UNION ALL
+
+    SELECT 'rural_residential_collective', id::text, geo_parse
+    FROM res.rural_residential_building_collective
+
+    UNION ALL
+
+    SELECT 'rural_residential_independent', id::text, geo_parse
+    FROM res.rural_residential_building_independent
+
+    UNION ALL
+
+    SELECT 'urban_non_residential', id::text, geo_parse
+    FROM res.urban_non_residential_building
+
+    UNION ALL
+
+    SELECT 'urban_residential', id::text, geo_parse
+    FROM res.urban_residential_building
+),
+cleaned AS (
+    SELECT source_code,
+           source_id,
+           ST_Multi(
+               ST_CollectionExtract(
+                   CASE
+                       WHEN ST_IsValid(geo_parse) THEN ST_Force2D(geo_parse)
+                       ELSE ST_MakeValid(ST_Force2D(geo_parse))
+                   END,
+                   3
+               )
+           ) AS geometry
+    FROM source_buildings
+    WHERE geo_parse IS NOT NULL
+      AND NOT ST_IsEmpty(geo_parse)
+),
+identified AS (
+    SELECT source_code,
+           source_id,
+           row_number() OVER (
+               PARTITION BY source_code, source_id
+               ORDER BY encode(ST_AsBinary(geometry), 'hex')
+           ) AS duplicate_number,
+           geometry
+    FROM cleaned
+    WHERE NOT ST_IsEmpty(geometry)
+)
+SELECT concat_ws(':', source_code, source_id, duplicate_number) AS building_id,
+       source_code,
+       source_id,
+       ST_Transform(ST_SetSRID(geometry, 4326), 32651) AS geometry
+FROM identified
