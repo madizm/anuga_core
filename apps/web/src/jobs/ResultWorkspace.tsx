@@ -65,6 +65,7 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
         {current ? (
           <ResultMap
             frame={current}
+            bounds={job?.simulationAreaBounds}
             quantity={quantity}
             triple={triple}
             onPoint={(longitude, latitude) => pointMutation.mutate({ longitude, latitude })}

@@ -108,6 +108,9 @@ class FakeAreaCatalog:
         return {
             "areaHash": area_hash,
             "datasetVersion": "dataset-v1",
+            "crs": "OGC:CRS84",
+            "transform": [0.01, 0, 122, 0, -0.01, 41],
+            "window": [10, 12, 20, 23],
             "meshRule": "square-sw-ne-v1",
             "cellIds": ["r0000-c0000", "r0000-c0001"],
         }
@@ -277,9 +280,13 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
 
 def test_simulation_area_rejection_is_returned_as_validation_error(tmp_path):
     test_client, _ = client(tmp_path)
-    test_client.app.state.area_catalog.resolve = lambda geometry: (_ for _ in ()).throw(
-        ValueError("simulation area cells must be four-neighbour connected")
-    )
+
+    def reject_area(_geometry):
+        raise ValueError(
+            "simulation area cells must be four-neighbour connected"
+        )
+
+    test_client.app.state.area_catalog.resolve = reject_area
 
     with test_client:
         response = test_client.post(
@@ -378,12 +385,18 @@ def test_job_keeps_immutable_snapshot_and_is_dispatched(tmp_path):
     assert dispatched == [job.json()["id"]]
     assert stored_job.json()["scenarioSnapshot"]["name"] == "baseline"
     assert stored_job.json()["simulationAreaId"] == "b" * 64
+    assert stored_job.json()["simulationAreaBounds"] == [
+        122.2, 40.88, 122.23, 40.9,
+    ]
     assert stored_job.json()["scenarioSnapshot"]["simulationAreaId"] == (
         "b" * 64
     )
     assert stored_job.json()["scenarioSnapshot"]["simulationArea"] == {
         "areaHash": "b" * 64,
         "datasetVersion": "dataset-v1",
+        "crs": "OGC:CRS84",
+        "transform": [0.01, 0, 122, 0, -0.01, 41],
+        "window": [10, 12, 20, 23],
         "meshRule": "square-sw-ne-v1",
         "cellIds": ["r0000-c0000", "r0000-c0001"],
     }

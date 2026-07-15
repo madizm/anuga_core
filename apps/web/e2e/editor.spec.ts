@@ -106,3 +106,74 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await expect(page.locator('.result-map-canvas')).toHaveCount(3)
   await expect(page.getByText('流速 SPEED')).toBeVisible()
 })
+
+test('job deep link fits result tiles to its simulation area', async ({ page }) => {
+  const jobId = 'job-outside-default-view'
+  const areaBounds: [number, number, number, number] = [
+    122.1200, 40.2317, 122.1393, 40.2444,
+  ]
+  const job = {
+    id: jobId,
+    scenarioId: 'scenario-a',
+    simulationAreaId: 'a'.repeat(64),
+    simulationAreaBounds: areaBounds,
+    scenarioSnapshot: { durationSeconds: 300 },
+    status: 'COMPLETED',
+    currentFrame: 0,
+    frameCount: 1,
+    simulationTimeSeconds: 300,
+    maximumDepthM: 1,
+    appliedVolumeM3: 1,
+    finalWaterVolumeM3: 1,
+    errorCode: null,
+    errorMessage: null,
+    createdAt: '2026-01-01T00:00:00Z',
+    startedAt: '2026-01-01T00:00:00Z',
+    completedAt: '2026-01-01T00:00:01Z',
+  }
+  const frame = {
+    jobId,
+    frameIndex: 0,
+    timeSeconds: 300,
+    maximumDepthM: 1,
+    maximumSpeedMps: 0,
+    wetAreaM2: 900,
+    tilejson: {
+      depth: `/api/jobs/${jobId}/frames/0/tilejson/depth`,
+      stage: `/api/jobs/${jobId}/frames/0/tilejson/stage`,
+      speed: `/api/jobs/${jobId}/frames/0/tilejson/speed`,
+    },
+    createdAt: '2026-01-01T00:00:01Z',
+  }
+  const requestedTiles: string[] = []
+  await page.route(`**/api/jobs/${jobId}`, (route) => route.fulfill({ json: job }))
+  await page.route(`**/api/jobs/${jobId}/frames`, (route) => route.fulfill({ json: [frame] }))
+  await page.route(`**/api/jobs/${jobId}/events`, (route) => route.fulfill({
+    contentType: 'text/event-stream',
+    body: `event: job.completed\ndata: ${JSON.stringify(job)}\n\n`,
+  }))
+  await page.route(`**/api/jobs/${jobId}/frames/0/tiles/**`, (route) => {
+    requestedTiles.push(route.request().url())
+    return route.fulfill({
+      contentType: 'image/png',
+      body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X4W1WQAAAABJRU5ErkJggg==', 'base64'),
+    })
+  })
+
+  await page.goto(`/?job=${jobId}`)
+  await expect(page.getByText('已完成')).toBeVisible()
+  await expect.poll(() => requestedTiles.length).toBeGreaterThan(0)
+  await expect.poll(() => requestedTiles.some((url) => {
+    const match = url.match(/\/tiles\/depth\/(\d+)\/(\d+)\/(\d+)\.png/)
+    if (!match) return false
+    const [, zText, xText, yText] = match
+    const z = Number(zText)
+    const x = Number(xText)
+    const y = Number(yText)
+    const scale = 2 ** z
+    const longitude = (x + 0.5) / scale * 360 - 180
+    const latitude = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 0.5) / scale))) * 180 / Math.PI
+    return longitude >= areaBounds[0] && longitude <= areaBounds[2]
+      && latitude >= areaBounds[1] && latitude <= areaBounds[3]
+  })).toBe(true)
+})

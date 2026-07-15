@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import maplibregl, { type Map, type RasterTileSource } from 'maplibre-gl'
+import maplibregl, { type Map, type MapOptions, type RasterTileSource } from 'maplibre-gl'
 import type { ResultQuantity, SimulationFrame } from '../api/types'
 
 const QUANTITIES: ResultQuantity[] = ['depth', 'stage', 'speed']
@@ -11,6 +11,7 @@ const LABELS: Record<ResultQuantity, string> = {
 
 interface ResultMapProps {
   frame: SimulationFrame
+  bounds?: [number, number, number, number]
   quantity: ResultQuantity
   triple: boolean
   onPoint: (longitude: number, latitude: number) => void
@@ -21,7 +22,7 @@ interface BufferState {
   urls: [string | null, string | null]
 }
 
-export function ResultMap({ frame, quantity, triple, onPoint }: ResultMapProps) {
+export function ResultMap({ frame, bounds, quantity, triple, onPoint }: ResultMapProps) {
   const containers = useRef<(HTMLDivElement | null)[]>([])
   const onPointRef = useRef(onPoint)
   onPointRef.current = onPoint
@@ -34,7 +35,7 @@ export function ResultMap({ frame, quantity, triple, onPoint }: ResultMapProps) 
     maps.current = quantities.map((_, index) => {
       const container = containers.current[index]
       if (!container) throw new Error('result map container is unavailable')
-      const map = createMap(container)
+      const map = createMap(container, bounds)
       map.on('move', () => {
         if (synchronizing || maps.current.length < 2) return
         synchronizing = true
@@ -53,9 +54,9 @@ export function ResultMap({ frame, quantity, triple, onPoint }: ResultMapProps) 
       maps.current = []
       buffers.current = []
     }
-  // Recreate only when switching between one and three maps.
+  // Recreate when the layout changes or asynchronously loaded bounds arrive.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [triple])
+  }, [triple, bounds])
 
   useEffect(() => {
     maps.current.forEach((map, index) => {
@@ -86,8 +87,11 @@ function legendTicks(quantity: ResultQuantity) {
   return ['0', '1', '2', '3+ m/s']
 }
 
-function createMap(container: HTMLDivElement): Map {
-  const map = new maplibregl.Map({
+function createMap(
+  container: HTMLDivElement,
+  bounds?: [number, number, number, number],
+): Map {
+  const options: MapOptions = {
     container,
     center: [122.188, 40.301],
     zoom: 13.2,
@@ -109,7 +113,12 @@ function createMap(container: HTMLDivElement): Map {
         { id: 'base', type: 'raster', source: 'base', paint: { 'raster-saturation': -1, 'raster-brightness-max': 0.36 } },
       ],
     },
-  })
+  }
+  if (bounds) {
+    options.bounds = [[bounds[0], bounds[1]], [bounds[2], bounds[3]]]
+    options.fitBoundsOptions = { padding: 72, maxZoom: 17 }
+  }
+  const map = new maplibregl.Map(options)
   map.on('error', (event) => {
     if (!event.error?.message.includes('Failed to fetch')) {
       console.error(event.error)

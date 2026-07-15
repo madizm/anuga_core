@@ -13,6 +13,7 @@ from rasterio.io import MemoryFile
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 import httpx
+from pyproj import Transformer
 from bayuquan.simulation.area_catalog import (
     SimulationAreaCatalog,
     model_input_version,
@@ -536,6 +537,9 @@ def job_response(job: SimulationJob) -> dict:
         "id": job.id,
         "scenarioId": job.scenario_id,
         "simulationAreaId": job.simulation_area_hash,
+        "simulationAreaBounds": _simulation_area_bounds(
+            job.scenario_snapshot
+        ),
         "scenarioSnapshot": job.scenario_snapshot,
         "status": job.status,
         "currentFrame": job.current_frame,
@@ -550,6 +554,31 @@ def job_response(job: SimulationJob) -> dict:
         "startedAt": job.started_at,
         "completedAt": job.completed_at,
     }
+
+
+def _simulation_area_bounds(snapshot: dict) -> list[float]:
+    """Return the immutable simulation-area extent in CRS84 coordinates."""
+    area = snapshot["simulationArea"]
+    row_start, row_stop, column_start, column_stop = area["window"]
+    a, b, c, d, e, f = area["transform"]
+    corners = [
+        (column, row)
+        for column in (column_start, column_stop)
+        for row in (row_start, row_stop)
+    ]
+    projected = [
+        (a * column + b * row + c, d * column + e * row + f)
+        for column, row in corners
+    ]
+    transformer = Transformer.from_crs(
+        area["crs"], "OGC:CRS84", always_xy=True
+    )
+    geographic = [transformer.transform(x, y) for x, y in projected]
+    longitudes, latitudes = zip(*geographic)
+    return [
+        min(longitudes), min(latitudes),
+        max(longitudes), max(latitudes),
+    ]
 
 
 def frame_response(frame: SimulationFrame) -> dict:
