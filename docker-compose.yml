@@ -16,6 +16,8 @@ services:
     build: ./apps/web
     ports:
       - "5173:80"
+    volumes:
+      - nginx-tile-cache:/var/cache/nginx/simulation-tiles
     depends_on:
       api:
         condition: service_started
@@ -157,3 +159,4 @@ volumes:
   postgres-data:
   redis-data:
   minio-data:
+  nginx-tile-cache:

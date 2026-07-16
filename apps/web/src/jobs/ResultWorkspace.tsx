@@ -19,23 +19,34 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
   const [playing, setPlaying] = useState(false)
   const [triple, setTriple] = useState(false)
   const [point, setPoint] = useState<FramePointValue | null>(null)
-  const current = frames[Math.min(framePosition, Math.max(frames.length - 1, 0))]
+  const [displayedFrameIndex, setDisplayedFrameIndex] = useState<number | null>(null)
+  const requested = frames[Math.min(framePosition, Math.max(frames.length - 1, 0))]
+  const current = frames.find((frame) => frame.frameIndex === displayedFrameIndex) ?? requested
+
+  useEffect(() => {
+    setDisplayedFrameIndex(null)
+  }, [jobId])
 
   useEffect(() => {
     if (following && frames.length) setFramePosition(frames.length - 1)
   }, [following, frames.length])
 
   useEffect(() => {
-    if (!playing || frames.length < 2) return
-    const timer = window.setInterval(() => {
+    if (
+      !playing
+      || frames.length < 2
+      || !requested
+      || displayedFrameIndex !== requested.frameIndex
+    ) return
+    const timer = window.setTimeout(() => {
       setFramePosition((position) => {
         if (position < frames.length - 1) return position + 1
         setPlaying(false)
         return position
       })
     }, 700)
-    return () => window.clearInterval(timer)
-  }, [frames.length, playing])
+    return () => window.clearTimeout(timer)
+  }, [displayedFrameIndex, frames.length, playing, requested])
 
   const pointMutation = useMutation({
     mutationFn: ({ longitude, latitude }: { longitude: number; latitude: number }) =>
@@ -62,13 +73,14 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
       </header>
 
       <div className="result-map-stage">
-        {current ? (
+        {requested ? (
           <ResultMap
-            frame={current}
+            frame={requested}
             bounds={job?.simulationAreaBounds}
             quantity={quantity}
             triple={triple}
             onPoint={(longitude, latitude) => pointMutation.mutate({ longitude, latitude })}
+            onFrameDisplayed={setDisplayedFrameIndex}
           />
         ) : (
           <div className="first-frame-wait"><i /><span>WAITING FOR FIRST COG</span><strong>等待首帧栅格发布</strong><small>模拟正在准备固定网格与 ANUGA Domain</small></div>
