@@ -1,4 +1,17 @@
 services:
+  simulation-area-permissions:
+    image: alpine:3.22
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /workspace/simulation_areas &&
+        chown -R 1000:1000 /workspace/simulation_areas &&
+        chmod 0755 /workspace/simulation_areas
+    volumes:
+      - ./OUTPUT/simulation_areas:/workspace/simulation_areas
+
   web:
     build: ./apps/web
     ports:
@@ -47,6 +60,8 @@ services:
     depends_on:
       model-assets:
         condition: service_completed_successfully
+      simulation-area-permissions:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -65,6 +80,8 @@ services:
       - ./OUTPUT:/workspace/OUTPUT:ro
       - ./OUTPUT/simulation_areas:/workspace/simulation_areas
     depends_on:
+      simulation-area-permissions:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

@@ -73,11 +73,11 @@ if openmp.found()
   # On macOS, OpenMP is not supported by the Apple clang compiler so using 
   # clang and llvm-openmp provided by conda-forge
  
-  #if host_machine.system() == 'windows'
-  
-  openmp_c_args = ['-O3', '-march=native', '-fopenmp', '-g']
-  # openmp_c_args = ['-O3', '-march=native','-funroll-loops', '-fvectorize', '-Rpass=loop-vectorize', '-Rpass=loop-unroll', '-g'],
-  # openmp_c_args = ['-O3', '-march=native', openmp_flag, '-g'],
+  # Keep extension modules portable across container build and runtime hosts.
+  # Meson's release build type supplies optimisation flags, while the OpenMP
+  # dependency supplies compiler-specific OpenMP flags. In particular,
+  # -march=native is unsafe under cross-architecture container emulation.
+  openmp_c_args = []
 
   openmp_deps = dependencies + [openmp]
 
