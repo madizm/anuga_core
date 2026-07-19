@@ -231,6 +231,7 @@ node_modules/
 *.tsbuildinfo
 /apps/web/vite.config.js
 /apps/web/vite.config.d.ts
+/apps/web/.vite/
 /uv.lock
 /apps/web/test-results/
 /apps/web/playwright-report/
