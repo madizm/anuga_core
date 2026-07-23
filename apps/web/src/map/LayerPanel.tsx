@@ -60,7 +60,7 @@ export function LayerPanel({ frictionScenario, areaReady, areaCellCount }: {
 
       <section className="tool-section layer-list">
         <h3>模型图层</h3>
-        <LayerRow label="深色底图" detail="OSM · 灰阶" checked={layers.base} onChange={(visible) => layers.setLayer('base', visible)} swatch="base" />
+        <LayerRow label="影像底图" detail="星图地球 · 影像" checked={layers.base} onChange={(visible) => layers.setLayer('base', visible)} swatch="base" />
         <LayerRow label="DEM 高程" detail="30 m · terrain" checked={layers.dem} onChange={(visible) => layers.setLayer('dem', visible)} swatch="dem" />
         <LayerRow label="30 m 局部网格" detail={areaReady ? `${areaCellCount.toLocaleString()} cells` : '选择区域后生成'} checked={layers.grid} disabled={!areaReady} onChange={(visible) => layers.setLayer('grid', visible)} swatch="grid" />
         <LayerRow label="建筑覆盖率" detail="0–100% · 局部区域" checked={layers.buildings} disabled={!areaReady} onChange={(visible) => layers.setLayer('buildings', visible)} swatch="building" />

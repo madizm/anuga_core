@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import maplibregl, { type Map, type MapOptions } from 'maplibre-gl'
 import type { ResultQuantity, SimulationFrame } from '../api/types'
+import { BASE_MAP_ATTRIBUTION, BASE_MAP_TILE_URL } from '../map/baseMap'
 import {
   createBufferState,
   installBufferedFrame,
@@ -114,14 +115,14 @@ function createMap(
       sources: {
         base: {
           type: 'raster',
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tiles: [BASE_MAP_TILE_URL],
           tileSize: 256,
-          attribution: '© OpenStreetMap contributors',
+          attribution: BASE_MAP_ATTRIBUTION,
         },
       },
       layers: [
         { id: 'background', type: 'background', paint: { 'background-color': '#081217' } },
-        { id: 'base', type: 'raster', source: 'base', paint: { 'raster-saturation': -1, 'raster-brightness-max': 0.36 } },
+        { id: 'base', type: 'raster', source: 'base' },
       ],
     },
   }

@@ -5,6 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FrictionScenario } from '../api/types'
 import { useInletStore } from '../inlets/inletStore'
 import { useLayerStore } from './mapStore'
+import { BASE_MAP_ATTRIBUTION, BASE_MAP_TILE_URL } from './baseMap'
 
 interface ModelMapProps {
   grid?: FeatureCollection
@@ -72,9 +73,9 @@ export function ModelMap({
         sources: {
           'base-map': {
             type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tiles: [BASE_MAP_TILE_URL],
             tileSize: 256,
-            attribution: '© OpenStreetMap contributors',
+            attribution: BASE_MAP_ATTRIBUTION,
           },
         },
         layers: [
@@ -83,7 +84,6 @@ export function ModelMap({
             id: 'base-map',
             type: 'raster',
             source: 'base-map',
-            paint: { 'raster-saturation': -1, 'raster-brightness-max': 0.42, 'raster-contrast': 0.28 },
           },
         ],
       },
