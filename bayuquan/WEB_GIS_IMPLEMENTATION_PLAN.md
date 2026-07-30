@@ -78,22 +78,17 @@
 | 数据 | 路径 | 说明 |
 |---|---|---|
 | DEM | `bayuquan/elevation.tif` | EPSG:32651，30 m |
-| 模拟区域及原入口参考 | `bayuquan/model_areas.geojson` | Web 侧使用 WGS84 |
 | 建筑原始数据 | `OUTPUT/buildings/buildings.gpkg` | EPSG:32651 |
 | 建筑覆盖率 | `OUTPUT/model/buildings/building_fraction_30m.tif` | 与 DEM 对齐 |
 | 低糙率 | `OUTPUT/model/buildings/manning_low_30m.tif` | 30 m |
 | 中糙率 | `OUTPUT/model/buildings/manning_middle_30m.tif` | 30 m |
 | 高糙率 | `OUTPUT/model/buildings/manning_high_30m.tif` | 30 m |
 
-### 3.2 固定网格映射
+### 3.2 历史固定网格映射
 
-执行：
+以下产物属于已经退役的固定区域实现，仅作为迁移基线记录。固定区域预处理器及其测试边界数据已经删除，当前系统按用户选择的 Cell Mask 动态生成局部网格。
 
-```bash
-bayuquan/build_grid_triangle_mapping.sh
-```
-
-生成：
+历史产物：
 
 | 文件 | 用途 |
 |---|---|

@@ -5,18 +5,7 @@ immutable, area-hashed local mesh generated from the full 30 m DEM.
 See [`WEB_GIS_IMPLEMENTATION_PLAN.md`](WEB_GIS_IMPLEMENTATION_PLAN.md) for the
 full product plan.
 
-## Legacy fixed-model mapping
-
-```bash
-bayuquan/build_grid_triangle_mapping.sh
-```
-
-This creates the shared mesh, authoritative 30 m cell-to-triangle mapping, and
-pixel-centre barycentric interpolation mapping in `OUTPUT/model/grid_mapping/`.
-Every run verifies the mesh SHA-256, triangle count, raster dimensions,
-resolution, and origin before simulation starts.
-
-### Build the static web DEM manually
+## 1. Build the static web DEM manually
 
 Docker Compose runs this step automatically through `model-assets`. To rebuild
 the COG directly:
