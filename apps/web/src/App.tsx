@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import type { Polygon } from 'geojson'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api/client'
 import type {
   FrictionScenario,
@@ -11,12 +11,15 @@ import type {
 } from './api/types'
 import { InletPanel } from './inlets/InletPanel'
 import { ResultWorkspace } from './jobs/ResultWorkspace'
+import { JobHistory } from './jobs/JobHistory'
+import { ScenarioHistory } from './scenarios/ScenarioHistory'
 import { isFourNeighbourConnected, useInletStore } from './inlets/inletStore'
 import { LayerPanel } from './map/LayerPanel'
 import { ModelMap } from './map/ModelMap'
 
 export default function App() {
   const inlets = useInletStore((state) => state.inlets)
+  const queryClient = useQueryClient()
   const [name, setName] = useState('鲅鱼圈多入口推演')
   const [duration, setDuration] = useState(21_600)
   const [yieldstep, setYieldstep] = useState(300)
@@ -30,8 +33,24 @@ export default function App() {
   const [message, setMessage] = useState<string | null>(null)
   const [area, setArea] = useState<SimulationArea | null>(null)
   const [areaDrawMode, setAreaDrawMode] = useState<'rectangle' | 'polygon' | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [jobsOpen, setJobsOpen] = useState(false)
   const clearAllSelections = useInletStore((state) => state.clearAllSelections)
+  const replaceInlets = useInletStore((state) => state.replaceInlets)
   const model = useQuery({ queryKey: ['model'], queryFn: api.model })
+  const history = useQuery({
+    queryKey: ['scenarios'],
+    queryFn: api.scenarios,
+    enabled: historyOpen,
+  })
+  const jobs = useQuery({
+    queryKey: ['jobs'],
+    queryFn: () => api.jobs(),
+    enabled: jobsOpen,
+    refetchInterval: (query) => query.state.data?.some((job) => (
+      job.status === 'QUEUED' || job.status === 'PREPARING' || job.status === 'RUNNING'
+    )) ? 2_000 : false,
+  })
   const grid = useQuery({
     queryKey: ['simulation-area-grid', area?.areaHash],
     queryFn: () => api.simulationAreaGrid(area!.areaHash),
@@ -82,10 +101,49 @@ export default function App() {
         : await api.createScenario(payload())
       setSaved(result)
       setMessage('场景已保存')
+      void queryClient.invalidateQueries({ queryKey: ['scenarios'] })
       return result
     },
     onError: (error) => setMessage(error.message),
   })
+
+  const loadScenarioMutation = useMutation({
+    mutationFn: async (scenarioId: string) => {
+      const scenario = await api.scenario(scenarioId)
+      const simulationArea = await api.simulationArea(scenario.simulationAreaId)
+      return { scenario, simulationArea }
+    },
+    onSuccess: ({ scenario, simulationArea }) => {
+      setName(scenario.name)
+      setDuration(scenario.durationSeconds)
+      setYieldstep(scenario.yieldstepSeconds)
+      setFriction(scenario.frictionScenario)
+      replaceInlets(scenario.inlets)
+      setArea(simulationArea)
+      setSaved(scenario)
+      setValidation(null)
+      setShowCheck(false)
+      setHistoryOpen(false)
+      setMessage(`已打开场景：${scenario.name}`)
+    },
+    onError: (error) => setMessage(error.message),
+  })
+
+  const currentPayload = payload()
+  const savedPayload = saved && {
+    simulationAreaId: saved.simulationAreaId,
+    name: saved.name,
+    durationSeconds: saved.durationSeconds,
+    yieldstepSeconds: saved.yieldstepSeconds,
+    frictionScenario: saved.frictionScenario,
+    inlets: saved.inlets,
+  }
+  const isDirty = !saved || JSON.stringify(currentPayload) !== JSON.stringify(savedPayload)
+
+  const openHistoricalScenario = (scenarioId: string) => {
+    if (isDirty && (saved || area) && !window.confirm('当前修改尚未保存，打开历史场景将丢失这些修改。是否继续？')) return
+    loadScenarioMutation.mutate(scenarioId)
+  }
 
   const validateAndOpen = async () => {
     try {
@@ -104,6 +162,7 @@ export default function App() {
       return api.createJob(saved.id, validation.warnings.length > 0)
     },
     onSuccess: (job) => {
+      void queryClient.invalidateQueries({ queryKey: ['jobs'] })
       setJobId(job.id)
       window.history.replaceState(null, '', `?job=${job.id}`)
       setShowCheck(false)
@@ -139,9 +198,15 @@ export default function App() {
         <div className="scenario-name">
           <span>SCENARIO</span>
           <input value={name} onChange={(event) => setName(event.target.value)} aria-label="场景名称" />
-          <i className={saved ? 'saved' : ''}>{saved ? '已保存' : '草稿'}</i>
+          <i className={saved && !isDirty ? 'saved' : ''}>{saved ? isDirty ? '有修改' : '已保存' : '草稿'}</i>
         </div>
         <div className="header-actions">
+          <button className="history-trigger" onClick={() => { setJobsOpen(false); setHistoryOpen(true) }}>
+            <span>◫</span> 历史场景
+          </button>
+          <button className="history-trigger jobs-trigger" onClick={() => { setHistoryOpen(false); setJobsOpen(true) }}>
+            <span>▤</span> 运行记录
+          </button>
           <button className="secondary-button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
             {saveMutation.isPending ? '保存中' : '保存场景'}
           </button>
@@ -198,6 +263,32 @@ export default function App() {
       </footer>
 
       {message && <button className="toast" onClick={() => setMessage(null)}>{message}<span>×</span></button>}
+      {jobsOpen && (
+        <JobHistory
+          jobs={jobs.data ?? []}
+          loading={jobs.isLoading || jobs.isFetching}
+          error={jobs.error?.message ?? null}
+          onClose={() => setJobsOpen(false)}
+          onOpen={(id) => {
+            setJobsOpen(false)
+            setJobId(id)
+            window.history.replaceState(null, '', `?job=${id}`)
+          }}
+          onRefresh={() => void jobs.refetch()}
+        />
+      )}
+      {historyOpen && (
+        <ScenarioHistory
+          scenarios={history.data ?? []}
+          currentId={saved && !isDirty ? saved.id : null}
+          loading={history.isLoading || history.isFetching}
+          loadingId={loadScenarioMutation.isPending ? loadScenarioMutation.variables ?? null : null}
+          error={history.error?.message ?? null}
+          onClose={() => setHistoryOpen(false)}
+          onOpen={openHistoricalScenario}
+          onRefresh={() => void history.refetch()}
+        />
+      )}
       {showCheck && validation && (
         <RunCheck
           validation={validation}

@@ -71,6 +71,53 @@ test('editor keeps inlet controls gated until an area is locked', async ({ page 
   await expect(page.getByText('请先选择模拟区域')).toBeVisible()
 })
 
+test('saved scenario can be reopened from history after local edits', async ({ page }) => {
+  await page.goto('/')
+  await drawLocalRectangle(page)
+  const canvas = page.locator('.maplibregl-canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('map canvas has no bounds')
+  await canvas.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } })
+
+  const scenarioName = `历史恢复测试-${Date.now()}`
+  const nameInput = page.getByLabel('场景名称')
+  await nameInput.fill(scenarioName)
+  const savedResponse = page.waitForResponse((response) => (
+    response.url().endsWith('/api/scenarios')
+    && response.request().method() === 'POST'
+    && response.status() === 201
+  ))
+  await page.getByRole('button', { name: '保存场景' }).click()
+  const savedScenario = await (await savedResponse).json()
+  await expect(page.getByText('场景已保存')).toBeVisible()
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+
+  await nameInput.fill('尚未保存的名称')
+  await expect(page.getByText('有修改', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /历史场景/ }).click()
+  const history = page.getByRole('dialog', { name: '历史场景' })
+  await expect(history.getByText(scenarioName)).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await history.locator('.history-card').filter({ hasText: scenarioName }).getByRole('button', { name: '打开场景' }).click()
+
+  await expect(nameInput).toHaveValue(scenarioName)
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+  await expect(page.getByText(`已打开场景：${scenarioName}`)).toBeVisible()
+
+  const submitted = await page.request.post(`/api/scenarios/${savedScenario.id}/jobs`, {
+    data: { confirmWarnings: false },
+  })
+  expect(submitted.status()).toBe(202)
+  const job = await submitted.json()
+  await page.getByRole('button', { name: /运行记录/ }).click()
+  const jobs = page.getByRole('dialog', { name: '运行记录' })
+  await expect(jobs.getByText(scenarioName)).toBeVisible()
+  await expect(jobs.getByText('排队中')).toBeVisible()
+  await jobs.getByRole('button', { name: '查看实时结果' }).click()
+  await expect(page.getByRole('region', { name: '模拟结果播放' })).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`job=${job.id}`))
+})
+
 test('local-domain COG frames stream into the live playback console', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')

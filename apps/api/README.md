@@ -25,7 +25,10 @@ MinIO, and commits frame metadata before emitting its Redis event.
 
 ```text
 POST /api/scenarios
+GET  /api/scenarios
+GET  /api/scenarios/{id}
 POST /api/model/simulation-areas/resolve
+GET  /api/model/simulation-areas/{id}
 GET  /api/model/simulation-areas/{id}/grid
 POST /api/scenarios/{id}/validate
 POST /api/scenarios/{id}/jobs

@@ -110,17 +110,7 @@ def create_app(
     def model_metadata() -> dict:
         return area_catalog.metadata()
 
-    @app.post(
-        "/api/model/simulation-areas/resolve",
-        status_code=status.HTTP_201_CREATED,
-    )
-    def resolve_simulation_area(
-        request: SimulationAreaResolveRequest,
-    ) -> dict:
-        try:
-            area = area_catalog.resolve(request.geometry)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+    def simulation_area_response(area) -> dict:
         grid_url = f"/api/model/simulation-areas/{area.area_hash}/grid"
         return {
             "id": area.area_hash,
@@ -141,6 +131,29 @@ def create_app(
             "gridUrl": grid_url,
             "boundaryCondition": "transmissive",
         }
+
+    @app.post(
+        "/api/model/simulation-areas/resolve",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def resolve_simulation_area(
+        request: SimulationAreaResolveRequest,
+    ) -> dict:
+        try:
+            area = area_catalog.resolve(request.geometry)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return simulation_area_response(area)
+
+    @app.get("/api/model/simulation-areas/{area_hash}")
+    def read_simulation_area(area_hash: str) -> dict:
+        try:
+            area = area_catalog.area(area_hash)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail="simulation area not found"
+            ) from error
+        return simulation_area_response(area)
 
     @app.get("/api/model/simulation-areas/{area_hash}/grid")
     def simulation_area_grid(area_hash: str) -> JSONResponse:
@@ -232,7 +245,7 @@ def create_app(
         session: Session = Depends(session_dependency),
     ) -> list[dict]:
         scenarios = session.scalars(
-            scenario_query().order_by(Scenario.created_at)
+            scenario_query().order_by(Scenario.updated_at.desc())
         ).all()
         return [scenario_response(item) for item in scenarios]
 
@@ -556,9 +569,11 @@ def job_response(job: SimulationJob) -> dict:
     }
 
 
-def _simulation_area_bounds(snapshot: dict) -> list[float]:
-    """Return the immutable simulation-area extent in CRS84 coordinates."""
-    area = snapshot["simulationArea"]
+def _simulation_area_bounds(snapshot: dict) -> list[float] | None:
+    """Return the immutable area extent, or None for legacy snapshots."""
+    area = snapshot.get("simulationArea")
+    if area is None:
+        return None
     row_start, row_stop, column_start, column_stop = area["window"]
     a, b, c, d, e, f = area["transform"]
     corners = [

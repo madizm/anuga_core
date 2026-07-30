@@ -68,7 +68,7 @@ export interface SimulationJob {
   id: string
   scenarioId: string
   simulationAreaId: string
-  simulationAreaBounds: [number, number, number, number]
+  simulationAreaBounds: [number, number, number, number] | null
   scenarioSnapshot: ScenarioPayload
   status: 'QUEUED' | 'PREPARING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
   currentFrame: number

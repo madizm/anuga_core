@@ -49,11 +49,15 @@ export const api = {
     }),
   simulationAreaGrid: (areaHash: string) =>
     request<FeatureCollection>(`/api/model/simulation-areas/${areaHash}/grid`),
+  simulationArea: (areaHash: string) =>
+    request<SimulationArea>(`/api/model/simulation-areas/${areaHash}`),
   resolveSelection: (areaHash: string, cellIds: string[], frictionScenario: string) =>
     request<SelectionStats>(`/api/model/simulation-areas/${areaHash}/selection/resolve`, {
       method: 'POST',
       body: JSON.stringify({ cellIds, frictionScenario }),
     }),
+  scenarios: () => request<SavedScenario[]>('/api/scenarios'),
+  scenario: (id: string) => request<SavedScenario>(`/api/scenarios/${id}`),
   createScenario: (payload: ScenarioPayload) =>
     request<SavedScenario>('/api/scenarios', {
       method: 'POST',
@@ -73,6 +77,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ confirmWarnings }),
     }),
+  jobs: (limit = 100) => request<SimulationJob[]>(`/api/jobs?limit=${limit}`),
   job: (id: string) => request<SimulationJob>(`/api/jobs/${id}`),
   frames: (id: string) => request<SimulationFrame[]>(`/api/jobs/${id}/frames`),
   framePoint: (jobId: string, frameIndex: number, longitude: number, latitude: number) =>

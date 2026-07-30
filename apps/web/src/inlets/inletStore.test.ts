@@ -63,3 +63,23 @@ describe('inlet cell ownership', () => {
     expect(useInletStore.getState().inlets[0].cellIds).toEqual([])
   })
 })
+
+describe('scenario restoration', () => {
+  it('replaces all inlets and activates the first restored inlet', () => {
+    useInletStore.getState().replaceInlets([{
+      id: 'restored-inlet',
+      name: '历史入口',
+      enabled: true,
+      cellIds: ['r0010-c0020'],
+      dischargeM3s: 50,
+      velocityMode: 'zero',
+      initialWaterLevelM: null,
+      displayColor: '#ffcb45',
+    }])
+
+    const state = useInletStore.getState()
+    expect(state.inlets).toHaveLength(1)
+    expect(state.inlets[0].name).toBe('历史入口')
+    expect(state.activeId).toBe('restored-inlet')
+  })
+})

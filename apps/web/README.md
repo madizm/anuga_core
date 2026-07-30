@@ -32,6 +32,9 @@ Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
 - discharge, velocity components/bearing, and initial water level;
 - server-resolved triangle, hydraulic-area, elevation, and Manning statistics;
 - transactional scenario save, validation, warning confirmation, and Job submit.
+- updated-at-sorted scenario history with full area, inlet, and parameter restoration;
+- status-filtered simulation run history with live progress refresh and result reopening;
+- unsaved-change tracking and confirmation before switching scenarios;
 - live SSE job status with database frame catch-up after reconnect;
 - first-frame display, follow-latest, scrubber, and 700 ms playback;
 - depth, stage, speed, and synchronized three-map modes;

@@ -14,9 +14,13 @@ from fastapi.testclient import TestClient
 
 from apps.api.config import Settings
 from apps.api.db import Database
-from apps.api.main import _apply_depth_mask, create_app
+from apps.api.main import _apply_depth_mask, _simulation_area_bounds, create_app
 from apps.api.models import SimulationFrame, SimulationJob
 from bayuquan.simulation.grid_mapping import GridTriangleMapping
+
+
+def test_legacy_job_snapshot_without_area_has_no_map_bounds():
+    assert _simulation_area_bounds({"name": "legacy"}) is None
 
 
 class FakeCatalog:
@@ -97,7 +101,16 @@ class FakeAreaCatalog:
     def area(self, area_hash):
         if area_hash != "b" * 64:
             raise KeyError(area_hash)
-        return SimpleNamespace(dataset_version="dataset-v1")
+        return SimpleNamespace(
+            area_hash="b" * 64,
+            dataset_version="dataset-v1",
+            crs="EPSG:32651",
+            cell_count=2,
+            area_m2=1800,
+            cell_size_m=30,
+            window=(10, 11, 20, 22),
+            elevation_m={"minimum": 3.0, "maximum": 4.0, "mean": 3.5},
+        )
 
     def mapping(self, area_hash):
         self.area(area_hash)
@@ -242,6 +255,9 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
         resolved = test_client.post(
             "/api/model/simulation-areas/resolve", json={"geometry": geometry}
         )
+        restored = test_client.get(
+            f"/api/model/simulation-areas/{'b' * 64}"
+        )
         grid = test_client.get(
             f"/api/model/simulation-areas/{'b' * 64}/grid"
         )
@@ -254,6 +270,8 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
         )
 
     assert resolved.status_code == 201, resolved.text
+    assert restored.status_code == 200, restored.text
+    assert restored.json() == resolved.json()
     assert resolved.json() == {
         "id": "b" * 64,
         "areaHash": "b" * 64,
