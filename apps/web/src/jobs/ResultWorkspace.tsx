@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { FramePointValue, ResultQuantity } from '../api/types'
 import { ResultMap } from './ResultMap'
@@ -18,10 +18,25 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
   const [following, setFollowing] = useState(true)
   const [playing, setPlaying] = useState(false)
   const [triple, setTriple] = useState(false)
+  const [flowEnabled, setFlowEnabled] = useState(false)
   const [point, setPoint] = useState<FramePointValue | null>(null)
   const [displayedFrameIndex, setDisplayedFrameIndex] = useState<number | null>(null)
   const requested = frames[Math.min(framePosition, Math.max(frames.length - 1, 0))]
   const current = frames.find((frame) => frame.frameIndex === displayedFrameIndex) ?? requested
+  const flowFrameIndex = requested?.frameIndex ?? null
+  const flow = useQuery({
+    queryKey: ['flow-field', jobId, flowFrameIndex] as const,
+    queryFn: async ({ queryKey }) => {
+      const frameIndex = queryKey[2]
+      if (frameIndex == null) throw new Error('帧尚未发布')
+      return { frameIndex, field: await api.flowField(jobId, frameIndex) }
+    },
+    enabled: flowEnabled && flowFrameIndex != null,
+    staleTime: Infinity,
+    // Keep showing the previous frame's field while the next one loads, so
+    // the particle stream flows continuously instead of blinking per frame.
+    placeholderData: keepPreviousData,
+  })
 
   useEffect(() => {
     setDisplayedFrameIndex(null)
@@ -79,6 +94,9 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
             bounds={job?.simulationAreaBounds ?? undefined}
             quantity={quantity}
             triple={triple}
+            flowEnabled={flowEnabled}
+            flowField={flow.data?.field}
+            flowFrameIndex={flow.data?.frameIndex}
             onPoint={(longitude, latitude) => pointMutation.mutate({ longitude, latitude })}
             onFrameDisplayed={setDisplayedFrameIndex}
           />
@@ -86,6 +104,7 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
           <div className="first-frame-wait"><i /><span>WAITING FOR FIRST COG</span><strong>等待首帧栅格发布</strong><small>模拟正在准备固定网格与 ANUGA Domain</small></div>
         )}
         {error && <div className="result-error">{error}</div>}
+        {flowEnabled && flow.isError && <div className="result-error">{flow.error.message}</div>}
         {job?.status === 'FAILED' && <div className="result-error">{job.errorCode}: {job.errorMessage}</div>}
         {point && (
           <div className="point-readout">
@@ -106,6 +125,12 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
             </button>
           ))}
           <button className={triple ? 'active' : ''} onClick={() => setTriple((value) => !value)}><span>三联</span><small>SYNC</small></button>
+          <button
+            className={flowEnabled ? 'active flow-toggle' : 'flow-toggle'}
+            aria-pressed={flowEnabled}
+            aria-label={flowEnabled ? '关闭流向' : '显示流向'}
+            onClick={() => setFlowEnabled((value) => !value)}
+          ><span>{flow.isFetching ? '载入中' : '流向'}</span><small>FLOW</small></button>
         </div>
         <button className="play-button" disabled={frames.length < 2} onClick={() => { setFollowing(false); setPlaying((value) => !value) }} aria-label={playing ? '暂停' : '播放'}>
           {playing ? 'Ⅱ' : '▶'}

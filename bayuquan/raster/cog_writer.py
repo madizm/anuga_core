@@ -1,4 +1,4 @@
-"""Atomic writer and validator for Bayuquan three-band frame COGs."""
+"""Atomic writer and validator for Bayuquan five-band frame COGs."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class CogWriter:
     def write(self, frame: RasterFrame, destination: Path | str) -> WrittenCog:
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
-        expected_shape = (3, self.grid.rows, self.grid.columns)
+        expected_shape = (5, self.grid.rows, self.grid.columns)
         if frame.values.shape != expected_shape:
             raise ValueError(
                 f"frame shape {frame.values.shape} does not match "
@@ -73,7 +73,7 @@ class CogWriter:
             "driver": "GTiff",
             "width": self.grid.columns,
             "height": self.grid.rows,
-            "count": 3,
+            "count": 5,
             "dtype": "float32",
             "crs": self.grid.crs,
             "transform": Affine(*self.grid.transform_tuple),
@@ -99,14 +99,14 @@ class CogWriter:
         with rasterio.open(path) as dataset:
             if dataset.shape != (self.grid.rows, self.grid.columns):
                 raise ValueError("COG dimensions do not match fixed grid")
-            if dataset.count != 3:
-                raise ValueError("COG must contain exactly three bands")
+            if dataset.count != 5:
+                raise ValueError("COG must contain exactly five bands")
             if dataset.crs is None or dataset.crs.to_string() != self.grid.crs:
                 raise ValueError("COG CRS does not match fixed grid")
             expected_transform = Affine(*self.grid.transform_tuple)
             if dataset.transform != expected_transform:
                 raise ValueError("COG transform does not match fixed grid")
-            if dataset.dtypes != ("float32", "float32", "float32"):
+            if dataset.dtypes != ("float32",) * 5:
                 raise ValueError("COG bands must be Float32")
             if dataset.nodata != NODATA:
                 raise ValueError("COG NoData value is invalid")

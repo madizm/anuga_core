@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 import warnings
 from io import BytesIO
 
 import numpy as np
+import rasterio
 from PIL import Image
 from rasterio.io import MemoryFile
+from rasterio.warp import transform_bounds
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
+from urllib.parse import urlparse
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 import httpx
 from pyproj import Transformer
 from bayuquan.simulation.area_catalog import (
@@ -94,6 +100,12 @@ def create_app(
     app.state.database = database
     app.state.area_catalog = area_catalog
     app.state.dispatcher = dispatcher or _celery_dispatcher(settings)
+    app.state.s3_client = boto3.client(
+        "s3",
+        endpoint_url=settings.s3_endpoint_url,
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+    )
 
     def session_dependency() -> Session:
         with database.session_factory() as session:
@@ -402,6 +414,90 @@ def create_app(
             "stageM": normalized[1],
             "speedMps": normalized[2],
         }
+
+    @app.get("/api/jobs/{job_id}/frames/{frame_index}/flow")
+    def frame_flow_field(
+        job_id: str,
+        frame_index: int,
+        session: Session = Depends(session_dependency),
+    ) -> Response:
+        frame = session.get(SimulationFrame, (job_id, frame_index))
+        if frame is None:
+            raise HTTPException(status_code=404, detail="frame not found")
+        try:
+            with ExitStack() as stack:
+                if frame.cog_uri.startswith("s3://"):
+                    parsed = urlparse(frame.cog_uri)
+                    if not parsed.netloc or not parsed.path.lstrip("/"):
+                        raise ValueError("invalid frame object URI")
+                    stored = app.state.s3_client.get_object(
+                        Bucket=parsed.netloc,
+                        Key=parsed.path.lstrip("/"),
+                    )
+                    body = stored["Body"]
+                    try:
+                        payload = body.read()
+                    finally:
+                        body.close()
+                    memory_file = stack.enter_context(MemoryFile(payload))
+                    dataset = stack.enter_context(memory_file.open())
+                else:
+                    dataset = stack.enter_context(
+                        rasterio.open(frame.cog_uri)
+                    )
+                if dataset.count < 5:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="flow field is unavailable for this frame",
+                    )
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="Setting the shape on a NumPy array.*",
+                        category=DeprecationWarning,
+                    )
+                    velocity_u = dataset.read(4).astype("<f4", copy=False)
+                    velocity_v = dataset.read(5).astype("<f4", copy=False)
+                    wet = dataset.dataset_mask() > 0
+                wet &= np.isfinite(velocity_u) & np.isfinite(velocity_v)
+                bounds = transform_bounds(
+                    dataset.crs,
+                    "OGC:CRS84",
+                    *dataset.bounds,
+                    densify_pts=21,
+                )
+                vectors = np.empty(
+                    (dataset.height, dataset.width, 2), dtype="<f4"
+                )
+                vectors[..., 0] = velocity_u
+                vectors[..., 1] = velocity_v
+                vectors[~wet] = np.nan
+                header = struct.pack(
+                    "<4sHHHH4d",
+                    b"BQFV",
+                    1,
+                    dataset.width,
+                    dataset.height,
+                    0,
+                    *bounds,
+                )
+        except HTTPException:
+            raise
+        except (
+            BotoCoreError,
+            ClientError,
+            OSError,
+            ValueError,
+            rasterio.errors.RasterioError,
+        ) as error:
+            raise HTTPException(
+                status_code=502, detail="flow field could not be read"
+            ) from error
+        return Response(
+            content=header + vectors.tobytes(order="C"),
+            media_type="application/vnd.bayuquan.flow-field",
+            headers={"cache-control": "public, max-age=3600, immutable"},
+        )
 
     @app.get(
         "/api/jobs/{job_id}/frames/{frame_index}/tilejson/{quantity}"

@@ -9,6 +9,7 @@ import type {
   SimulationJob,
   SimulationArea,
   FramePointValue,
+  FlowField,
   ValidationResult,
 } from './types'
 
@@ -37,6 +38,47 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     )
   }
   return body as T
+}
+
+async function flowField(jobId: string, frameIndex: number): Promise<FlowField> {
+  const response = await fetch(`/api/jobs/${jobId}/frames/${frameIndex}/flow`)
+  if (!response.ok) {
+    let detail = `无法加载流向场 (${response.status})`
+    try {
+      const body = await response.json() as { detail?: string }
+      if (body.detail) detail = body.detail
+    } catch {
+      // Preserve the stable fallback when an intermediary returns non-JSON.
+    }
+    throw new Error(detail)
+  }
+  const buffer = await response.arrayBuffer()
+  if (buffer.byteLength < 44) throw new Error('流向场数据不完整')
+  const view = new DataView(buffer)
+  const magic = String.fromCharCode(
+    view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3),
+  )
+  const version = view.getUint16(4, true)
+  const width = view.getUint16(6, true)
+  const height = view.getUint16(8, true)
+  if (magic !== 'BQFV' || version !== 1 || width === 0 || height === 0) {
+    throw new Error('流向场格式不受支持')
+  }
+  const expectedBytes = 44 + width * height * 2 * Float32Array.BYTES_PER_ELEMENT
+  if (buffer.byteLength !== expectedBytes) throw new Error('流向场数据不完整')
+  const bounds: [number, number, number, number] = [
+    view.getFloat64(12, true), view.getFloat64(20, true),
+    view.getFloat64(28, true), view.getFloat64(36, true),
+  ]
+  if (!bounds.every(Number.isFinite) || bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) {
+    throw new Error('流向场范围无效')
+  }
+  return {
+    width,
+    height,
+    bounds,
+    vectors: new Float32Array(buffer.slice(44)),
+  }
 }
 
 export const api = {
@@ -84,4 +126,5 @@ export const api = {
     request<FramePointValue>(
       `/api/jobs/${jobId}/frames/${frameIndex}/point?longitude=${longitude}&latitude=${latitude}`,
     ),
+  flowField,
 }

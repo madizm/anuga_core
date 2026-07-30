@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 from pathlib import Path
 from io import BytesIO
+from struct import unpack_from
 
 from PIL import Image
+import rasterio
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
@@ -523,3 +525,58 @@ def test_tile_display_mask_uses_depth_threshold():
 
     alpha = np.asarray(Image.open(BytesIO(masked)))[..., 3]
     np.testing.assert_array_equal(alpha, [[0, 255]])
+
+
+def test_flow_field_endpoint_publishes_wet_velocity_components(tmp_path):
+    cog = tmp_path / "flow.tif"
+    values = np.array([
+        [[0.0, 1.0]],
+        [[5.0, 6.0]],
+        [[0.0, 5.0]],
+        [[9.0, 3.0]],
+        [[8.0, 4.0]],
+    ], dtype=np.float32)
+    with rasterio.open(
+        cog, "w", driver="GTiff", width=2, height=1, count=5,
+        dtype="float32", crs="EPSG:32651",
+        transform=from_origin(430_000, 4_462_000, 30, 30),
+        nodata=-9999,
+    ) as dataset:
+        dataset.write(values)
+        dataset.write_mask(np.array([[0, 255]], dtype=np.uint8))
+
+    test_client, _ = client(tmp_path)
+    test_client.app.state.s3_client = SimpleNamespace(
+        get_object=lambda **kwargs: {"Body": BytesIO(cog.read_bytes())}
+    )
+    with test_client:
+        created = test_client.post("/api/scenarios", json=scenario())
+        job = test_client.post(
+            f"/api/scenarios/{created.json()['id']}/jobs", json={}
+        ).json()
+        database = test_client.app.state.database
+        with database.session_factory.begin() as session:
+            session.add(SimulationFrame(
+                job_id=job["id"], frame_index=0, time_seconds=0,
+                cog_uri="s3://simulation-jobs/jobs/test/flow.tif",
+                maximum_depth_m=1, maximum_speed_mps=5,
+                wet_area_m2=900,
+            ))
+        response = test_client.get(
+            f"/api/jobs/{job['id']}/frames/0/flow"
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.bayuquan.flow-field"
+    )
+    magic, version, width, height, _reserved = unpack_from(
+        "<4sHHHH", response.content
+    )
+    assert (magic, version, width, height) == (b"BQFV", 1, 2, 1)
+    west, south, east, north = unpack_from("<4d", response.content, 12)
+    assert 121 < west < east < 123
+    assert 39 < south < north < 41
+    vectors = np.frombuffer(response.content, dtype="<f4", offset=44)
+    assert np.isnan(vectors[:2]).all()
+    np.testing.assert_allclose(vectors[2:], [3, 4])

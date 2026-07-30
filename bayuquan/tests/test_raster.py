@@ -60,19 +60,21 @@ def frame(depth=2):
     return FrameRasterizer(mapping).rasterize(domain, 300)
 
 
-def test_rasterizer_interpolates_three_quantities_at_pixel_centres():
+def test_rasterizer_interpolates_velocity_components_at_pixel_centres():
     result = frame()
 
     np.testing.assert_allclose(result.values[0], [[2, 2]])
     np.testing.assert_allclose(result.values[1], [[2.5, 3.5]])
     np.testing.assert_allclose(result.values[2], [[2, 2]])
+    np.testing.assert_allclose(result.values[3], [[2, 2]])
+    np.testing.assert_allclose(result.values[4], [[0, 0]])
     np.testing.assert_array_equal(result.display_mask, [[True, True]])
     assert result.maximum_depth_m == 2
     assert result.maximum_speed_mps == 2
     assert result.wet_area_m2 == 2
 
 
-def test_cog_writer_publishes_aligned_three_band_cog(tmp_path):
+def test_cog_writer_publishes_aligned_five_band_flow_cog(tmp_path):
     result = frame()
     target = tmp_path / "000000300.tif"
 
@@ -84,11 +86,13 @@ def test_cog_writer_publishes_aligned_three_band_cog(tmp_path):
     with rasterio.open(target) as dataset:
         assert dataset.driver == "GTiff"
         assert dataset.shape == (1, 2)
-        assert dataset.count == 3
+        assert dataset.count == 5
         assert dataset.crs.to_string() == "EPSG:32651"
         assert dataset.transform == rasterio.Affine(1, 0, 0, 0, -1, 1)
-        assert dataset.descriptions == ("depth", "stage", "speed")
-        assert dataset.units == ("m", "m", "m/s")
+        assert dataset.descriptions == (
+            "depth", "stage", "speed", "velocity_u", "velocity_v",
+        )
+        assert dataset.units == ("m", "m", "m/s", "m/s", "m/s")
         assert dataset.nodata == -9999
         assert dataset.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
         np.testing.assert_allclose(dataset.read(), result.values)
@@ -208,7 +212,9 @@ def test_local_rasterizer_aggregates_two_triangles_per_selected_cell():
     domain = SimpleNamespace(quantities={
         "elevation": SimpleNamespace(centroid_values=np.zeros(4)),
         "stage": SimpleNamespace(centroid_values=np.array([1, 3, 2, 4])),
-        "xmomentum": SimpleNamespace(centroid_values=np.zeros(4)),
+        "xmomentum": SimpleNamespace(
+            centroid_values=np.array([1, 3, 4, 8])
+        ),
         "ymomentum": SimpleNamespace(centroid_values=np.zeros(4)),
     })
     rasterizer = LocalFrameRasterizer(
@@ -220,5 +226,7 @@ def test_local_rasterizer_aggregates_two_triangles_per_selected_cell():
     result = rasterizer.rasterize(domain, 10)
 
     np.testing.assert_allclose(result.values[0], [[2, 3]])
+    np.testing.assert_allclose(result.values[3], [[1, 2]])
+    np.testing.assert_allclose(result.values[4], [[0, 0]])
     assert rasterizer.grid.transform_tuple == (30, 0, 130, 0, -30, 270)
     assert result.wet_area_m2 == 1800

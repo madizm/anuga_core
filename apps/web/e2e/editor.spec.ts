@@ -152,7 +152,25 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await page.getByRole('button', { name: /三联/ }).click()
   await expect(page.locator('.result-map-canvas')).toHaveCount(3)
   await expect(page.getByText('流速 SPEED')).toBeVisible()
+  await page.getByRole('button', { name: /流向/ }).click()
+  await expect(page.locator('.flow-particle-canvas[data-flow-frame="2"]')).toHaveCount(3)
+  await expect(page.getByText('DYNAMIC FLOW')).toHaveCount(3)
 })
+
+function flowPayload() {
+  const buffer = Buffer.alloc(44 + 2 * 4)
+  buffer.write('BQFV', 0, 'ascii')
+  buffer.writeUInt16LE(1, 4)
+  buffer.writeUInt16LE(1, 6)
+  buffer.writeUInt16LE(1, 8)
+  buffer.writeDoubleLE(122.12, 12)
+  buffer.writeDoubleLE(40.23, 20)
+  buffer.writeDoubleLE(122.14, 28)
+  buffer.writeDoubleLE(40.25, 36)
+  buffer.writeFloatLE(1, 44)
+  buffer.writeFloatLE(0.5, 48)
+  return buffer
+}
 
 test('job deep link fits result tiles to its simulation area', async ({ page }) => {
   const jobId = 'job-outside-default-view'
@@ -199,6 +217,10 @@ test('job deep link fits result tiles to its simulation area', async ({ page }) 
     contentType: 'text/event-stream',
     body: `event: job.completed\ndata: ${JSON.stringify(job)}\n\n`,
   }))
+  await page.route(`**/api/jobs/${jobId}/frames/0/flow`, (route) => route.fulfill({
+    contentType: 'application/vnd.bayuquan.flow-field',
+    body: flowPayload(),
+  }))
   await page.route(`**/api/jobs/${jobId}/frames/0/tiles/**`, (route) => {
     requestedTiles.push(route.request().url())
     return route.fulfill({
@@ -210,6 +232,41 @@ test('job deep link fits result tiles to its simulation area', async ({ page }) 
   await page.goto(`/?job=${jobId}`)
   await expect(page.getByText('已完成')).toBeVisible()
   await expect.poll(() => requestedTiles.length).toBeGreaterThan(0)
+  await page.getByRole('button', { name: /流向/ }).click()
+  await expect(page.locator('.flow-particle-canvas')).toBeVisible()
+  await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
+    'data-flow-frame',
+    '0',
+  )
+  await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
+    'data-flow-mode',
+    'animated',
+  )
+  await expect.poll(() => page.locator('.flow-particle-canvas').evaluate(
+    (canvas: HTMLCanvasElement) => {
+      const context = canvas.getContext('2d')
+      if (!context) return 0
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+      let visible = 0
+      for (let index = 3; index < pixels.length; index += 4) {
+        if (pixels[index] > 0) visible += 1
+      }
+      return visible
+    },
+  )).toBeGreaterThan(10)
+  await expect(page.getByText('DYNAMIC FLOW')).toBeVisible()
+  await page.getByRole('button', { name: /流向/ }).click()
+  await expect(page.getByText('DYNAMIC FLOW')).toBeHidden()
+  await expect(page.locator('.flow-particle-canvas')).not.toHaveAttribute(
+    'data-flow-frame',
+    /.+/,
+  )
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.getByRole('button', { name: /流向/ }).click()
+  await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
+    'data-flow-mode',
+    'static',
+  )
   await expect.poll(() => requestedTiles.some((url) => {
     const match = url.match(/\/tiles\/depth\/(\d+)\/(\d+)\/(\d+)\.png/)
     if (!match) return false

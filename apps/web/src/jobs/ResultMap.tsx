@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react'
 import maplibregl, { type Map, type MapOptions } from 'maplibre-gl'
-import type { ResultQuantity, SimulationFrame } from '../api/types'
+import type { FlowField, ResultQuantity, SimulationFrame } from '../api/types'
 import { BASE_MAP_ATTRIBUTION, BASE_MAP_TILE_URL } from '../map/baseMap'
 import {
   createBufferState,
   installBufferedFrame,
   type BufferState,
 } from './bufferedRasterFrames'
+import { FlowParticleLayer } from './FlowParticleLayer'
 
 const QUANTITIES: ResultQuantity[] = ['depth', 'stage', 'speed']
 const LABELS: Record<ResultQuantity, string> = {
@@ -20,11 +21,24 @@ interface ResultMapProps {
   bounds?: [number, number, number, number]
   quantity: ResultQuantity
   triple: boolean
+  flowEnabled: boolean
+  flowField?: FlowField
+  flowFrameIndex?: number
   onPoint: (longitude: number, latitude: number) => void
   onFrameDisplayed?: (frameIndex: number) => void
 }
 
-export function ResultMap({ frame, bounds, quantity, triple, onPoint, onFrameDisplayed }: ResultMapProps) {
+export function ResultMap({
+  frame,
+  bounds,
+  quantity,
+  triple,
+  flowEnabled,
+  flowField,
+  flowFrameIndex,
+  onPoint,
+  onFrameDisplayed,
+}: ResultMapProps) {
   const containers = useRef<(HTMLDivElement | null)[]>([])
   const onPointRef = useRef(onPoint)
   onPointRef.current = onPoint
@@ -32,6 +46,11 @@ export function ResultMap({ frame, bounds, quantity, triple, onPoint, onFrameDis
   onFrameDisplayedRef.current = onFrameDisplayed
   const maps = useRef<Map[]>([])
   const buffers = useRef<BufferState[]>([])
+  const flowLayers = useRef<FlowParticleLayer[]>([])
+  const flowState = useRef<{ field: FlowField | null; frameIndex: number | null }>({
+    field: null,
+    frameIndex: null,
+  })
   const displayedFrames = useRef<number[]>([])
   const quantities = triple ? QUANTITIES : [quantity]
 
@@ -54,8 +73,16 @@ export function ResultMap({ frame, bounds, quantity, triple, onPoint, onFrameDis
       return map
     })
     buffers.current = quantities.map(createBufferState)
+    flowLayers.current = maps.current.map((map) => new FlowParticleLayer(map))
+    // Maps may be recreated after flow was enabled (e.g. asynchronously
+    // loaded bounds arrive): restore the latest field on the fresh layers.
+    for (const layer of flowLayers.current) {
+      layer.setField(flowState.current.field, flowState.current.frameIndex)
+    }
     displayedFrames.current = quantities.map(() => -1)
     return () => {
+      for (const layer of flowLayers.current) layer.destroy()
+      flowLayers.current = []
       for (const map of maps.current) map.remove()
       maps.current = []
       buffers.current = []
@@ -77,12 +104,25 @@ export function ResultMap({ frame, bounds, quantity, triple, onPoint, onFrameDis
     })
   }, [frame, quantity, triple])
 
+  useEffect(() => {
+    flowState.current = {
+      field: flowEnabled ? flowField ?? null : null,
+      frameIndex: flowEnabled && flowField ? flowFrameIndex ?? null : null,
+    }
+    for (const layer of flowLayers.current) {
+      layer.setField(flowState.current.field, flowState.current.frameIndex)
+    }
+  }, [flowEnabled, flowField, flowFrameIndex, triple])
+
   return (
     <div className={triple ? 'result-maps triple' : 'result-maps'}>
       {quantities.map((displayedQuantity, index) => (
         <div className="result-map-cell" key={triple ? displayedQuantity : 'single'}>
           <div ref={(element) => { containers.current[index] = element }} className="result-map-canvas" />
           <span className={`result-map-label ${displayedQuantity}`}>{LABELS[displayedQuantity]}</span>
+          {flowEnabled && flowField && (
+            <span className="flow-field-status"><i /> DYNAMIC FLOW</span>
+          )}
           <div className={`result-legend ${displayedQuantity}`}>
             <i />
             <div>{legendTicks(displayedQuantity).map((tick) => <span key={tick}>{tick}</span>)}</div>

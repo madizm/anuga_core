@@ -22,8 +22,8 @@ class RasterFrame:
 class FrameRasterizer:
     """Fast per-frame interpolation using a precomputed fixed mapping."""
 
-    band_names = ("depth", "stage", "speed")
-    band_units = ("m", "m", "m/s")
+    band_names = ("depth", "stage", "speed", "velocity_u", "velocity_v")
+    band_units = ("m", "m", "m/s", "m/s", "m/s")
 
     def __init__(
         self,
@@ -66,24 +66,31 @@ class FrameRasterizer:
             values[name] = interpolated
 
         depth = np.maximum(values["stage"] - values["elevation"], 0.0)
-        momentum = np.hypot(values["xmomentum"], values["ymomentum"])
-        speed = np.zeros_like(depth)
+        velocity_u = np.zeros_like(depth)
+        velocity_v = np.zeros_like(depth)
+        velocity_valid = valid & (depth >= self.velocity_epsilon_m)
         np.divide(
-            momentum,
-            np.maximum(depth, self.velocity_epsilon_m),
-            out=speed,
-            where=valid,
+            values["xmomentum"], depth,
+            out=velocity_u, where=velocity_valid,
         )
+        np.divide(
+            values["ymomentum"], depth,
+            out=velocity_v, where=velocity_valid,
+        )
+        speed = np.hypot(velocity_u, velocity_v)
         if not all(np.all(np.isfinite(value[valid])) for value in (
-            depth, values["stage"], speed
+            depth, values["stage"], speed, velocity_u, velocity_v
         )):
             raise ValueError("frame contains NaN or infinite values")
 
         shape = (self.mapping.grid.rows, self.mapping.grid.columns)
-        frame_values = np.stack(
-            (depth.reshape(shape), values["stage"].reshape(shape),
-             speed.reshape(shape))
-        ).astype(np.float32)
+        frame_values = np.stack((
+            depth.reshape(shape),
+            values["stage"].reshape(shape),
+            speed.reshape(shape),
+            velocity_u.reshape(shape),
+            velocity_v.reshape(shape),
+        )).astype(np.float32)
         valid_grid = valid.reshape(shape)
         display_mask = valid_grid & (frame_values[0] >= self.dry_depth_m)
         return RasterFrame(

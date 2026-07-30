@@ -75,12 +75,16 @@ The output contains:
 
 - `scenario.json`: exact immutable input snapshot;
 - `model.sww`: ANUGA result;
-- `frames/000000000.tif`, etc.: atomic three-band depth/stage/speed COGs;
+- `frames/000000000.tif`, etc.: atomic five-band depth/stage/speed/u/v COGs;
 - `report.json`: per-inlet and total water-volume/hazard report.
 
 Each `yieldstep`, including `t=0`, is published immediately as a 75×56,
 EPSG:32651 COG aligned exactly with the cropped model DEM. Dry pixels retain
 their numerical values but are transparent through the internal display mask.
+
+The result workspace can request each frame's compact, versioned flow field
+from `/api/jobs/{jobId}/frames/{frameIndex}/flow` and display animated particles.
+Browsers requesting reduced motion receive static directional arrows instead.
 
 All boundaries are fixed as transmissive. Initial water level is applied only
 at `t=0`; it is not maintained during evolution.

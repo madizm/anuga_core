@@ -97,6 +97,13 @@ export interface SimulationFrame {
   createdAt: string
 }
 
+export interface FlowField {
+  width: number
+  height: number
+  bounds: [number, number, number, number]
+  vectors: Float32Array
+}
+
 export interface FramePointValue {
   timeSeconds: number
   longitude: number

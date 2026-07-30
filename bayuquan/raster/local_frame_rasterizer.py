@@ -65,20 +65,25 @@ class LocalFrameRasterizer:
             domain.quantities["stage"].centroid_values, dtype=float
         )
         depth = np.maximum(stage - elevation, 0.0)
-        momentum = np.hypot(
+        velocity_u = np.divide(
             domain.quantities["xmomentum"].centroid_values,
-            domain.quantities["ymomentum"].centroid_values,
-        )
-        speed = np.divide(
-            momentum,
             depth,
             out=np.zeros_like(depth),
             where=depth >= 1.0e-6,
         )
+        velocity_v = np.divide(
+            domain.quantities["ymomentum"].centroid_values,
+            depth,
+            out=np.zeros_like(depth),
+            where=depth >= 1.0e-6,
+        )
+        speed = np.hypot(velocity_u, velocity_v)
         values = np.stack([
             self._aggregate(depth),
             self._aggregate(stage),
             self._aggregate(speed),
+            self._aggregate(velocity_u),
+            self._aggregate(velocity_v),
         ]).astype(np.float32)
         valid = np.isfinite(values).all(axis=0)
         display_mask = valid & (values[0] >= self.dry_depth_m)
