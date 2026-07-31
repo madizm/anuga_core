@@ -22,7 +22,9 @@ from .spec import ScenarioSpec
 class PreparedSimulation:
     domain: object
     operators: dict[str, object]
+    rainfall_operator: object | None
     initial_water_volume_m3: float
+    rainfall_area_m2: float
 
 
 def apply_initial_water_levels(domain, spec: ScenarioSpec) -> float:
@@ -37,6 +39,57 @@ def apply_initial_water_levels(domain, spec: ScenarioSpec) -> float:
         values = np.maximum(elevation.vertex_values[indices], level)
         stage.set_values(values, location="vertices", indices=indices)
     return float(domain.get_water_volume())
+
+
+def install_rainfall_operator(domain, spec: ScenarioSpec):
+    """Install uniform rain while conserving depth across step transitions."""
+    if not spec.rainfall.enabled:
+        return None
+
+    def step_average_rate_mm_per_hour(time_seconds):
+        timestep = float(domain.get_timestep())
+        if timestep <= 0:
+            return spec.rainfall.intensity_at(time_seconds)
+        depth_mm = spec.rainfall.depth_between_mm(
+            time_seconds,
+            min(time_seconds + timestep, spec.duration_seconds),
+        )
+        return depth_mm * 3600.0 / timestep
+
+    return anuga.Rate_operator(
+        domain,
+        rate=step_average_rate_mm_per_hour,
+        factor=1.0e-3 / 3600.0,
+        label="rainfall",
+    )
+
+
+def rainfall_report(spec, area_m2, rainfall_operator):
+    intervals = []
+    for item in spec.rainfall.intervals(spec.duration_seconds):
+        interval = dict(item)
+        interval["requestedVolumeM3"] = item["depthMm"] / 1000.0 * area_m2
+        intervals.append(interval)
+    requested = sum(item["requestedVolumeM3"] for item in intervals)
+    applied = (
+        0.0 if rainfall_operator is None
+        else float(rainfall_operator.cumulative_influx)
+    )
+    return {
+        "enabled": spec.rainfall.enabled,
+        "areaM2": area_m2,
+        "pointCount": len(spec.rainfall.points),
+        "cumulativeDepthMm": spec.rainfall.cumulative_depth_mm(
+            spec.duration_seconds
+        ),
+        "peakIntensityMmPerHour": (
+            spec.rainfall.peak_intensity_mm_per_hour
+        ),
+        "requestedVolumeM3": requested,
+        "appliedVolumeM3": applied,
+        "volumeDifferenceM3": applied - requested,
+        "intervals": intervals,
+    }
 
 
 def prepare_simulation(
@@ -97,7 +150,11 @@ def prepare_simulation(
             zero_velocity=inlet.zero_velocity,
             label=inlet.id,
         )
-    return PreparedSimulation(domain, operators, initial_volume)
+    rainfall_area = float(domain.areas.sum())
+    rainfall_operator = install_rainfall_operator(domain, spec)
+    return PreparedSimulation(
+        domain, operators, rainfall_operator, initial_volume, rainfall_area
+    )
 
 
 def run_simulation(
@@ -157,8 +214,14 @@ def run_simulation(
             f"{spec.duration_seconds}"
         )
     final_volume = float(domain.get_water_volume())
-    requested_volume = spec.total_discharge_m3s * spec.duration_seconds
-    applied_volume = sum(
+    rain = rainfall_report(
+        spec, prepared.rainfall_area_m2, prepared.rainfall_operator
+    )
+    requested_volume = (
+        spec.total_discharge_m3s * spec.duration_seconds
+        + rain["requestedVolumeM3"]
+    )
+    applied_volume = rain["appliedVolumeM3"] + sum(
         float(operator.total_applied_volume)
         for operator in prepared.operators.values()
     )
@@ -182,6 +245,7 @@ def run_simulation(
         "maximumSpeedMps": maximum_speed,
         "everWetAreaM2": float(domain.areas[ever_wet].sum()),
         "runtimeSeconds": time.monotonic() - started,
+        "rainfall": rain,
         "inlets": [
             {
                 "id": inlet.id,

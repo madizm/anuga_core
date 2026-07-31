@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api/client'
 import type {
   FrictionScenario,
+  Rainfall,
   DemProduct,
   SavedScenario,
   ScenarioPayload,
@@ -17,6 +18,7 @@ import { ScenarioHistory } from './scenarios/ScenarioHistory'
 import { isFourNeighbourConnected, useInletStore } from './inlets/inletStore'
 import { LayerPanel } from './map/LayerPanel'
 import { ModelMap } from './map/ModelMap'
+import { DISABLED_RAINFALL, hasEffectiveRainfall, rainfallIntervals, rainfallValidationError } from './rainfall/rainfall'
 
 export default function App() {
   const inlets = useInletStore((state) => state.inlets)
@@ -25,6 +27,7 @@ export default function App() {
   const [duration, setDuration] = useState(21_600)
   const [yieldstep, setYieldstep] = useState(300)
   const [friction, setFriction] = useState<FrictionScenario>('middle')
+  const [rainfall, setRainfall] = useState<Rainfall>(DISABLED_RAINFALL)
   const [demProductId, setDemProductId] = useState('')
   const [saved, setSaved] = useState<SavedScenario | null>(null)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
@@ -124,6 +127,7 @@ export default function App() {
     yieldstepSeconds: yieldstep,
     frictionScenario: friction,
     inlets,
+    rainfall,
   })
 
   const saveMutation = useMutation({
@@ -153,6 +157,7 @@ export default function App() {
       setDuration(scenario.durationSeconds)
       setYieldstep(scenario.yieldstepSeconds)
       setFriction(scenario.frictionScenario)
+      setRainfall(scenario.rainfall ?? DISABLED_RAINFALL)
       replaceInlets(scenario.inlets)
       setArea(simulationArea)
       setSaved(scenario)
@@ -173,6 +178,7 @@ export default function App() {
     yieldstepSeconds: saved.yieldstepSeconds,
     frictionScenario: saved.frictionScenario,
     inlets: saved.inlets,
+    rainfall: saved.rainfall ?? DISABLED_RAINFALL,
   }
   const isDirty = !saved || JSON.stringify(currentPayload) !== JSON.stringify(savedPayload)
 
@@ -210,9 +216,12 @@ export default function App() {
   const enabled = inlets.filter((inlet) => inlet.enabled)
   const selectedCells = enabled.reduce((total, inlet) => total + inlet.cellIds.length, 0)
   const totalDischarge = enabled.reduce((total, inlet) => total + inlet.dischargeM3s, 0)
-  const localReady = Boolean(area) && enabled.length > 0 && enabled.every(
+  const inletsReady = enabled.length > 0 && enabled.every(
     (inlet) => inlet.cellIds.length > 0 && isFourNeighbourConnected(inlet.cellIds) && inlet.dischargeM3s > 0,
   )
+  const rainfallReady = hasEffectiveRainfall(rainfall, duration)
+  const rainfallValid = rainfallValidationError(rainfall, duration) === null
+  const localReady = Boolean(area) && rainfallValid && (inletsReady || rainfallReady)
 
   if (jobId) {
     return <ResultWorkspace jobId={jobId} onClose={() => {
@@ -288,6 +297,9 @@ export default function App() {
           cellSizeM={demProduct?.cellSizeM ?? 30}
           areaHash={area?.areaHash ?? null}
           frictionScenario={friction}
+          rainfall={rainfall}
+          durationSeconds={duration}
+          onRainfallChange={setRainfall}
         />
       </main>
 
@@ -353,6 +365,8 @@ export default function App() {
         <RunCheck
           validation={validation}
           demProduct={demProduct}
+          rainfall={rainfall}
+          durationSeconds={duration}
           onClose={() => setShowCheck(false)}
           onRun={() => runMutation.mutate()}
           running={runMutation.isPending}
@@ -400,9 +414,11 @@ function AreaControl({ area, drawMode, resolving, demReady, onDraw }: {
   )
 }
 
-function RunCheck({ validation, demProduct, onClose, onRun, running }: {
+function RunCheck({ validation, demProduct, rainfall, durationSeconds, onClose, onRun, running }: {
   validation: ValidationResult
   demProduct?: DemProduct
+  rainfall: Rainfall
+  durationSeconds: number
   onClose: () => void
   onRun: () => void
   running: boolean
@@ -417,7 +433,7 @@ function RunCheck({ validation, demProduct, onClose, onRun, running }: {
         </header>
         <div className={validation.valid ? 'check-banner valid' : 'check-banner invalid'}>
           <strong>{validation.valid ? '配置可以运行' : '配置存在错误'}</strong>
-          <span>{validation.valid ? '固定模型与入口参数校验已通过' : '请关闭窗口并修正标记项'}</span>
+          <span>{validation.valid ? '固定模型与水源参数校验已通过' : '请关闭窗口并修正标记项'}</span>
         </div>
         {summary && (
           <div className="check-metrics">
@@ -425,8 +441,17 @@ function RunCheck({ validation, demProduct, onClose, onRun, running }: {
             <div><span>总流量</span><strong>{summary.totalDischargeM3s}<em> m³/s</em></strong></div>
             <div><span>输入水量</span><strong>{summary.totalInputVolumeM3.toLocaleString()}<em> m³</em></strong></div>
             <div><span>输出帧</span><strong>{summary.frameCount}</strong></div>
+            {summary.rainfallEnabled && <div><span>累计降雨</span><strong>{summary.rainfallDepthMm.toFixed(1)}<em> mm</em></strong></div>}
           </div>
         )}
+        {summary?.rainfallEnabled && <details className="rainfall-check-details">
+          <summary>完整雨型 · {summary.rainfallPointCount} 节点 · 峰值 {summary.peakRainfallMmPerHour.toLocaleString()} mm/h</summary>
+          <div className="rainfall-check-table">
+            {rainfallIntervals(rainfall, durationSeconds).map((interval, index) => (
+              <span key={index}><b>{interval.startMinutes}–{interval.endMinutes} min</b><em>{interval.intensityMmPerHour} mm/h</em><small>{interval.depthMm.toFixed(2)} mm</small></span>
+            ))}
+          </div>
+        </details>}
         <ul className="check-list">
           {demProduct && <li className="pass"><b>✓</b><span>DEM 产品</span><strong>{demProduct.name} · 网格 {demProduct.cellSizeM} m / 原始信息 {demProduct.sourceResolutionM} m</strong></li>}
           <li className="pass"><b>✓</b><span>外边界</span><strong>固定透射边界</strong></li>

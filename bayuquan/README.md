@@ -45,6 +45,12 @@ baseline. An inlet is represented only by connected `cellIds`:
   "durationSeconds": 600,
   "yieldstepSeconds": 60,
   "frictionScenario": "middle",
+  "rainfall": {
+    "enabled": true,
+    "points": [
+      {"timeMinutes": 0, "intensityMmPerHour": 50}
+    ]
+  },
   "inlets": [
     {
       "id": "inlet-001",
@@ -57,6 +63,12 @@ baseline. An inlet is represented only by connected `cellIds`:
   ]
 }
 ```
+
+Rainfall is optional and spatially uniform over the selected simulation area.
+Each point starts a right-continuous step in `mm/h`; the final point lasts
+until `durationSeconds`. Point times are strictly increasing whole minutes,
+the first point starts at minute zero, and no infiltration loss is applied.
+Scenarios may use rainfall, enabled inlets, or both.
 
 Velocity modes are:
 
@@ -93,6 +105,8 @@ The output contains:
 - `model.sww`: ANUGA result;
 - `frames/000000000.tif`, etc.: atomic five-band depth/stage/speed/u/v COGs;
 - `report.json`: per-inlet and total water-volume/hazard report.
+- Rainfall-enabled reports include effective area, cumulative depth, requested
+  and applied volume, volume difference, and per-step interval details.
 
 Each `yieldstep`, including `t=0`, is published immediately as a 75×56,
 EPSG:32651 COG aligned exactly with the cropped model DEM. Dry pixels retain

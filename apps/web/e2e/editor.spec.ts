@@ -1,7 +1,13 @@
 import { expect, test } from '@playwright/test'
 
 async function drawLocalRectangle(page: import('@playwright/test').Page) {
+  await expect(page.locator('.model-map')).toHaveAttribute(
+    'data-dem-ready',
+    'true',
+    { timeout: 20_000 },
+  )
   const canvas = page.locator('.maplibregl-canvas')
+  await expect(canvas).toBeVisible()
   const box = await canvas.boundingBox()
   if (!box) throw new Error('map canvas has no bounds')
   await page.getByRole('button', { name: /矩形/ }).click()
@@ -18,6 +24,19 @@ async function drawLocalRectangle(page: import('@playwright/test').Page) {
     'data-grid-ready',
     'true',
   )
+}
+
+async function selectCenterCell(page: import('@playwright/test').Page) {
+  const canvas = page.locator('.maplibregl-canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('map canvas has no bounds')
+  const readout = page.locator('.selection-readout strong').first()
+  for (const [x, y] of [[0.5, 0.5], [0.47, 0.5], [0.53, 0.5], [0.5, 0.47], [0.5, 0.53]]) {
+    await canvas.click({ position: { x: box.width * x, y: box.height * y } })
+    if (Number(await readout.textContent()) > 0) break
+  }
+  await expect(readout).not.toHaveText('0')
+  await expect(page.getByText('连续', { exact: true })).toBeVisible()
 }
 
 test('user locks a local domain before selecting inlet cells', async ({ page }) => {
@@ -43,7 +62,7 @@ test('user locks a local domain before selecting inlet cells', async ({ page }) 
   await drawLocalRectangle(page)
   await expect(page.getByRole('button', { name: '新建入口' })).toBeEnabled()
   await expect(demSelector).toBeDisabled()
-  await expect(page.getByText('已锁定')).toBeVisible()
+  await expect(page.getByText('已锁定', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '使用其他 DEM 新建' })).toBeVisible()
   await expect(buildingLayer.locator('input')).toBeEnabled()
   await buildingLayer.locator('input').check()
@@ -77,13 +96,48 @@ test('editor keeps inlet controls gated until an area is locked', async ({ page 
   await expect(page.getByText('请先选择模拟区域')).toBeVisible()
 })
 
+test('user can configure and save a rainfall-only scenario', async ({ page }) => {
+  await page.goto('/')
+  await drawLocalRectangle(page)
+  await page.getByLabel('入口名称').locator('..').getByText('启用').click()
+  await page.getByRole('tab', { name: /降雨/ }).click()
+  await expect(page.getByText('降雨未参与计算')).toBeVisible()
+  await page.locator('.rainfall-switch').getByText('启用').click()
+  await expect(page.getByLabel('节点 1 时间（分钟）')).toHaveValue('0')
+  await expect(page.getByLabel('节点 1 雨强')).toHaveValue('50')
+  await expect(page.getByRole('img', { name: '阶梯雨型预览' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /运行模拟/ })).toBeEnabled()
+  await page.locator('.scenario-rail label').filter({ hasText: '模拟时长' }).locator('input').fill('20')
+  await page.locator('.scenario-rail label').filter({ hasText: '输出步长' }).locator('input').fill('10')
+
+  const savedResponse = page.waitForResponse((response) => (
+    response.url().endsWith('/api/scenarios')
+    && response.request().method() === 'POST'
+    && response.status() === 201
+  ))
+  await page.getByRole('button', { name: '保存场景' }).click()
+  const request = (await savedResponse).request().postDataJSON()
+  expect(request.rainfall).toEqual({
+    enabled: true,
+    points: [{ timeMinutes: 0, intensityMmPerHour: 50 }],
+  })
+  await page.getByRole('button', { name: /运行模拟/ }).click()
+  const check = page.getByRole('dialog', { name: '运行前检查' })
+  await expect(check.getByText('累计降雨')).toBeVisible()
+  await expect(check.getByText(/完整雨型 · 1 节点 · 峰值 50 mm\/h/)).toBeVisible()
+  await check.getByRole('button', { name: '确认并运行' }).click()
+  await expect(page.getByRole('region', { name: '模拟结果播放' })).toBeVisible()
+  await expect(page.locator('.rain-job')).toContainText('0.3 MM · 50 MM/H · 1 PT')
+  await expect(page.getByText(/FRAMES/)).toContainText('3 / 3', {
+    timeout: 150_000,
+  })
+  await expect(page.getByText('已完成')).toBeVisible()
+})
+
 test('saved scenario can be reopened from history after local edits', async ({ page }) => {
   await page.goto('/')
   await drawLocalRectangle(page)
-  const canvas = page.locator('.maplibregl-canvas')
-  const box = await canvas.boundingBox()
-  if (!box) throw new Error('map canvas has no bounds')
-  await canvas.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } })
+  await selectCenterCell(page)
 
   const scenarioName = `历史恢复测试-${Date.now()}`
   const nameInput = page.getByLabel('场景名称')
@@ -128,11 +182,7 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   test.setTimeout(180_000)
   await page.goto('/')
   await drawLocalRectangle(page)
-  const canvas = page.locator('.maplibregl-canvas')
-  const box = await canvas.boundingBox()
-  if (!box) throw new Error('map canvas has no bounds')
-  await canvas.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } })
-  await expect(page.getByText('连续', { exact: true })).toBeVisible()
+  await selectCenterCell(page)
   await page.locator('.scenario-rail label').filter({ hasText: '模拟时长' }).locator('input').fill('20')
   await page.locator('.scenario-rail label').filter({ hasText: '输出步长' }).locator('input').fill('10')
   await page.getByRole('button', { name: /运行模拟/ }).click()
@@ -140,13 +190,22 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await page.getByRole('button', { name: '确认并运行' }).click()
 
   await expect(page.getByRole('region', { name: '模拟结果播放' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '切换到二维地图' })).toBeVisible()
   await expect(page.getByText(/FRAMES/)).toContainText('3 / 3', {
     timeout: 150_000,
   })
+  await expect(page.getByRole('button', { name: '切换到二维地图' })).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText('已完成')).toBeVisible()
-  await page.reload()
-  await expect(page.getByText(/FRAMES/)).toContainText('3 / 3')
+  const completedJobId = new URL(page.url()).searchParams.get('job')
+  if (!completedJobId) throw new Error('completed job URL has no job ID')
+  await expect.poll(async () => {
+    const response = await page.request.get(`/api/jobs/${completedJobId}/frames`)
+    return (await response.json()).length
+  }).toBe(3)
+  const resultUrl = `${page.url()}&reload=${Date.now()}`
+  await page.goto('about:blank')
+  await page.waitForTimeout(1_000)
+  await page.goto(resultUrl)
+  await expect(page.getByText(/FRAMES/)).toContainText('3 / 3', { timeout: 20_000 })
   await page.getByRole('button', { name: /水位/ }).click()
   await expect(page.getByText('水位 STAGE')).toBeVisible()
   const resultCanvas = page.locator('.result-map-canvas .maplibregl-canvas')

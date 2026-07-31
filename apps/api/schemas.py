@@ -29,6 +29,18 @@ class InletRequest(BaseModel):
     display_color: str = Field(default="#00D8FF", alias="displayColor")
 
 
+class RainfallPointRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    time_minutes: int = Field(alias="timeMinutes")
+    intensity_mm_per_hour: float = Field(alias="intensityMmPerHour")
+
+
+class RainfallRequest(BaseModel):
+    enabled: bool = False
+    points: list[RainfallPointRequest] = Field(default_factory=list)
+
+
 class ScenarioRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -45,6 +57,7 @@ class ScenarioRequest(BaseModel):
         alias="frictionScenario"
     )
     inlets: list[InletRequest]
+    rainfall: RainfallRequest = Field(default_factory=RainfallRequest)
 
     def snapshot(self) -> dict:
         return self.model_dump(by_alias=True, exclude_none=True)

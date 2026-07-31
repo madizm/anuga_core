@@ -52,7 +52,8 @@ class DemProduct(Base):
     source_resolution_m: Mapped[float] = mapped_column(Float)
     resampling_method: Mapped[str] = mapped_column(String(40))
     max_cells: Mapped[int] = mapped_column(Integer)
-    resource_queue: Mapped[str] = mapped_column(String(100), default="standard")
+    resource_queue: Mapped[str] = mapped_column(
+        String(100), default="standard")
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
@@ -78,6 +79,9 @@ class Scenario(Base):
     duration_seconds: Mapped[float] = mapped_column(Float)
     yieldstep_seconds: Mapped[float] = mapped_column(Float)
     friction_scenario: Mapped[str] = mapped_column(String(16))
+    rainfall: Mapped[dict] = mapped_column(
+        JSON, default=lambda: {"enabled": False, "points": []}
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),

@@ -3,6 +3,10 @@
   "durationSeconds": 21600,
   "yieldstepSeconds": 300,
   "frictionScenario": "middle",
+  "rainfall": {
+    "enabled": false,
+    "points": []
+  },
   "inlets": [
     {
       "id": "inlet-001",

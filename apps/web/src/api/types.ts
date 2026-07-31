@@ -16,6 +16,16 @@ export interface Inlet {
   displayColor: string
 }
 
+export interface RainfallPoint {
+  timeMinutes: number
+  intensityMmPerHour: number
+}
+
+export interface Rainfall {
+  enabled: boolean
+  points: RainfallPoint[]
+}
+
 export interface ScenarioPayload {
   demProductId: string
   simulationAreaId: string
@@ -24,6 +34,7 @@ export interface ScenarioPayload {
   yieldstepSeconds: number
   frictionScenario: FrictionScenario
   inlets: Inlet[]
+  rainfall: Rainfall
 }
 
 export interface ValidationIssue {
@@ -38,6 +49,11 @@ export interface ValidationResult {
   summary: null | {
     enabledInletCount: number
     totalDischargeM3s: number
+    rainfallEnabled: boolean
+    rainfallPointCount: number
+    rainfallDepthMm: number
+    peakRainfallMmPerHour: number
+    rainfallInputVolumeM3: number
     totalInputVolumeM3: number
     frameCount: number
     simulationAreaId: string

@@ -14,7 +14,12 @@ import rasterio
 import anuga
 
 from .area_catalog import SimulationAreaCatalog
-from .runner import PreparedSimulation, apply_initial_water_levels
+from .runner import (
+    PreparedSimulation,
+    apply_initial_water_levels,
+    install_rainfall_operator,
+    rainfall_report,
+)
 from .spec import ScenarioSpec
 
 
@@ -98,8 +103,16 @@ def prepare_local_simulation(
             zero_velocity=inlet.zero_velocity,
             label=inlet.id,
         )
+    rainfall_area = float(domain.areas.sum())
+    rainfall_operator = install_rainfall_operator(domain, spec)
     return LocalSimulation(
-        prepared=PreparedSimulation(domain, operators, initial_volume),
+        prepared=PreparedSimulation(
+            domain,
+            operators,
+            rainfall_operator,
+            initial_volume,
+            rainfall_area,
+        ),
         triangle_cell_index=triangle_cells,
         area_hash=area_hash,
     )
@@ -159,9 +172,13 @@ def run_local_simulation(
             progress_sink(float(simulation_time), frame_index)
 
     if not np.isclose(last_time, spec.duration_seconds):
-        raise RuntimeError("ANUGA final frame does not equal scenario duration")
+        raise RuntimeError(
+            "ANUGA final frame does not equal scenario duration")
     final_volume = float(domain.get_water_volume())
-    applied_volume = sum(
+    rain = rainfall_report(
+        spec, prepared.rainfall_area_m2, prepared.rainfall_operator
+    )
+    applied_volume = rain["appliedVolumeM3"] + sum(
         float(operator.total_applied_volume)
         for operator in prepared.operators.values()
     )
@@ -178,6 +195,7 @@ def run_local_simulation(
         "initialWaterVolumeM3": prepared.initial_water_volume_m3,
         "requestedInputVolumeM3": (
             spec.total_discharge_m3s * spec.duration_seconds
+            + rain["requestedVolumeM3"]
         ),
         "appliedInputVolumeM3": applied_volume,
         "finalDomainWaterVolumeM3": final_volume,
@@ -188,6 +206,7 @@ def run_local_simulation(
         "maximumSpeedMps": maximum_speed,
         "everWetAreaM2": float(domain.areas[ever_wet].sum()),
         "runtimeSeconds": time.monotonic() - started,
+        "rainfall": rain,
     }
     output = Path(output_dir)
     (output / "report.json").write_text(

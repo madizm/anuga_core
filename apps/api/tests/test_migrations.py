@@ -32,6 +32,9 @@ def test_initial_migration_round_trip(tmp_path, monkeypatch):
     assert "dem_product_id" in {
         item["name"] for item in inspector.get_columns("scenarios")
     }
+    assert "rainfall" in {
+        item["name"] for item in inspector.get_columns("scenarios")
+    }
     job_columns = {
         item["name"] for item in inspector.get_columns("simulation_jobs")
     }

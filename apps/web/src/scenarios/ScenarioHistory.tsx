@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import type { SavedScenario } from '../api/types'
+import { rainfallSummary } from '../rainfall/rainfall'
 
 interface ScenarioHistoryProps {
   scenarios: SavedScenario[]
@@ -64,11 +65,15 @@ export function ScenarioHistory({
           {loading && scenarios.length === 0 && <div className="history-state"><i />正在读取场景档案</div>}
           {error && <div className="history-state error"><strong>读取失败</strong><span>{error}</span><button onClick={onRefresh}>重试</button></div>}
           {!loading && !error && scenarios.length === 0 && (
-            <div className="history-state empty"><b>00</b><strong>暂无历史场景</strong><span>完成区域与入口配置后，点击“保存场景”建立第一条记录。</span></div>
+            <div className="history-state empty"><b>00</b><strong>暂无历史场景</strong><span>完成区域与水源配置后，点击“保存场景”建立第一条记录。</span></div>
           )}
           {scenarios.map((scenario, index) => {
             const active = scenario.id === currentId
             const enabledInlets = scenario.inlets.filter((inlet) => inlet.enabled)
+            const rain = rainfallSummary(
+              scenario.rainfall ?? { enabled: false, points: [] },
+              scenario.durationSeconds,
+            )
             return (
               <article className={active ? 'history-card active' : 'history-card'} key={scenario.id}>
                 <div className="history-index">{String(index + 1).padStart(2, '0')}</div>
@@ -82,6 +87,7 @@ export function ScenarioHistory({
                     <i>{Math.round(scenario.durationSeconds / 60)} MIN</i>
                     <i>ΔT {scenario.yieldstepSeconds} S</i>
                     <i>MANNING {scenario.frictionScenario.toUpperCase()}</i>
+                    {scenario.rainfall?.enabled && <i className="rain-tag">降雨 {rain.cumulativeDepthMm.toFixed(1)} mm · 峰值 {rain.peakIntensityMmPerHour.toLocaleString()} mm/h</i>}
                   </div>
                   <small title={scenario.simulationAreaId}>AREA / {scenario.simulationAreaId.slice(0, 12)}</small>
                 </div>

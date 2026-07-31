@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { isFourNeighbourConnected, useInletStore } from './inletStore'
-import type { Inlet, VelocityMode } from '../api/types'
+import type { Inlet, Rainfall, VelocityMode } from '../api/types'
+import { RainfallEditor } from '../rainfall/RainfallEditor'
 
 function NumericField({
   label,
@@ -32,12 +34,24 @@ function NumericField({
   )
 }
 
-export function InletPanel({ demProductId, cellSizeM, areaHash, frictionScenario }: {
+export function InletPanel({
+  demProductId,
+  cellSizeM,
+  areaHash,
+  frictionScenario,
+  rainfall,
+  durationSeconds,
+  onRainfallChange,
+}: {
   demProductId: string
   cellSizeM: number
   areaHash: string | null
   frictionScenario: string
+  rainfall: Rainfall
+  durationSeconds: number
+  onRainfallChange: (rainfall: Rainfall) => void
 }) {
+  const [source, setSource] = useState<'inlets' | 'rainfall'>('inlets')
   const { inlets, activeId, addInlet, removeInlet, setActive, updateInlet, selectionError } = useInletStore()
   const active = inlets.find((item) => item.id === activeId)
 
@@ -45,12 +59,20 @@ export function InletPanel({ demProductId, cellSizeM, areaHash, frictionScenario
     <aside className={areaHash ? 'right-panel panel' : 'right-panel panel area-unavailable'}>
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">INFLOW CONTROL</span>
-          <h2>入口与参数</h2>
+          <span className="eyebrow">SOURCE CONTROL</span>
+          <h2>水源与参数</h2>
         </div>
-        <button className="icon-button add" disabled={!areaHash} onClick={addInlet} aria-label="新建入口">＋</button>
+        {source === 'inlets' && <button className="icon-button add" disabled={!areaHash} onClick={addInlet} aria-label="新建入口">＋</button>}
       </div>
 
+      <div className="source-tabs" role="tablist" aria-label="水源类型">
+        <button role="tab" aria-selected={source === 'inlets'} className={source === 'inlets' ? 'active' : ''} onClick={() => setSource('inlets')}>入口 <small>INFLOW</small></button>
+        <button role="tab" aria-selected={source === 'rainfall'} className={source === 'rainfall' ? 'active' : ''} onClick={() => setSource('rainfall')}>降雨 <small>RAIN</small></button>
+      </div>
+
+      {source === 'rainfall' ? (
+        <RainfallEditor rainfall={rainfall} durationSeconds={durationSeconds} onChange={onRainfallChange} />
+      ) : <>
       {!areaHash && <div className="area-required">
         <b>步骤 01 未完成</b>
         <span>锁定模拟区域后才可选择入口网格</span>
@@ -88,6 +110,7 @@ export function InletPanel({ demProductId, cellSizeM, areaHash, frictionScenario
         <div className="empty-state">新建一个入口以开始网格选择</div>
       )}
       {selectionError && <div className="inline-alert error">{selectionError}</div>}
+      </>}
     </aside>
   )
 }

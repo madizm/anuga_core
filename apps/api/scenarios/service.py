@@ -98,11 +98,26 @@ def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
             errors.append({"code": "FRAME_LIMIT",
                            "message": f"output exceeds {MAX_FRAMES} frames"})
 
+    rainfall_depth_mm = (
+        0.0 if spec is None
+        else spec.rainfall.cumulative_depth_mm(spec.duration_seconds)
+    )
+    rainfall_volume_m3 = (
+        0.0 if area is None else rainfall_depth_mm / 1000.0 * area.area_m2
+    )
     summary = None if spec is None else {
         "enabledInletCount": len(spec.inlets),
         "totalDischargeM3s": spec.total_discharge_m3s,
+        "rainfallEnabled": spec.rainfall.enabled,
+        "rainfallPointCount": len(spec.rainfall.points),
+        "rainfallDepthMm": rainfall_depth_mm,
+        "peakRainfallMmPerHour": (
+            spec.rainfall.peak_intensity_mm_per_hour
+        ),
+        "rainfallInputVolumeM3": rainfall_volume_m3,
         "totalInputVolumeM3": (
             spec.total_discharge_m3s * spec.duration_seconds
+            + rainfall_volume_m3
         ),
         "frameCount": spec.frame_count,
         "simulationAreaId": area_hash,
@@ -142,6 +157,7 @@ def save_scenario(
     scenario.duration_seconds = request.duration_seconds
     scenario.yieldstep_seconds = request.yieldstep_seconds
     scenario.friction_scenario = request.friction_scenario
+    scenario.rainfall = request.rainfall.model_dump(by_alias=True)
     scenario.inlets.clear()
     for order, item in enumerate(request.inlets):
         inlet = ScenarioInlet(
@@ -198,6 +214,7 @@ def scenario_snapshot(scenario: Scenario) -> dict:
         "durationSeconds": scenario.duration_seconds,
         "yieldstepSeconds": scenario.yieldstep_seconds,
         "frictionScenario": scenario.friction_scenario,
+        "rainfall": scenario.rainfall or {"enabled": False, "points": []},
         "inlets": inlets,
     }
 

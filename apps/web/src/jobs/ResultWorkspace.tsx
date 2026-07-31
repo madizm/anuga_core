@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import type { FramePointValue, ResultQuantity } from '../api/types'
 import { ResultMap } from './ResultMap'
 import { useJobPlayback } from './useJobPlayback'
+import { rainfallSummary } from '../rainfall/rainfall'
 
 const QUANTITY_LABELS: Record<ResultQuantity, string> = {
   depth: '水深',
@@ -82,6 +83,9 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
     QUEUED: '排队中', PREPARING: '准备模型', RUNNING: '计算中', COMPLETED: '已完成', FAILED: '失败',
   }[job?.status ?? 'QUEUED']), [job?.status])
   const terminal = job?.status === 'COMPLETED' || job?.status === 'FAILED'
+  const rain = job?.scenarioSnapshot?.rainfall?.enabled
+    ? rainfallSummary(job.scenarioSnapshot.rainfall, job.scenarioSnapshot.durationSeconds)
+    : null
 
   return (
     <section className="result-workspace" aria-label="模拟结果播放">
@@ -89,6 +93,7 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
         <button className="back-to-editor" onClick={onClose}>← 返回编辑</button>
         <div className="job-identity"><span>JOB</span><strong>{jobId.slice(0, 8).toUpperCase()}</strong></div>
         <div className="job-identity"><span>DEM</span><strong>{demProduct ? `${demProduct.cellSizeM} M` : '—'}</strong></div>
+        {rain && <div className="job-identity rain-job"><span>RAIN</span><strong>{rain.cumulativeDepthMm.toFixed(1)} MM · {rain.peakIntensityMmPerHour.toLocaleString()} MM/H · {rain.pointCount} PT</strong></div>}
         <div className={`connection ${connected || terminal ? 'online' : ''}`}><i />{terminal ? '事件归档' : connected ? '实时连接' : '正在重连'}</div>
         <div className="progress-copy"><strong>{statusLabel}</strong><span>{job?.simulationTimeSeconds ?? 0} / {job?.scenarioSnapshot?.durationSeconds ?? '—'} s</span></div>
         <div className="job-progress"><i style={{ width: `${progress}%` }} /></div>

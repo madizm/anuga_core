@@ -58,6 +58,7 @@ def test_resolve_returns_normalized_cells_and_all_mapped_triangles():
     assert selection.effective_triangle_area_m2 == 1050
     assert not selection.triangle_ids.flags.writeable
 
+
 def test_resolve_accepts_five_digit_grid_indices():
     large_mapping = GridTriangleMapping(
         triangle_cell_index=np.array([10_000, 10_001], dtype=np.int32),
@@ -149,3 +150,80 @@ def test_validate_mesh_checks_hash_and_triangle_count(tmp_path):
     mesh.write_bytes(b"changed")
     with pytest.raises(GridMappingError, match="SHA-256"):
         model.validate_mesh(mesh, 5)
+
+
+def rainfall(*points, enabled=True):
+    return {
+        "enabled": enabled,
+        "points": [
+            {"timeMinutes": time, "intensityMmPerHour": intensity}
+            for time, intensity in points
+        ],
+    }
+
+
+def test_rainfall_step_profile_and_cumulative_depth():
+    data = scenario()
+    data["durationSeconds"] = 3600
+    data["yieldstepSeconds"] = 60
+    data["rainfall"] = rainfall((0, 0), (10, 30), (40, 10))
+
+    spec = ScenarioSpec.from_dict(data, mapping())
+
+    assert spec.inlets == ()
+    assert spec.rainfall.intensity_at(599) == 0
+    assert spec.rainfall.intensity_at(600) == 30
+    assert spec.rainfall.intensity_at(2400) == 10
+    assert spec.rainfall.cumulative_depth_mm(3600) == pytest.approx(18.333333)
+
+
+def test_single_rainfall_point_defines_constant_rainfall():
+    data = scenario()
+    data["rainfall"] = rainfall((0, 50))
+
+    spec = ScenarioSpec.from_dict(data, mapping())
+
+    assert spec.rainfall.intensity_at(59) == 50
+    assert spec.rainfall.cumulative_depth_mm(60) == pytest.approx(50 / 60)
+
+
+def test_missing_or_disabled_rainfall_preserves_inlet_scenarios():
+    missing = ScenarioSpec.from_dict(scenario(inlet()), mapping())
+    disabled_data = scenario(inlet())
+    disabled_data["rainfall"] = {
+        "enabled": False,
+        "points": [{"timeMinutes": "ignored", "intensityMmPerHour": -1}],
+    }
+
+    disabled = ScenarioSpec.from_dict(disabled_data, mapping())
+
+    assert not missing.rainfall.enabled
+    assert not disabled.rainfall.enabled
+    assert disabled.rainfall.points == ()
+
+
+@pytest.mark.parametrize(
+    "profile, message",
+    [
+        ({"enabled": True, "points": []}, "at least one"),
+        (rainfall((1, 10)), "start at 0"),
+        (rainfall((0, 10), (0, 20)), "strictly increasing"),
+        (rainfall((0, -1)), "must not be negative"),
+        (rainfall((0.5, 10)), "whole minute"),
+        (rainfall((0, 10), (2, 20)), "within simulation duration"),
+    ],
+)
+def test_enabled_rainfall_is_strictly_validated(profile, message):
+    data = scenario()
+    data["rainfall"] = profile
+
+    with pytest.raises(ScenarioValidationError, match=message):
+        ScenarioSpec.from_dict(data, mapping())
+
+
+def test_zero_rainfall_without_an_inlet_is_not_an_effective_source():
+    data = scenario()
+    data["rainfall"] = rainfall((0, 0))
+
+    with pytest.raises(ScenarioValidationError, match="effective water source"):
+        ScenarioSpec.from_dict(data, mapping())

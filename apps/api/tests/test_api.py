@@ -11,6 +11,7 @@ import rasterio
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 
+import pytest
 import numpy as np
 from fastapi.testclient import TestClient
 
@@ -659,3 +660,68 @@ def test_flow_field_endpoint_publishes_wet_velocity_components(tmp_path):
     vectors = np.frombuffer(response.content, dtype="<f4", offset=44)
     assert np.isnan(vectors[:2]).all()
     np.testing.assert_allclose(vectors[2:], [3, 4])
+
+
+def test_rainfall_only_scenario_is_persisted_validated_and_snapshotted(
+    tmp_path,
+):
+    test_client, dispatched = client(tmp_path)
+    payload = scenario("rainfall only")
+    payload["inlets"] = []
+    payload["durationSeconds"] = 3600
+    payload["rainfall"] = {
+        "enabled": True,
+        "points": [
+            {"timeMinutes": 0, "intensityMmPerHour": 0},
+            {"timeMinutes": 10, "intensityMmPerHour": 30},
+            {"timeMinutes": 40, "intensityMmPerHour": 10},
+        ],
+    }
+
+    with test_client:
+        created = test_client.post("/api/scenarios", json=payload)
+        scenario_id = created.json()["id"]
+        validation = test_client.post(
+            f"/api/scenarios/{scenario_id}/validate"
+        )
+        job = test_client.post(
+            f"/api/scenarios/{scenario_id}/jobs",
+            json={"confirmWarnings": False},
+        )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["rainfall"] == payload["rainfall"]
+    assert validation.json()["valid"] is True
+    summary = validation.json()["summary"]
+    assert summary["enabledInletCount"] == 0
+    assert summary["rainfallDepthMm"] == pytest.approx(18.333333)
+    assert summary["peakRainfallMmPerHour"] == 30
+    assert summary["rainfallInputVolumeM3"] == pytest.approx(33.0)
+    assert job.status_code == 202, job.text
+    assert job.json()["scenarioSnapshot"]["rainfall"] == payload["rainfall"]
+    assert dispatched == [job.json()["id"]]
+
+
+def test_legacy_scenario_without_rainfall_defaults_to_disabled(tmp_path):
+    test_client, _ = client(tmp_path)
+
+    with test_client:
+        created = test_client.post("/api/scenarios", json=scenario())
+
+    assert created.status_code == 201, created.text
+    assert created.json()["rainfall"] == {"enabled": False, "points": []}
+
+
+def test_invalid_enabled_rainfall_is_rejected(tmp_path):
+    test_client, _ = client(tmp_path)
+    payload = scenario()
+    payload["rainfall"] = {
+        "enabled": True,
+        "points": [{"timeMinutes": 1, "intensityMmPerHour": 50}],
+    }
+
+    with test_client:
+        response = test_client.post("/api/scenarios", json=payload)
+
+    assert response.status_code == 422
+    assert "first rainfall point" in response.text
