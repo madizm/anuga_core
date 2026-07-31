@@ -29,7 +29,7 @@ def prepare_local_simulation(
     spec: ScenarioSpec,
     area_hash: str,
     catalog: SimulationAreaCatalog,
-    model_inputs_path: Path | str,
+    model_inputs_path: str,
     output_dir: Path | str,
 ) -> LocalSimulation:
     """Load a cached local mesh and assign cell-aligned model quantities."""
@@ -72,7 +72,7 @@ def prepare_local_simulation(
         area,
         triangle_cells,
         catalog.dem_path,
-        Path(model_inputs_path),
+        model_inputs_path,
         spec.friction_scenario,
     )
     domain.set_quantity(
@@ -109,7 +109,7 @@ def run_local_simulation(
     spec: ScenarioSpec,
     area_hash: str,
     catalog: SimulationAreaCatalog,
-    model_inputs_path: Path | str,
+    model_inputs_path: str,
     output_dir: Path | str,
     *,
     frame_sink: Callable[[object, float, int], None] | None = None,
@@ -199,8 +199,8 @@ def run_local_simulation(
 def _triangle_model_values(
     area,
     triangle_cells: np.ndarray,
-    dem_path: Path,
-    model_inputs_path: Path,
+    dem_path: str,
+    model_inputs_path: str,
     friction_scenario: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     row_start, row_stop, column_start, column_stop = area.window

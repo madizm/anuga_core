@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { Polygon } from 'geojson'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api/client'
 import type {
   FrictionScenario,
+  DemProduct,
   SavedScenario,
   ScenarioPayload,
   SimulationArea,
@@ -24,6 +25,7 @@ export default function App() {
   const [duration, setDuration] = useState(21_600)
   const [yieldstep, setYieldstep] = useState(300)
   const [friction, setFriction] = useState<FrictionScenario>('middle')
+  const [demProductId, setDemProductId] = useState('')
   const [saved, setSaved] = useState<SavedScenario | null>(null)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [showCheck, setShowCheck] = useState(false)
@@ -37,7 +39,17 @@ export default function App() {
   const [jobsOpen, setJobsOpen] = useState(false)
   const clearAllSelections = useInletStore((state) => state.clearAllSelections)
   const replaceInlets = useInletStore((state) => state.replaceInlets)
-  const model = useQuery({ queryKey: ['model'], queryFn: api.model })
+  const demProducts = useQuery({
+    queryKey: ['dem-products'], queryFn: api.demProducts,
+  })
+  useEffect(() => {
+    if (!demProductId && demProducts.data?.defaultDemProductId) {
+      setDemProductId(demProducts.data.defaultDemProductId)
+    }
+  }, [demProductId, demProducts.data])
+  const demProduct = demProducts.data?.products.find(
+    (item) => item.id === demProductId,
+  )
   const history = useQuery({
     queryKey: ['scenarios'],
     queryFn: api.scenarios,
@@ -52,13 +64,15 @@ export default function App() {
     )) ? 2_000 : false,
   })
   const grid = useQuery({
-    queryKey: ['simulation-area-grid', area?.areaHash],
-    queryFn: () => api.simulationAreaGrid(area!.areaHash),
+    queryKey: ['simulation-area-grid', demProductId, area?.areaHash],
+    queryFn: () => api.simulationAreaGrid(demProductId, area!.areaHash),
     enabled: Boolean(area),
   })
 
   const areaMutation = useMutation({
-    mutationFn: api.resolveSimulationArea,
+    mutationFn: (geometry: Polygon) => api.resolveSimulationArea(
+      demProductId, geometry,
+    ),
     onSuccess: (resolved) => {
       setArea(resolved)
       setAreaDrawMode(null)
@@ -76,6 +90,10 @@ export default function App() {
   }, [areaMutation])
 
   const beginAreaDrawing = (mode: 'rectangle' | 'polygon') => {
+    if (!demProduct) {
+      setMessage('DEM 产品目录尚未就绪')
+      return
+    }
     const hasSelections = inlets.some((inlet) => inlet.cellIds.length > 0)
     if (hasSelections && !window.confirm('重新选择模拟区域将清空全部入口网格，是否继续？')) return
     if (hasSelections) clearAllSelections()
@@ -85,7 +103,21 @@ export default function App() {
     setAreaDrawMode(mode)
   }
 
+  const startDemVariant = () => {
+    if (!area) return
+    if (!window.confirm('将保留非空间参数，但清空模拟区域和全部入口位置。是否继续？')) return
+    clearAllSelections()
+    setArea(null)
+    setSaved(null)
+    setValidation(null)
+    setShowCheck(false)
+    setAreaDrawMode(null)
+    setName((value) => `${value} · DEM 副本`)
+    setMessage('已创建未绑定 DEM 的场景副本，请选择 DEM 后重新绘制区域')
+  }
+
   const payload = (): ScenarioPayload => ({
+    demProductId,
     simulationAreaId: area?.areaHash ?? '',
     name,
     durationSeconds: duration,
@@ -110,10 +142,13 @@ export default function App() {
   const loadScenarioMutation = useMutation({
     mutationFn: async (scenarioId: string) => {
       const scenario = await api.scenario(scenarioId)
-      const simulationArea = await api.simulationArea(scenario.simulationAreaId)
+      const simulationArea = await api.simulationArea(
+        scenario.demProductId, scenario.simulationAreaId,
+      )
       return { scenario, simulationArea }
     },
     onSuccess: ({ scenario, simulationArea }) => {
+      setDemProductId(scenario.demProductId)
       setName(scenario.name)
       setDuration(scenario.durationSeconds)
       setYieldstep(scenario.yieldstepSeconds)
@@ -131,6 +166,7 @@ export default function App() {
 
   const currentPayload = payload()
   const savedPayload = saved && {
+    demProductId: saved.demProductId,
     simulationAreaId: saved.simulationAreaId,
     name: saved.name,
     durationSeconds: saved.durationSeconds,
@@ -221,15 +257,18 @@ export default function App() {
           frictionScenario={friction}
           areaReady={Boolean(area)}
           areaCellCount={area?.cellCount ?? 0}
+          cellSizeM={demProduct?.cellSizeM}
         />
         <section className="map-stage">
           {grid.isError ? (
             <div className="map-error">无法加载局部计算网格</div>
           ) : (
             <ModelMap
+              key={demProductId}
               grid={grid.data}
-              demTilejsonUrl={model.data?.demTilejsonUrl}
-              terrainTilejsonUrl={model.data?.terrainTilejsonUrl}
+              demTilejsonUrl={demProduct?.demTilejsonUrl}
+              terrainTilejsonUrl={demProduct?.terrainTilejsonUrl}
+              cellSizeM={demProduct?.cellSizeM}
               frictionScenario={friction}
               areaDrawMode={areaDrawMode}
               onAreaDrawn={handleAreaDrawn}
@@ -239,11 +278,14 @@ export default function App() {
             area={area}
             drawMode={areaDrawMode}
             resolving={areaMutation.isPending}
+            demReady={Boolean(demProduct)}
             onDraw={beginAreaDrawing}
           />
-          {area && grid.isLoading && <div className="loading-grid"><span />正在装载局部 30 m 网格</div>}
+          {area && grid.isLoading && <div className="loading-grid"><span />正在装载局部 {demProduct?.cellSizeM ?? '—'} m 网格</div>}
         </section>
         <InletPanel
+          demProductId={demProductId}
+          cellSizeM={demProduct?.cellSizeM ?? 30}
           areaHash={area?.areaHash ?? null}
           frictionScenario={friction}
         />
@@ -254,13 +296,30 @@ export default function App() {
           <span>SCENARIO PARAMETERS</span>
           <strong>推演控制</strong>
         </div>
+        <label className="dem-product-field">
+          <span>DEM 产品 {area && <em>已锁定</em>}</span>
+          <select
+            aria-label="DEM 产品"
+            value={demProductId}
+            disabled={Boolean(area) || areaMutation.isPending || demProducts.isLoading}
+            onChange={(event) => setDemProductId(event.target.value)}
+          >
+            {(demProducts.data?.products ?? []).filter((item) => item.status === 'active').map((item) => (
+              <option value={item.id} key={item.id}>{item.name}</option>
+            ))}
+          </select>
+          {demProduct && <div className="dem-product-meta">
+            <small>网格 {demProduct.cellSizeM} m · 原始信息 {demProduct.sourceResolutionM} m · {demProduct.resamplingMethod === 'bilinear' ? '双线性' : '原始'}</small>
+            {area && <button type="button" onClick={startDemVariant}>使用其他 DEM 新建</button>}
+          </div>}
+        </label>
         <label><span>模拟时长</span><div><input type="number" min="1" value={duration} onChange={(event) => setDuration(Number(event.target.value))} /><em>s</em></div></label>
         <label><span>输出步长</span><div><input type="number" min="1" value={yieldstep} onChange={(event) => setYieldstep(Number(event.target.value))} /><em>s</em></div></label>
         <label><span>曼宁场景</span><select value={friction} onChange={(event) => setFriction(event.target.value as FrictionScenario)}><option value="low">LOW · 低</option><option value="middle">MID · 中</option><option value="high">HIGH · 高</option></select></label>
         <div className="rail-metric"><span>启用入口</span><strong>{enabled.length}</strong><em>inlets</em></div>
         <div className="rail-metric"><span>选中网格</span><strong>{selectedCells}</strong><em>cells</em></div>
         <div className="rail-metric accent"><span>总流量</span><strong>{totalDischarge.toLocaleString()}</strong><em>m³/s</em></div>
-        <div className="model-version"><i /> MODEL {model.data?.version ?? '--------'}<small>{model.data?.boundaryCondition ?? 'loading'}</small></div>
+        <div className="model-version"><i /> DEM {demProduct?.cellSizeM ?? '—'} M<small>{demProduct?.resourceQueue ?? 'loading'}</small></div>
       </footer>
 
       {message && <button className="toast" onClick={() => setMessage(null)}>{message}<span>×</span></button>}
@@ -293,6 +352,7 @@ export default function App() {
       {showCheck && validation && (
         <RunCheck
           validation={validation}
+          demProduct={demProduct}
           onClose={() => setShowCheck(false)}
           onRun={() => runMutation.mutate()}
           running={runMutation.isPending}
@@ -302,10 +362,11 @@ export default function App() {
   )
 }
 
-function AreaControl({ area, drawMode, resolving, onDraw }: {
+function AreaControl({ area, drawMode, resolving, demReady, onDraw }: {
   area: SimulationArea | null
   drawMode: 'rectangle' | 'polygon' | null
   resolving: boolean
+  demReady: boolean
   onDraw: (mode: 'rectangle' | 'polygon') => void
 }) {
   return (
@@ -326,12 +387,12 @@ function AreaControl({ area, drawMode, resolving, onDraw }: {
       <div className="area-actions">
         <button
           className={drawMode === 'rectangle' ? 'active' : ''}
-          disabled={resolving}
+          disabled={resolving || !demReady}
           onClick={() => onDraw('rectangle')}
         >□ 矩形</button>
         <button
           className={drawMode === 'polygon' ? 'active' : ''}
-          disabled={resolving}
+          disabled={resolving || !demReady}
           onClick={() => onDraw('polygon')}
         >⬡ 多边形</button>
       </div>
@@ -339,8 +400,9 @@ function AreaControl({ area, drawMode, resolving, onDraw }: {
   )
 }
 
-function RunCheck({ validation, onClose, onRun, running }: {
+function RunCheck({ validation, demProduct, onClose, onRun, running }: {
   validation: ValidationResult
+  demProduct?: DemProduct
   onClose: () => void
   onRun: () => void
   running: boolean
@@ -366,6 +428,7 @@ function RunCheck({ validation, onClose, onRun, running }: {
           </div>
         )}
         <ul className="check-list">
+          {demProduct && <li className="pass"><b>✓</b><span>DEM 产品</span><strong>{demProduct.name} · 网格 {demProduct.cellSizeM} m / 原始信息 {demProduct.sourceResolutionM} m</strong></li>}
           <li className="pass"><b>✓</b><span>外边界</span><strong>固定透射边界</strong></li>
           <li className="pass"><b>✓</b><span>局部计算域</span><strong>{summary?.simulationAreaId.slice(0, 12)}</strong></li>
           {validation.warnings.map((warning) => <li className="warning" key={warning.code}><b>!</b><span>警告</span><strong>{warning.message}</strong></li>)}

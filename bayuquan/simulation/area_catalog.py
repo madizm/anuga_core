@@ -29,10 +29,10 @@ class SimulationAreaCatalog:
         model_inputs_path: Path | str | None = None,
         max_cells: int = 25_000,
     ) -> None:
-        self.dem_path = Path(dem_path)
+        self.dem_path = str(dem_path)
         self.cache_directory = Path(cache_directory)
         self.model_inputs_path = (
-            None if model_inputs_path is None else Path(model_inputs_path)
+            None if model_inputs_path is None else str(model_inputs_path)
         )
         self.resolver = SimulationAreaResolver(
             self.dem_path,
@@ -111,7 +111,9 @@ class SimulationAreaCatalog:
             triangle_cells = mesh["triangle_cell_index"]
         return GridTriangleMapping(
             triangle_cell_index=triangle_cells,
-            triangle_area_m2=np.full(len(triangle_cells), 450.0),
+            triangle_area_m2=np.full(
+                len(triangle_cells), area.cell_size_m ** 2 / 2.0
+            ),
             nrows=area.nrows,
             ncols=area.ncols,
             cellsize=area.cell_size_m,
@@ -226,8 +228,8 @@ class SimulationAreaCatalog:
 
 def _grid_geojson(
     area: SimulationArea,
-    dem_path: Path,
-    model_inputs_path: Path | None = None,
+    dem_path: Path | str,
+    model_inputs_path: Path | str | None = None,
 ) -> dict:
     a, _, c, _, e, f = area.transform
     to_wgs84 = Transformer.from_crs(
@@ -271,8 +273,8 @@ def _grid_geojson(
 
 def _model_input_properties(
     area: SimulationArea,
-    dem_path: Path,
-    path: Path | None,
+    dem_path: Path | str,
+    path: Path | str | None,
 ) -> dict[str, dict]:
     row_start, row_stop, column_start, column_stop = area.window
     window = rasterio.windows.Window(

@@ -20,12 +20,8 @@ class Settings:
     titiler_url: str
     dispatch_jobs: bool
     auto_create_schema: bool
-    model_dem_url: str = "/data/model/web/elevation_cog.tif"
-    model_dem_path: Path | None = None
-    model_inputs_path: Path | None = None
+    dem_product_manifest: Path | None = None
     simulation_area_cache: Path | None = None
-    max_simulation_area_cells: int = 25_000
-    model_dataset_version: str = "bayuquan-dem-30m-v1"
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -49,25 +45,12 @@ class Settings:
             auto_create_schema=os.getenv(
                 "AUTO_CREATE_SCHEMA", "false"
             ).lower() in {"1", "true", "yes"},
-            model_dem_url=os.getenv(
-                "MODEL_DEM_URL", "/data/model/web/elevation_cog.tif"
-            ),
-            model_dem_path=Path(os.getenv(
-                "MODEL_DEM_PATH",
-                str(root / "OUTPUT/model/web/elevation_cog.tif"),
-            )),
-            model_inputs_path=Path(os.getenv(
-                "MODEL_INPUTS_PATH",
-                str(root / "OUTPUT/model/web/model_inputs_cog.tif"),
+            dem_product_manifest=Path(os.getenv(
+                "DEM_PRODUCT_MANIFEST",
+                str(root / "OUTPUT/model/dem-products.json"),
             )),
             simulation_area_cache=Path(os.getenv(
                 "SIMULATION_AREA_CACHE",
                 str(root / "simulation_areas"),
-            )),
-            model_dataset_version=os.getenv(
-                "MODEL_DATASET_VERSION", "bayuquan-dem-30m-v1"
-            ),
-            max_simulation_area_cells=int(os.getenv(
-                "MAX_SIMULATION_AREA_CELLS", "25000"
             )),
         )

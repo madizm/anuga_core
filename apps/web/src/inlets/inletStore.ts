@@ -115,7 +115,7 @@ export function isFourNeighbourConnected(cellIds: string[]): boolean {
     const current = pending.pop()!
     if (visited.has(current)) continue
     visited.add(current)
-    const match = /^r(\d{4})-c(\d{4})$/.exec(current)
+    const match = /^r(\d{4,})-c(\d{4,})$/.exec(current)
     if (!match) return false
     const row = Number(match[1])
     const column = Number(match[2])

@@ -117,25 +117,25 @@ def test_area_hash_identifies_the_cell_mask_not_ring_order(tmp_path):
     assert first.area_hash == second.area_hash
 
 
-def test_resolver_rejects_disconnected_cells_after_nodata_is_removed(tmp_path):
+def test_resolver_rejects_any_selected_nodata_cell(tmp_path):
     resolver = SimulationAreaResolver(
         write_dem(tmp_path, [[1, 32767, 1]]), dataset_version="dem-v1"
     )
 
-    with pytest.raises(SimulationAreaError, match="four-neighbour connected"):
+    with pytest.raises(SimulationAreaError, match="contains DEM NoData"):
         resolver.resolve(
             polygon(100, 290, 190, 320), geometry_crs="EPSG:32651"
         )
 
 
-def test_resolver_rejects_a_hole_created_by_nodata(tmp_path):
+def test_resolver_rejects_nodata_before_it_can_create_a_hole(tmp_path):
     values = np.ones((3, 3))
     values[1, 1] = 32767
     resolver = SimulationAreaResolver(
         write_dem(tmp_path, values), dataset_version="dem-v1"
     )
 
-    with pytest.raises(SimulationAreaError, match="holes are not supported"):
+    with pytest.raises(SimulationAreaError, match="contains DEM NoData"):
         resolver.resolve(
             polygon(100, 230, 190, 320), geometry_crs="EPSG:32651"
         )

@@ -58,6 +58,24 @@ def test_resolve_returns_normalized_cells_and_all_mapped_triangles():
     assert selection.effective_triangle_area_m2 == 1050
     assert not selection.triangle_ids.flags.writeable
 
+def test_resolve_accepts_five_digit_grid_indices():
+    large_mapping = GridTriangleMapping(
+        triangle_cell_index=np.array([10_000, 10_001], dtype=np.int32),
+        triangle_area_m2=np.array([50, 50], dtype=float),
+        nrows=1,
+        ncols=10_002,
+        cellsize=10,
+        xllcorner=100,
+        yllcorner=200,
+        mesh_sha256="unused",
+    )
+
+    selection = large_mapping.resolve([
+        "r0000-c10000", "r0000-c10001",
+    ])
+
+    assert selection.cell_ids == ("r0000-c10000", "r0000-c10001")
+
 
 @pytest.mark.parametrize(
     "cells, message",

@@ -17,6 +17,7 @@ export interface Inlet {
 }
 
 export interface ScenarioPayload {
+  demProductId: string
   simulationAreaId: string
   name: string
   durationSeconds: number
@@ -40,23 +41,38 @@ export interface ValidationResult {
     totalInputVolumeM3: number
     frameCount: number
     simulationAreaId: string
+    demProductId: string
     datasetVersion: string
     boundaryCondition: string
   }
 }
 
-export interface ModelMetadata {
-  version: string
+export interface DemProduct {
+  id: string
+  name: string
+  status: 'active' | 'deprecated' | 'unavailable'
+  isDefault: boolean
   crs: string
-  gridRows: number
-  gridColumns: number
   cellSizeM: number
+  sourceResolutionM: number
+  informationResolutionM: number
   datasetVersion: string
+  verticalDatum: string
+  elevationUnit: string
+  resamplingMethod: 'original' | 'bilinear'
+  maxCells: number
+  maxTriangles: number
+  resourceQueue: string
+  demSha256: string
   simulationAreaResolveUrl: string
-  maxSimulationAreaCells: number
   demTilejsonUrl: string
   terrainTilejsonUrl: string
-  boundaryCondition: string
+  derived: boolean
+}
+
+export interface DemProductCatalog {
+  defaultDemProductId: string
+  products: DemProduct[]
 }
 
 export interface SavedScenario extends ScenarioPayload {
@@ -68,6 +84,7 @@ export interface SavedScenario extends ScenarioPayload {
 export interface SimulationJob {
   id: string
   scenarioId: string
+  demProductId: string
   simulationAreaId: string
   simulationAreaBounds: [number, number, number, number] | null
   scenarioSnapshot: ScenarioPayload
@@ -118,6 +135,7 @@ export interface FramePointValue {
 export interface SimulationArea {
   id: string
   areaHash: string
+  demProductId: string
   datasetVersion: string
   crs: string
   cellCount: number

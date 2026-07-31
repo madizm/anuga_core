@@ -32,7 +32,9 @@ function NumericField({
   )
 }
 
-export function InletPanel({ areaHash, frictionScenario }: {
+export function InletPanel({ demProductId, cellSizeM, areaHash, frictionScenario }: {
+  demProductId: string
+  cellSizeM: number
   areaHash: string | null
   frictionScenario: string
 }) {
@@ -75,6 +77,8 @@ export function InletPanel({ areaHash, frictionScenario }: {
         <InletEditor
           inlet={active}
           canDelete={inlets.length > 1}
+          demProductId={demProductId}
+          cellSizeM={cellSizeM}
           areaHash={areaHash}
           frictionScenario={frictionScenario}
           onUpdate={(patch) => updateInlet(active.id, patch)}
@@ -89,6 +93,8 @@ export function InletPanel({ areaHash, frictionScenario }: {
 }
 
 function InletEditor({
+  demProductId,
+  cellSizeM,
   inlet,
   canDelete,
   areaHash,
@@ -96,6 +102,8 @@ function InletEditor({
   onUpdate,
   onDelete,
 }: {
+  demProductId: string
+  cellSizeM: number
   inlet: Inlet
   canDelete: boolean
   areaHash: string | null
@@ -104,11 +112,11 @@ function InletEditor({
   onDelete: () => void
 }) {
   const connected = isFourNeighbourConnected(inlet.cellIds)
-  const area = inlet.cellIds.length * 900
+  const area = inlet.cellIds.length * cellSizeM ** 2
   const stats = useQuery({
-    queryKey: ['selection-stats', areaHash, inlet.cellIds, frictionScenario],
+    queryKey: ['selection-stats', demProductId, areaHash, inlet.cellIds, frictionScenario],
     queryFn: () => api.resolveSelection(
-      areaHash!, inlet.cellIds, frictionScenario,
+      demProductId, areaHash!, inlet.cellIds, frictionScenario,
     ),
     enabled: Boolean(areaHash) && connected,
   })

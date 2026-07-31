@@ -22,7 +22,6 @@ import httpx
 from pyproj import Transformer
 from bayuquan.simulation.area_catalog import (
     SimulationAreaCatalog,
-    model_input_version,
 )
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi import status
@@ -32,6 +31,12 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db import Database
+from .dem_products import (
+    DemProductCatalog,
+    DemProductError,
+    DemProductView,
+    register_manifest,
+)
 from .models import (
     Scenario,
     SimulationFrame,
@@ -53,7 +58,7 @@ from .schemas import (
 )
 
 
-JobDispatcher = Callable[[str], None]
+JobDispatcher = Callable[[str, str], None]
 
 
 def create_app(
@@ -61,34 +66,27 @@ def create_app(
     settings: Settings | None = None,
     database: Database | None = None,
     area_catalog: SimulationAreaCatalog | None = None,
+    dem_catalog: DemProductCatalog | None = None,
     dispatcher: JobDispatcher | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
     database = database or Database(settings.database_url)
-    model_dem_path = settings.model_dem_path or (
-        settings.project_root / "OUTPUT/model/web/elevation_cog.tif"
-    )
+    register_products = dem_catalog is None and area_catalog is None
     area_cache = settings.simulation_area_cache or (
         settings.project_root / "simulation_areas"
     )
-    if area_catalog is None:
-        model_inputs_path = settings.model_inputs_path or (
-            settings.project_root / "OUTPUT/model/web/model_inputs_cog.tif"
-        )
-        area_catalog = SimulationAreaCatalog(
-            model_dem_path,
-            area_cache,
-            dataset_version=model_input_version(
-                model_inputs_path, settings.model_dataset_version
-            ),
-            model_inputs_path=model_inputs_path,
-            max_cells=settings.max_simulation_area_cells,
-        )
+    if dem_catalog is None:
+        if area_catalog is not None:
+            dem_catalog = _single_product_catalog(area_catalog)
+        else:
+            dem_catalog = DemProductCatalog(database, area_cache)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.auto_create_schema:
             database.create_schema()
+        if register_products and settings.dem_product_manifest is not None:
+            register_manifest(database, settings.dem_product_manifest)
         yield
 
     app = FastAPI(
@@ -98,7 +96,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.database = database
-    app.state.area_catalog = area_catalog
+    app.state.dem_products = dem_catalog
     app.state.dispatcher = dispatcher or _celery_dispatcher(settings)
     app.state.s3_client = boto3.client(
         "s3",
@@ -111,27 +109,61 @@ def create_app(
         with database.session_factory() as session:
             yield session
 
+    def product_or_404(
+        product_id: str, *, for_new_area: bool = False
+    ) -> DemProductView:
+        try:
+            return dem_catalog.get(product_id, for_new_area=for_new_area)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail="DEM product not found"
+            ) from error
+        except DemProductError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    def catalog_or_404(
+        product_id: str, *, for_new_area: bool = False
+    ) -> SimulationAreaCatalog:
+        product_or_404(product_id, for_new_area=for_new_area)
+        return dem_catalog.area_catalog(
+            product_id, for_new_area=for_new_area
+        )
+
     @app.get("/api/health")
     def health() -> dict:
+        try:
+            default = dem_catalog.default()
+        except DemProductError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return {"status": "ok", "defaultDemProductId": default.id}
+
+    @app.get("/api/dem-products")
+    def dem_products() -> dict:
+        try:
+            default = dem_catalog.default()
+        except DemProductError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         return {
-            "status": "ok",
-            "datasetVersion": area_catalog.metadata()["datasetVersion"],
+            "defaultDemProductId": default.id,
+            "products": [
+                item.response()
+                for item in dem_catalog.list(include_unavailable=True)
+            ],
         }
 
-    @app.get("/api/model")
-    def model_metadata() -> dict:
-        metadata = dict(area_catalog.metadata())
-        dataset_version = metadata["datasetVersion"]
-        metadata["terrainTilejsonUrl"] = (
-            f"/api/model/terrain/{dataset_version}/tilejson"
-        )
-        return metadata
+    @app.get("/api/dem-products/{product_id}")
+    def dem_product(product_id: str) -> dict:
+        return product_or_404(product_id).response()
 
-    def simulation_area_response(area) -> dict:
-        grid_url = f"/api/model/simulation-areas/{area.area_hash}/grid"
+    def simulation_area_response(product_id: str, area) -> dict:
+        grid_url = (
+            f"/api/dem-products/{product_id}/simulation-areas/"
+            f"{area.area_hash}/grid"
+        )
         return {
             "id": area.area_hash,
             "areaHash": area.area_hash,
+            "demProductId": product_id,
             "datasetVersion": area.dataset_version,
             "crs": area.crs,
             "cellCount": area.cell_count,
@@ -150,32 +182,41 @@ def create_app(
         }
 
     @app.post(
-        "/api/model/simulation-areas/resolve",
+        "/api/dem-products/{product_id}/simulation-areas/resolve",
         status_code=status.HTTP_201_CREATED,
     )
     def resolve_simulation_area(
-        request: SimulationAreaResolveRequest,
+        product_id: str, request: SimulationAreaResolveRequest
     ) -> dict:
+        catalog = catalog_or_404(product_id, for_new_area=True)
         try:
-            area = area_catalog.resolve(request.geometry)
+            area = catalog.resolve(request.geometry)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        return simulation_area_response(area)
+        return simulation_area_response(product_id, area)
 
-    @app.get("/api/model/simulation-areas/{area_hash}")
-    def read_simulation_area(area_hash: str) -> dict:
+    @app.get(
+        "/api/dem-products/{product_id}/simulation-areas/{area_hash}"
+    )
+    def read_simulation_area(product_id: str, area_hash: str) -> dict:
+        catalog = catalog_or_404(product_id)
         try:
-            area = area_catalog.area(area_hash)
+            area = catalog.area(area_hash)
         except KeyError as error:
             raise HTTPException(
                 status_code=404, detail="simulation area not found"
             ) from error
-        return simulation_area_response(area)
+        return simulation_area_response(product_id, area)
 
-    @app.get("/api/model/simulation-areas/{area_hash}/grid")
-    def simulation_area_grid(area_hash: str) -> JSONResponse:
+    @app.get(
+        "/api/dem-products/{product_id}/simulation-areas/{area_hash}/grid"
+    )
+    def simulation_area_grid(
+        product_id: str, area_hash: str
+    ) -> JSONResponse:
+        catalog = catalog_or_404(product_id)
         try:
-            grid = area_catalog.grid(area_hash)
+            grid = catalog.grid(area_hash)
         except KeyError as error:
             raise HTTPException(
                 status_code=404, detail="simulation area not found"
@@ -183,17 +224,18 @@ def create_app(
         return JSONResponse(grid)
 
     @app.post(
-        "/api/model/simulation-areas/{area_hash}/selection/resolve"
+        "/api/dem-products/{product_id}/simulation-areas/"
+        "{area_hash}/selection/resolve"
     )
     def resolve_simulation_area_selection(
+        product_id: str,
         area_hash: str,
         request: GridSelectionRequest,
     ) -> dict:
+        catalog = catalog_or_404(product_id)
         try:
-            return area_catalog.resolve_selection(
-                area_hash,
-                request.cell_ids,
-                request.friction_scenario,
+            return catalog.resolve_selection(
+                area_hash, request.cell_ids, request.friction_scenario
             )
         except KeyError as error:
             raise HTTPException(
@@ -202,29 +244,34 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
-    @app.get("/api/model/dem/tilejson")
-    def model_dem_tilejson() -> dict:
+    @app.get("/api/dem-products/{product_id}/tilejson")
+    def model_dem_tilejson(product_id: str) -> dict:
+        product = product_or_404(product_id)
         return {
             "tilejson": "3.0.0",
-            "name": "Bayuquan DEM",
-            "tiles": ["/api/model/dem/tiles/{z}/{x}/{y}.png"],
+            "name": product.name,
+            "tiles": [
+                f"/api/dem-products/{product.id}/tiles/"
+                "{z}/{x}/{y}.png"
+            ],
             "minzoom": 0,
             "maxzoom": 18,
         }
 
-    @app.get("/api/model/dem/tiles/{z}/{x}/{y}.png")
-    def model_dem_tile(z: int, x: int, y: int) -> Response:
-        upstream = (
-            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
-            f"{z}/{x}/{y}.png"
-        )
+    @app.get("/api/dem-products/{product_id}/tiles/{z}/{x}/{y}.png")
+    def model_dem_tile(
+        product_id: str, z: int, x: int, y: int
+    ) -> Response:
+        product = product_or_404(product_id)
         response = httpx.get(
-            upstream,
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
+            f"{z}/{x}/{y}.png",
             params={
-                "url": settings.model_dem_url,
+                "url": product.dem_uri,
                 "bidx": 1,
                 "rescale": "-36,100",
                 "colormap_name": "terrain",
+                "resampling": "bilinear",
             },
             timeout=20,
         )
@@ -244,21 +291,14 @@ def create_app(
             headers={"cache-control": "public, max-age=86400"},
         )
 
-    def require_current_terrain_version(dataset_version: str) -> None:
-        current = area_catalog.metadata()["datasetVersion"]
-        if dataset_version != current:
-            raise HTTPException(
-                status_code=404, detail="terrain dataset version not found"
-            )
-
-    @app.get("/api/model/terrain/{dataset_version}/tilejson")
-    def model_terrain_tilejson(dataset_version: str) -> dict:
-        require_current_terrain_version(dataset_version)
+    @app.get("/api/dem-products/{product_id}/terrain/tilejson")
+    def model_terrain_tilejson(product_id: str) -> dict:
+        product = product_or_404(product_id)
         return {
             "tilejson": "3.0.0",
-            "name": "Bayuquan 3D terrain",
+            "name": f"{product.name} 3D terrain",
             "tiles": [
-                f"/api/model/terrain/{dataset_version}/tiles/"
+                f"/api/dem-products/{product.id}/terrain/tiles/"
                 "{z}/{x}/{y}.png"
             ],
             "minzoom": 0,
@@ -267,20 +307,17 @@ def create_app(
         }
 
     @app.get(
-        "/api/model/terrain/{dataset_version}/tiles/{z}/{x}/{y}.png"
+        "/api/dem-products/{product_id}/terrain/tiles/{z}/{x}/{y}.png"
     )
     def model_terrain_tile(
-        dataset_version: str, z: int, x: int, y: int
+        product_id: str, z: int, x: int, y: int
     ) -> Response:
-        require_current_terrain_version(dataset_version)
-        upstream = (
-            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
-            f"{z}/{x}/{y}.png"
-        )
+        product = product_or_404(product_id)
         response = httpx.get(
-            upstream,
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
+            f"{z}/{x}/{y}.png",
             params={
-                "url": settings.model_dem_url,
+                "url": product.dem_uri,
                 "bidx": 1,
                 "resampling": "bilinear",
                 "algorithm": "terrainrgb",
@@ -312,7 +349,8 @@ def create_app(
         session: Session = Depends(session_dependency),
     ) -> dict:
         payload = request.snapshot()
-        validation = validate_scenario(payload, area_catalog)
+        catalog = catalog_or_404(request.dem_product_id, for_new_area=True)
+        validation = validate_scenario(payload, catalog)
         if not validation["valid"]:
             raise HTTPException(status_code=422, detail=validation)
         scenario = save_scenario(session, request)
@@ -347,7 +385,13 @@ def create_app(
         scenario = get_scenario(session, scenario_id)
         if scenario is None:
             raise HTTPException(status_code=404, detail="scenario not found")
-        validation = validate_scenario(request.snapshot(), area_catalog)
+        if request.dem_product_id != scenario.dem_product_id:
+            raise HTTPException(
+                status_code=409,
+                detail="DEM product is locked after area resolution",
+            )
+        catalog = catalog_or_404(request.dem_product_id)
+        validation = validate_scenario(request.snapshot(), catalog)
         if not validation["valid"]:
             raise HTTPException(status_code=422, detail=validation)
         scenario = save_scenario(session, request, scenario)
@@ -362,7 +406,8 @@ def create_app(
         scenario = get_scenario(session, scenario_id)
         if scenario is None:
             raise HTTPException(status_code=404, detail="scenario not found")
-        return validate_scenario(scenario_snapshot(scenario), area_catalog)
+        catalog = catalog_or_404(scenario.dem_product_id)
+        return validate_scenario(scenario_snapshot(scenario), catalog)
 
     @app.post(
         "/api/scenarios/{scenario_id}/jobs",
@@ -376,17 +421,21 @@ def create_app(
         scenario = get_scenario(session, scenario_id)
         if scenario is None:
             raise HTTPException(status_code=404, detail="scenario not found")
+        product = product_or_404(scenario.dem_product_id)
+        catalog = catalog_or_404(scenario.dem_product_id)
         snapshot = scenario_snapshot(scenario)
-        snapshot["simulationArea"] = area_catalog.snapshot(
+        snapshot["demProduct"] = product.response()
+        snapshot["simulationArea"] = catalog.snapshot(
             scenario.simulation_area_hash
         )
-        validation = validate_scenario(snapshot, area_catalog)
+        validation = validate_scenario(snapshot, catalog)
         if not validation["valid"]:
             raise HTTPException(status_code=422, detail=validation)
         if validation["warnings"] and not request.confirm_warnings:
             raise HTTPException(status_code=409, detail=validation)
         job = SimulationJob(
             scenario_id=scenario.id,
+            dem_product_id=scenario.dem_product_id,
             simulation_area_hash=scenario.simulation_area_hash,
             status="QUEUED",
             scenario_snapshot=snapshot,
@@ -394,7 +443,7 @@ def create_app(
         )
         session.add(job)
         session.commit()
-        app.state.dispatcher(job.id)
+        app.state.dispatcher(job.id, product.resource_queue)
         return job_response(job)
 
     @app.get("/api/jobs")
@@ -696,14 +745,63 @@ def create_app(
     return app
 
 
+class _SingleProductCatalog:
+    """Compatibility adapter for focused tests injecting one area catalog."""
+
+    def __init__(self, area_catalog: SimulationAreaCatalog):
+        metadata = area_catalog.metadata()
+        self.product = DemProductView(
+            id="dem-test",
+            name="Test DEM",
+            status="active",
+            is_default=True,
+            dataset_version=metadata["datasetVersion"],
+            dem_uri=str(getattr(area_catalog, "dem_path", "/test/dem.tif")),
+            model_inputs_uri=str(
+                getattr(area_catalog, "model_inputs_path", "/test/inputs.tif")
+            ),
+            dem_sha256="0" * 64,
+            model_inputs_sha256="1" * 64,
+            crs=metadata["crs"],
+            vertical_datum="test-datum",
+            elevation_unit="m",
+            cell_size_m=float(metadata["cellSizeM"]),
+            source_resolution_m=float(metadata["cellSizeM"]),
+            resampling_method="original",
+            max_cells=int(metadata.get("maxSimulationAreaCells", 25_000)),
+            resource_queue="standard",
+            metadata={},
+        )
+        self.catalog = area_catalog
+
+    def list(self, *, include_unavailable: bool = False):
+        return [self.product]
+
+    def get(self, product_id: str, *, for_new_area: bool = False):
+        if product_id != self.product.id:
+            raise KeyError(product_id)
+        return self.product
+
+    def default(self):
+        return self.product
+
+    def area_catalog(self, product_id: str, *, for_new_area: bool = False):
+        self.get(product_id, for_new_area=for_new_area)
+        return self.catalog
+
+
+def _single_product_catalog(area_catalog: SimulationAreaCatalog):
+    return _SingleProductCatalog(area_catalog)
+
+
 def _celery_dispatcher(settings: Settings) -> JobDispatcher:
     if not settings.dispatch_jobs:
-        return lambda job_id: None
+        return lambda job_id, queue: None
 
-    def dispatch(job_id: str) -> None:
+    def dispatch(job_id: str, queue: str) -> None:
         from celery import Celery
         celery = Celery(broker=settings.celery_broker_url)
-        celery.send_task("bayuquan.run_job", args=[job_id])
+        celery.send_task("bayuquan.run_job", args=[job_id], queue=queue)
 
     return dispatch
 
@@ -712,6 +810,7 @@ def job_response(job: SimulationJob) -> dict:
     return {
         "id": job.id,
         "scenarioId": job.scenario_id,
+        "demProductId": job.dem_product_id,
         "simulationAreaId": job.simulation_area_hash,
         "simulationAreaBounds": _simulation_area_bounds(
             job.scenario_snapshot

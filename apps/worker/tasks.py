@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from apps.api.config import Settings
 from apps.api.db import Database
+from apps.api.dem_products import DemProductCatalog
 from apps.api.models import (
     SimulationArtifact,
     SimulationFrame,
@@ -20,10 +21,6 @@ from apps.api.models import (
     utcnow,
 )
 from bayuquan.raster import CogWriter, LocalFrameRasterizer
-from bayuquan.simulation.area_catalog import (
-    SimulationAreaCatalog,
-    model_input_version,
-)
 from bayuquan.simulation.local_runner import run_local_simulation
 from bayuquan.simulation.spec import ScenarioSpec
 
@@ -45,21 +42,11 @@ class JobRunner:
         self.database = Database(settings.database_url)
         self.storage = ObjectStorage(settings)
         self.redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        self.model_inputs_path = settings.model_inputs_path or (
-            settings.project_root / "OUTPUT/model/web/model_inputs_cog.tif"
-        )
-        self.area_catalog = SimulationAreaCatalog(
-            settings.model_dem_path or (
-                settings.project_root / "OUTPUT/model/web/elevation_cog.tif"
-            ),
+        self.dem_products = DemProductCatalog(
+            self.database,
             settings.simulation_area_cache or (
                 settings.project_root / "simulation_areas"
             ),
-            dataset_version=model_input_version(
-                self.model_inputs_path, settings.model_dataset_version
-            ),
-            model_inputs_path=self.model_inputs_path,
-            max_cells=settings.max_simulation_area_cells,
         )
 
     def run(self, job_id: str) -> None:
@@ -82,22 +69,27 @@ class JobRunner:
             job.error_code = None
             job.error_message = None
             snapshot = job.scenario_snapshot
+            product_id = job.dem_product_id
         self._event(job_id, "job.status", {"status": "PREPARING"})
 
         try:
             self.storage.ensure_bucket()
             area_hash = snapshot["simulationAreaId"]
-            area = self.area_catalog.area(area_hash)
-            mapping = self.area_catalog.mapping(area_hash)
+            product = self.dem_products.get(product_id)
+            area_catalog = self.dem_products.area_catalog(product_id)
+            area = area_catalog.area(area_hash)
+            mapping = area_catalog.mapping(area_hash)
             spec = ScenarioSpec.from_dict(snapshot, mapping)
             with np.load(
-                self.area_catalog.mesh_path(area_hash), allow_pickle=False
+                area_catalog.mesh_path(area_hash), allow_pickle=False
             ) as mesh:
                 triangle_cells = mesh["triangle_cell_index"]
             rasterizer = LocalFrameRasterizer(
                 area,
                 triangle_cells,
-                np.full(len(triangle_cells), 450.0),
+                np.full(
+                    len(triangle_cells), area.cell_size_m ** 2 / 2.0
+                ),
             )
             writer = CogWriter(rasterizer.grid)
 
@@ -152,8 +144,8 @@ class JobRunner:
                 report = run_local_simulation(
                     spec,
                     area_hash,
-                    self.area_catalog,
-                    self.model_inputs_path,
+                    area_catalog,
+                    product.compute_model_inputs_uri,
                     output,
                     frame_sink=publish_frame,
                 )

@@ -33,6 +33,9 @@ class ScenarioRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(min_length=1, max_length=200)
+    dem_product_id: str = Field(
+        min_length=1, max_length=100, alias="demProductId"
+    )
     simulation_area_id: str = Field(
         min_length=64, max_length=64, alias="simulationAreaId"
     )

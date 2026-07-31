@@ -31,10 +31,21 @@ services:
       /workspace/OUTPUT/model/web/elevation_cog.tif
       --buildings /workspace/OUTPUT/buildings/buildings.gpkg
       --model-inputs-target /workspace/OUTPUT/model/web/model_inputs_cog.tif
+      --derived-dem-target /workspace/OUTPUT/model/web/elevation_10m_cog.tif
+      --derived-model-inputs-target /workspace/OUTPUT/model/web/model_inputs_10m_cog.tif
+      --manifest-target /workspace/OUTPUT/model/dem-products.json
+      --vertical-datum "WGS 84 ellipsoidal height"
+      --s3-endpoint-url http://minio:9000
+      --s3-bucket model-products
+      --s3-access-key anuga
+      --s3-secret-key anuga-secret
     working_dir: /opt/model-assets
     volumes:
       - ./bayuquan/elevation.tif:/data/elevation.tif:ro
       - ./OUTPUT:/workspace/OUTPUT
+    depends_on:
+      minio:
+        condition: service_healthy
 
   api:
     build: .
@@ -51,8 +62,14 @@ services:
       S3_ACCESS_KEY: anuga
       S3_SECRET_KEY: anuga-secret
       S3_BUCKET: simulation-jobs
+      AWS_ACCESS_KEY_ID: anuga
+      AWS_SECRET_ACCESS_KEY: anuga-secret
+      AWS_S3_ENDPOINT: minio:9000
+      AWS_VIRTUAL_HOSTING: "FALSE"
+      AWS_HTTPS: "NO"
       TITILER_URL: http://titiler
-      MODEL_DEM_URL: /data/model/web/elevation_cog.tif
+      GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
+      DEM_PRODUCT_MANIFEST: /workspace/OUTPUT/model/dem-products.json
     ports:
       - "8000:8000"
     working_dir: /opt/webgis
@@ -75,7 +92,28 @@ services:
     build: .
     command: >-
       celery -A apps.worker.tasks:celery_app worker
+      --loglevel=INFO --concurrency=1 --prefetch-multiplier=1 -Q standard
+    environment: *service-environment
+    working_dir: /opt/webgis
+    volumes:
+      - ./OUTPUT:/workspace/OUTPUT:ro
+      - ./OUTPUT/simulation_areas:/workspace/simulation_areas
+    depends_on:
+      simulation-area-permissions:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  high-resource-worker:
+    build: .
+    command: >-
+      celery -A apps.worker.tasks:celery_app worker
       --loglevel=INFO --concurrency=1 --prefetch-multiplier=1
+      -Q high-resource -n high-resource@%h
     environment: *service-environment
     working_dir: /opt/webgis
     volumes:
@@ -148,7 +186,7 @@ services:
     ports:
       - "8001:80"
     volumes:
-      - ./OUTPUT:/data:ro
+      - ./OUTPUT:/workspace/OUTPUT:ro
     depends_on:
       model-assets:
         condition: service_completed_successfully

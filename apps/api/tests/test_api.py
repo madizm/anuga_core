@@ -204,6 +204,7 @@ def settings(database_url: str) -> Settings:
 def scenario(name="baseline"):
     return {
         "name": name,
+        "demProductId": "dem-test",
         "simulationAreaId": "b" * 64,
         "durationSeconds": 60,
         "yieldstepSeconds": 10,
@@ -228,7 +229,7 @@ def client(tmp_path):
         settings=settings(str(database.engine.url)),
         database=database,
         area_catalog=FakeAreaCatalog(),
-        dispatcher=dispatched.append,
+        dispatcher=lambda job_id, queue: dispatched.append(job_id),
     )
     return TestClient(app), dispatched
 
@@ -236,12 +237,15 @@ def client(tmp_path):
 def test_model_metadata_does_not_publish_a_full_domain_grid(tmp_path):
     test_client, _ = client(tmp_path)
     with test_client:
-        model = test_client.get("/api/model")
+        model = test_client.get("/api/dem-products")
         grid = test_client.get("/api/model/grid")
 
     assert model.status_code == 200
-    assert model.json()["datasetVersion"] == "dataset-v1"
-    assert model.json()["demTilejsonUrl"] == "/api/model/dem/tilejson"
+    assert model.json()["defaultDemProductId"] == "dem-test"
+    assert model.json()["products"][0]["datasetVersion"] == "dataset-v1"
+    assert model.json()["products"][0]["demTilejsonUrl"] == (
+        "/api/dem-products/dem-test/tilejson"
+    )
     assert grid.status_code == 404
 
 
@@ -255,20 +259,21 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
 
     with test_client:
         resolved = test_client.post(
-            "/api/model/simulation-areas/resolve", json={"geometry": geometry}
+            "/api/dem-products/dem-test/simulation-areas/resolve",
+            json={"geometry": geometry},
         )
         restored = test_client.get(
-            f"/api/model/simulation-areas/{'b' * 64}"
+            f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}"
         )
         grid = test_client.get(
-            f"/api/model/simulation-areas/{'b' * 64}/grid"
+            f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/grid"
         )
         selection = test_client.post(
-            f"/api/model/simulation-areas/{'b' * 64}/selection/resolve",
+            f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/selection/resolve",
             json={"cellIds": ["r0010-c0020"], "frictionScenario": "middle"},
         )
         missing = test_client.get(
-            f"/api/model/simulation-areas/{'c' * 64}/grid"
+            f"/api/dem-products/dem-test/simulation-areas/{'c' * 64}/grid"
         )
 
     assert resolved.status_code == 201, resolved.text
@@ -277,6 +282,7 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
     assert resolved.json() == {
         "id": "b" * 64,
         "areaHash": "b" * 64,
+        "demProductId": "dem-test",
         "datasetVersion": "dataset-v1",
         "crs": "EPSG:32651",
         "cellCount": 2,
@@ -286,7 +292,7 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
         "window": {"rowStart": 10, "rowStop": 11,
                    "columnStart": 20, "columnStop": 22},
         "elevationM": {"minimum": 3.0, "maximum": 4.0, "mean": 3.5},
-        "gridUrl": f"/api/model/simulation-areas/{'b' * 64}/grid",
+        "gridUrl": f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/grid",
         "boundaryCondition": "transmissive",
     }
     assert grid.status_code == 200
@@ -306,11 +312,11 @@ def test_simulation_area_rejection_is_returned_as_validation_error(tmp_path):
             "simulation area cells must be four-neighbour connected"
         )
 
-    test_client.app.state.area_catalog.resolve = reject_area
+    test_client.app.state.dem_products.catalog.resolve = reject_area
 
     with test_client:
         response = test_client.post(
-            "/api/model/simulation-areas/resolve",
+            "/api/dem-products/dem-test/simulation-areas/resolve",
             json={"geometry": {"type": "Polygon", "coordinates": []}},
         )
 
@@ -332,12 +338,14 @@ def test_model_dem_tiles_are_rendered_through_titiler(
     monkeypatch.setattr("apps.api.main.httpx.get", render)
     test_client, _ = client(tmp_path)
     with test_client:
-        tilejson = test_client.get("/api/model/dem/tilejson")
-        rendered = test_client.get("/api/model/dem/tiles/13/6876/3092.png")
+        tilejson = test_client.get("/api/dem-products/dem-test/tilejson")
+        rendered = test_client.get(
+            "/api/dem-products/dem-test/tiles/13/6876/3092.png"
+        )
 
     assert tilejson.status_code == 200
     assert tilejson.json()["tiles"] == [
-        "/api/model/dem/tiles/{z}/{x}/{y}.png"
+        "/api/dem-products/dem-test/tiles/{z}/{x}/{y}.png"
     ]
     assert rendered.status_code == 200
     assert rendered.headers["content-type"] == "image/png"
@@ -345,10 +353,11 @@ def test_model_dem_tiles_are_rendered_through_titiler(
     assert requests == [(
         "http://unused/cog/tiles/WebMercatorQuad/13/6876/3092.png",
         {
-            "url": "/data/model/web/elevation_cog.tif",
+            "url": "/test/dem.tif",
             "bidx": 1,
             "rescale": "-36,100",
             "colormap_name": "terrain",
+            "resampling": "bilinear",
         },
         20,
     )]
@@ -368,25 +377,25 @@ def test_model_terrain_tiles_are_versioned_and_terrain_rgb_encoded(
     monkeypatch.setattr("apps.api.main.httpx.get", render)
     test_client, _ = client(tmp_path)
     with test_client:
-        model = test_client.get("/api/model")
+        model = test_client.get("/api/dem-products")
         tilejson = test_client.get(
-            "/api/model/terrain/dataset-v1/tilejson"
+            "/api/dem-products/dem-test/terrain/tilejson"
         )
         rendered = test_client.get(
-            "/api/model/terrain/dataset-v1/tiles/14/13753/6184.png"
+            "/api/dem-products/dem-test/terrain/tiles/14/13753/6184.png"
         )
         stale = test_client.get(
-            "/api/model/terrain/stale/tiles/14/13753/6184.png"
+            "/api/dem-products/stale/terrain/tiles/14/13753/6184.png"
         )
 
-    assert model.json()["terrainTilejsonUrl"] == (
-        "/api/model/terrain/dataset-v1/tilejson"
+    assert model.json()["products"][0]["terrainTilejsonUrl"] == (
+        "/api/dem-products/dem-test/terrain/tilejson"
     )
     assert tilejson.json() == {
         "tilejson": "3.0.0",
-        "name": "Bayuquan 3D terrain",
+        "name": "Test DEM 3D terrain",
         "tiles": [
-            "/api/model/terrain/dataset-v1/tiles/{z}/{x}/{y}.png"
+            "/api/dem-products/dem-test/terrain/tiles/{z}/{x}/{y}.png"
         ],
         "minzoom": 0,
         "maxzoom": 14,
@@ -400,7 +409,7 @@ def test_model_terrain_tiles_are_versioned_and_terrain_rgb_encoded(
     assert requests == [(
         "http://unused/cog/tiles/WebMercatorQuad/14/13753/6184.png",
         {
-            "url": "/data/model/web/elevation_cog.tif",
+            "url": "/test/dem.tif",
             "bidx": 1,
             "resampling": "bilinear",
             "algorithm": "terrainrgb",
@@ -431,6 +440,20 @@ def test_scenario_update_replaces_all_inlets_transactionally(tmp_path):
     assert validation.json()["summary"]["frameCount"] == 7
 
 
+def test_scenario_dem_product_is_locked_after_area_resolution(tmp_path):
+    test_client, _ = client(tmp_path)
+    with test_client:
+        created = test_client.post("/api/scenarios", json=scenario())
+        replacement = scenario("wrong product")
+        replacement["demProductId"] = "another-product"
+        response = test_client.put(
+            f"/api/scenarios/{created.json()['id']}", json=replacement
+        )
+
+    assert response.status_code == 409
+    assert "DEM product is locked" in response.text
+
+
 def test_invalid_disconnected_selection_is_rejected(tmp_path):
     test_client, _ = client(tmp_path)
     invalid = scenario()
@@ -459,6 +482,7 @@ def test_job_keeps_immutable_snapshot_and_is_dispatched(tmp_path):
     assert job.status_code == 202, job.text
     assert dispatched == [job.json()["id"]]
     assert stored_job.json()["scenarioSnapshot"]["name"] == "baseline"
+    assert stored_job.json()["demProductId"] == "dem-test"
     assert stored_job.json()["simulationAreaId"] == "b" * 64
     assert stored_job.json()["simulationAreaBounds"] == [
         122.2, 40.88, 122.23, 40.9,

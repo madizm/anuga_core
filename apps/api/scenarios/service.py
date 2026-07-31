@@ -106,6 +106,7 @@ def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
         ),
         "frameCount": spec.frame_count,
         "simulationAreaId": area_hash,
+        "demProductId": payload.get("demProductId"),
         "datasetVersion": area.dataset_version,
         "boundaryCondition": "transmissive",
     }
@@ -136,6 +137,7 @@ def save_scenario(
         scenario = Scenario()
         session.add(scenario)
     scenario.name = request.name
+    scenario.dem_product_id = request.dem_product_id
     scenario.simulation_area_hash = request.simulation_area_id
     scenario.duration_seconds = request.duration_seconds
     scenario.yieldstep_seconds = request.yieldstep_seconds
@@ -191,6 +193,7 @@ def scenario_snapshot(scenario: Scenario) -> dict:
         inlets.append(item)
     return {
         "name": scenario.name,
+        "demProductId": scenario.dem_product_id,
         "simulationAreaId": scenario.simulation_area_hash,
         "durationSeconds": scenario.duration_seconds,
         "yieldstepSeconds": scenario.yieldstep_seconds,

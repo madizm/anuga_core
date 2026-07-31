@@ -8,10 +8,11 @@ const TOOLS: { mode: SelectionMode; icon: string; label: string; hint: string }[
   { mode: 'box', icon: '□', label: '框选', hint: '拖出矩形范围' },
 ]
 
-export function LayerPanel({ frictionScenario, areaReady, areaCellCount }: {
+export function LayerPanel({ frictionScenario, areaReady, areaCellCount, cellSizeM }: {
   frictionScenario: FrictionScenario
   areaReady: boolean
   areaCellCount: number
+  cellSizeM?: number
 }) {
   const layers = useLayerStore()
   const mode = useInletStore((state) => state.selectionMode)
@@ -61,15 +62,15 @@ export function LayerPanel({ frictionScenario, areaReady, areaCellCount }: {
       <section className="tool-section layer-list">
         <h3>模型图层</h3>
         <LayerRow label="影像底图" detail="星图地球 · 影像" checked={layers.base} onChange={(visible) => layers.setLayer('base', visible)} swatch="base" />
-        <LayerRow label="DEM 高程" detail="30 m · terrain" checked={layers.dem} onChange={(visible) => layers.setLayer('dem', visible)} swatch="dem" />
-        <LayerRow label="30 m 局部网格" detail={areaReady ? `${areaCellCount.toLocaleString()} cells` : '选择区域后生成'} checked={layers.grid} disabled={!areaReady} onChange={(visible) => layers.setLayer('grid', visible)} swatch="grid" />
+        <LayerRow label="DEM 高程" detail={`${cellSizeM ?? '—'} m · terrain`} checked={layers.dem} onChange={(visible) => layers.setLayer('dem', visible)} swatch="dem" />
+        <LayerRow label={`${cellSizeM ?? '—'} m 局部网格`} detail={areaReady ? `${areaCellCount.toLocaleString()} cells` : '选择区域后生成'} checked={layers.grid} disabled={!areaReady} onChange={(visible) => layers.setLayer('grid', visible)} swatch="grid" />
         <LayerRow label="建筑覆盖率" detail="0–100% · 局部区域" checked={layers.buildings} disabled={!areaReady} onChange={(visible) => layers.setLayer('buildings', visible)} swatch="building" />
         <LayerRow label="曼宁糙率" detail={`${frictionScenario} · coefficient`} checked={layers.manning} disabled={!areaReady} onChange={(visible) => layers.setLayer('manning', visible)} swatch="friction" />
       </section>
 
       <div className="model-stamp">
         <span>LOCAL DOMAIN</span>
-        <strong>BYQ · 30 M</strong>
+        <strong>BYQ · {cellSizeM ?? '—'} M</strong>
         <small>Transmissive boundary</small>
       </div>
     </aside>

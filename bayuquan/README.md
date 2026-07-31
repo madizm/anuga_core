@@ -1,27 +1,34 @@
 # Bayuquan local-domain simulation
 
 This directory contains the Bayuquan Web GIS runtime. Each Job uses an
-immutable, area-hashed local mesh generated from the full 30 m DEM.
+immutable, area-hashed local mesh generated from its selected DEM product.
 See [`WEB_GIS_IMPLEMENTATION_PLAN.md`](WEB_GIS_IMPLEMENTATION_PLAN.md) for the
 full product plan.
 
-## 1. Build the static web DEM manually
+## 1. Build DEM products
 
 Docker Compose runs this step automatically through `model-assets`. To rebuild
 the COG directly:
 
 ```bash
 uv run --extra data python bayuquan/build_web_map_assets.py \
-  bayuquan/elevation.tif OUTPUT/model/web/elevation_cog.tif --force
+  bayuquan/elevation.tif OUTPUT/model/web/elevation_cog.tif \
+  --buildings OUTPUT/buildings/buildings.gpkg \
+  --model-inputs-target OUTPUT/model/web/model_inputs_cog.tif \
+  --derived-dem-target OUTPUT/model/web/elevation_10m_cog.tif \
+  --derived-model-inputs-target OUTPUT/model/web/model_inputs_10m_cog.tif \
+  --manifest-target OUTPUT/model/dem-products.json \
+  --vertical-datum 'WGS 84 ellipsoidal height' --force
 ```
 
-The output is tiled, compressed, contains internal overviews, and is exposed
-through `/api/model/dem/tilejson` rather than revealing its filesystem path.
-The same COG is also exposed as versioned Mapbox Terrain-RGB tiles through
-`/api/model/terrain/{datasetVersion}/tilejson`. TiTiler encodes these tiles on
-demand with bilinear resampling; Nginx caches the immutable, versioned tile
-URLs. The source DEM remains authoritative and is not upsampled into a second
-raster.
+The Compose asset build creates the original 30 m product and a strictly
+nested, bilinear 10 m product. Ancillary building and Manning cells are copied
+nearest-neighbour into each 3 × 3 block. The 10 m grid remains explicitly
+labelled as having 30 m source information resolution. Products are registered
+from `OUTPUT/model/dem-products.json`, stored in MinIO under content-addressed
+immutable keys, and exposed through product-scoped
+`/api/dem-products/{productId}/...` endpoints. TiTiler smooths overview tiles;
+the editor displays exact grid boundaries at editing zooms.
 
 MapLibre uses this source for optional 3D terrain. The editor defaults to a 2D
 orthographic view, while desktop result maps default to 3D. Both workspaces

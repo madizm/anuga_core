@@ -21,7 +21,12 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
   const [flowEnabled, setFlowEnabled] = useState(false)
   const [point, setPoint] = useState<FramePointValue | null>(null)
   const [displayedFrameIndex, setDisplayedFrameIndex] = useState<number | null>(null)
-  const model = useQuery({ queryKey: ['model'], queryFn: api.model })
+  const demProducts = useQuery({
+    queryKey: ['dem-products'], queryFn: api.demProducts,
+  })
+  const demProduct = demProducts.data?.products.find(
+    (item) => item.id === job?.demProductId,
+  )
   const requested = frames[Math.min(framePosition, Math.max(frames.length - 1, 0))]
   const current = frames.find((frame) => frame.frameIndex === displayedFrameIndex) ?? requested
   const flowFrameIndex = requested?.frameIndex ?? null
@@ -83,6 +88,7 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
       <header className="result-status">
         <button className="back-to-editor" onClick={onClose}>← 返回编辑</button>
         <div className="job-identity"><span>JOB</span><strong>{jobId.slice(0, 8).toUpperCase()}</strong></div>
+        <div className="job-identity"><span>DEM</span><strong>{demProduct ? `${demProduct.cellSizeM} M` : '—'}</strong></div>
         <div className={`connection ${connected || terminal ? 'online' : ''}`}><i />{terminal ? '事件归档' : connected ? '实时连接' : '正在重连'}</div>
         <div className="progress-copy"><strong>{statusLabel}</strong><span>{job?.simulationTimeSeconds ?? 0} / {job?.scenarioSnapshot?.durationSeconds ?? '—'} s</span></div>
         <div className="job-progress"><i style={{ width: `${progress}%` }} /></div>
@@ -98,8 +104,8 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
             flowEnabled={flowEnabled}
             flowField={flow.data?.field}
             flowFrameIndex={flow.data?.frameIndex}
-            demTilejsonUrl={model.data?.demTilejsonUrl}
-            terrainTilejsonUrl={model.data?.terrainTilejsonUrl}
+            demTilejsonUrl={demProduct?.demTilejsonUrl}
+            terrainTilejsonUrl={demProduct?.terrainTilejsonUrl}
             onPoint={(longitude, latitude) => pointMutation.mutate({ longitude, latitude })}
             onFrameDisplayed={setDisplayedFrameIndex}
           />

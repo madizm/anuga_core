@@ -21,6 +21,7 @@ interface ModelMapProps {
   grid?: FeatureCollection
   demTilejsonUrl?: string
   terrainTilejsonUrl?: string
+  cellSizeM?: number
   frictionScenario: FrictionScenario
   areaDrawMode?: 'rectangle' | 'polygon' | null
   onAreaDrawn?: (geometry: Polygon) => void
@@ -47,6 +48,7 @@ export function ModelMap({
   grid,
   demTilejsonUrl,
   terrainTilejsonUrl,
+  cellSizeM,
   frictionScenario,
   areaDrawMode = null,
   onAreaDrawn,
@@ -583,7 +585,7 @@ export function ModelMap({
         onRetry={retryTerrain}
       />
       {box && <div className="selection-box" style={box} />}
-      <div className="map-coordinate-chip">EPSG 32651 · 30 M GRID</div>
+      <div className="map-coordinate-chip">EPSG 32651 · {cellSizeM ?? '—'} M GRID</div>
       {((demSurfaceVisible && demReady) || (buildingsVisible && gridReady) || (manningVisible && gridReady)) && (
         <div className="map-legends">
           {demSurfaceVisible && demReady && (

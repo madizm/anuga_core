@@ -11,7 +11,7 @@ from typing import Iterable
 import numpy as np
 
 
-_CELL_ID = re.compile(r"^r(?P<row>\d{4})-c(?P<column>\d{4})$")
+_CELL_ID = re.compile(r"^r(?P<row>\d{4,})-c(?P<column>\d{4,})$")
 
 
 class GridMappingError(ValueError):
@@ -29,7 +29,7 @@ class GridSelection:
 
 
 class GridTriangleMapping:
-    """Validated runtime mapping between 30 m cells and mesh triangles."""
+    """Validated runtime mapping between DEM cells and mesh triangles."""
 
     def __init__(
         self,

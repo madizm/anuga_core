@@ -12,6 +12,7 @@ RUN sed -i "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
     && python -m pip install --no-cache-dir \
         --index-url "${PYPI_INDEX_URL}" \
         numpy \
+        boto3 \
         rasterio \
         "fiona>=1.10" \
     && rm -rf /var/lib/apt/lists/*

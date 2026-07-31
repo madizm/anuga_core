@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 
 from types import SimpleNamespace
 
@@ -8,10 +9,15 @@ from rasterio.enums import MaskFlags
 from rasterio.transform import from_origin
 import fiona
 from shapely.geometry import box, mapping
+from apps.api.db import Database
+from apps.api.dem_products import DemProductCatalog, register_manifest
 
 from bayuquan.build_web_map_assets import (
+    build_aligned_derived_dem,
+    build_aligned_derived_inputs,
     build_dem_cog,
     build_model_inputs_cog,
+    write_product_manifest,
 )
 
 from bayuquan.raster import (
@@ -191,6 +197,67 @@ def test_model_input_builder_treats_outside_building_coverage_as_zero(
         np.testing.assert_allclose(data[:, 0, 1], [0.5, 4, 0.1, 0.16, 0.2])
         np.testing.assert_allclose(data[:, 1, 3], [0, 0, 0.03, 0.04, 0.05])
         np.testing.assert_array_equal(data[:, 3, 3], np.full(5, -9999))
+
+
+def test_derived_product_is_nested_and_preserves_30m_input_cells(tmp_path):
+    dem = tmp_path / "dem-30m.tif"
+    inputs = tmp_path / "inputs-30m.tif"
+    transform = from_origin(100, 220, 30, 30)
+    with rasterio.open(
+        dem, "w", driver="GTiff", width=2, height=2, count=1,
+        dtype="float32", crs="EPSG:32651", transform=transform,
+        nodata=-9999,
+    ) as dataset:
+        dataset.write(np.array([[0, 20], [55, -9999]], dtype="float32"), 1)
+    with rasterio.open(
+        inputs, "w", driver="GTiff", width=2, height=2, count=5,
+        dtype="float32", crs="EPSG:32651", transform=transform,
+        nodata=-9999,
+    ) as dataset:
+        dataset.descriptions = (
+            "building_fraction", "building_density_class", "manning_low",
+            "manning_middle", "manning_high",
+        )
+        values = np.arange(20, dtype="float32").reshape(5, 2, 2)
+        values[:, 1, 1] = -9999
+        dataset.write(values)
+
+    derived_dem = build_aligned_derived_dem(
+        dem, tmp_path / "dem-10m.tif"
+    )
+    derived_inputs = build_aligned_derived_inputs(
+        inputs, tmp_path / "inputs-10m.tif"
+    )
+    manifest = write_product_manifest(
+        tmp_path / "products.json", dem, inputs,
+        derived_dem, derived_inputs, vertical_datum="TEST-DATUM",
+    )
+
+    with rasterio.open(derived_dem) as dataset:
+        assert dataset.shape == (6, 6)
+        assert dataset.transform == from_origin(100, 220, 10, 10)
+        assert dataset.dtypes == ("float32",)
+        assert np.any(dataset.read(1)[:3, :3] % 1 != 0)
+        assert np.all(dataset.read(1)[3:, 3:] == -9999)
+        assert dataset.tags()["DERIVATION_ALGORITHM"].startswith("bilinear")
+    with rasterio.open(derived_inputs) as dataset:
+        assert dataset.shape == (6, 6)
+        data = dataset.read()
+        np.testing.assert_array_equal(data[:, :3, :3], np.broadcast_to(
+            np.arange(0, 20, 4, dtype="float32")[:, None, None],
+            (5, 3, 3),
+        ))
+        assert np.all(data[:, 3:, 3:] == -9999)
+    document = json.loads(manifest.read_text())
+    assert document["products"][1]["isDefault"] is True
+    assert document["products"][1]["maxCells"] == 125_000
+    assert document["products"][1]["sourceResolutionM"] == 30
+    database = Database(f"sqlite:///{tmp_path / 'products.sqlite'}")
+    database.create_schema()
+    register_manifest(database, manifest)
+    catalog = DemProductCatalog(database, tmp_path / "areas")
+    assert catalog.default().id == "bayuquan-dem-10m-bilinear-v1"
+    assert catalog.default().max_cells == 125_000
 
 
 def test_local_rasterizer_aggregates_two_triangles_per_selected_cell():

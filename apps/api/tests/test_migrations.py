@@ -15,6 +15,7 @@ def test_initial_migration_round_trip(tmp_path, monkeypatch):
     inspector = inspect(create_engine(database_url))
     assert set(inspector.get_table_names()) == {
         "alembic_version",
+        "dem_products",
         "scenario_inlet_cells",
         "scenario_inlets",
         "scenarios",
@@ -28,10 +29,14 @@ def test_initial_migration_round_trip(tmp_path, monkeypatch):
     assert "simulation_area_hash" in {
         item["name"] for item in inspector.get_columns("scenarios")
     }
+    assert "dem_product_id" in {
+        item["name"] for item in inspector.get_columns("scenarios")
+    }
     job_columns = {
         item["name"] for item in inspector.get_columns("simulation_jobs")
     }
     assert "simulation_area_hash" in job_columns
+    assert "dem_product_id" in job_columns
     assert "fixed_model_version_id" not in job_columns
 
     command.downgrade(config, "base")

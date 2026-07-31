@@ -36,6 +36,14 @@ describe('grid connectivity', () => {
     ])).toBe(true)
   })
 
+  it('accepts connected cells with five-digit indices', () => {
+    expect(isFourNeighbourConnected([
+      'r7850-c10366',
+      'r7850-c10367',
+      'r7851-c10367',
+    ])).toBe(true)
+  })
+
   it('rejects diagonal-only and separated selections', () => {
     expect(isFourNeighbourConnected(['r0001-c0001', 'r0002-c0002'])).toBe(false)
     expect(isFourNeighbourConnected(['r0001-c0001', 'r0001-c0003'])).toBe(false)

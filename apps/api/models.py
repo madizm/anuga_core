@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    CheckConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,12 +31,49 @@ def uuid_string() -> str:
     return str(uuid.uuid4())
 
 
+class DemProduct(Base):
+    """Immutable terrain/model-input bundle selectable by simulations."""
+
+    __tablename__ = "dem_products"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    dataset_version: Mapped[str] = mapped_column(String(200), unique=True)
+    dem_uri: Mapped[str] = mapped_column(Text)
+    model_inputs_uri: Mapped[str] = mapped_column(Text)
+    dem_sha256: Mapped[str] = mapped_column(String(64))
+    model_inputs_sha256: Mapped[str] = mapped_column(String(64))
+    crs: Mapped[str] = mapped_column(String(100))
+    vertical_datum: Mapped[str] = mapped_column(String(100))
+    elevation_unit: Mapped[str] = mapped_column(String(20), default="m")
+    cell_size_m: Mapped[float] = mapped_column(Float)
+    source_resolution_m: Mapped[float] = mapped_column(Float)
+    resampling_method: Mapped[str] = mapped_column(String(40))
+    max_cells: Mapped[int] = mapped_column(Integer)
+    resource_queue: Mapped[str] = mapped_column(String(100), default="standard")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('active', 'deprecated', 'unavailable')",
+            name="ck_dem_product_status",
+        ),
+    )
+
+
 class Scenario(Base):
     __tablename__ = "scenarios"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True,
                                     default=uuid_string)
     name: Mapped[str] = mapped_column(String(200))
+    dem_product_id: Mapped[str] = mapped_column(
+        ForeignKey("dem_products.id"), index=True
+    )
     simulation_area_hash: Mapped[str] = mapped_column(String(64))
     duration_seconds: Mapped[float] = mapped_column(Float)
     yieldstep_seconds: Mapped[float] = mapped_column(Float)
@@ -99,6 +137,9 @@ class SimulationJob(Base):
                                     default=uuid_string)
     scenario_id: Mapped[str] = mapped_column(String(36),
                                              ForeignKey("scenarios.id"))
+    dem_product_id: Mapped[str] = mapped_column(
+        ForeignKey("dem_products.id"), index=True
+    )
     simulation_area_hash: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="QUEUED")
     scenario_snapshot: Mapped[dict] = mapped_column(JSON)

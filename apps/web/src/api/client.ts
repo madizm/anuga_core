@@ -1,7 +1,7 @@
 import type { Polygon } from 'geojson'
 import type { FeatureCollection } from 'geojson'
 import type {
-  ModelMetadata,
+  DemProductCatalog,
   SavedScenario,
   ScenarioPayload,
   SelectionStats,
@@ -82,19 +82,18 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
 }
 
 export const api = {
-  model: () => request<ModelMetadata>('/api/model'),
-  grid: () => request<FeatureCollection>('/api/model/grid'),
-  resolveSimulationArea: (geometry: Polygon) =>
-    request<SimulationArea>('/api/model/simulation-areas/resolve', {
+  demProducts: () => request<DemProductCatalog>('/api/dem-products'),
+  resolveSimulationArea: (productId: string, geometry: Polygon) =>
+    request<SimulationArea>(`/api/dem-products/${productId}/simulation-areas/resolve`, {
       method: 'POST',
       body: JSON.stringify({ geometry }),
     }),
-  simulationAreaGrid: (areaHash: string) =>
-    request<FeatureCollection>(`/api/model/simulation-areas/${areaHash}/grid`),
-  simulationArea: (areaHash: string) =>
-    request<SimulationArea>(`/api/model/simulation-areas/${areaHash}`),
-  resolveSelection: (areaHash: string, cellIds: string[], frictionScenario: string) =>
-    request<SelectionStats>(`/api/model/simulation-areas/${areaHash}/selection/resolve`, {
+  simulationAreaGrid: (productId: string, areaHash: string) =>
+    request<FeatureCollection>(`/api/dem-products/${productId}/simulation-areas/${areaHash}/grid`),
+  simulationArea: (productId: string, areaHash: string) =>
+    request<SimulationArea>(`/api/dem-products/${productId}/simulation-areas/${areaHash}`),
+  resolveSelection: (productId: string, areaHash: string, cellIds: string[], frictionScenario: string) =>
+    request<SelectionStats>(`/api/dem-products/${productId}/simulation-areas/${areaHash}/selection/resolve`, {
       method: 'POST',
       body: JSON.stringify({ cellIds, frictionScenario }),
     }),

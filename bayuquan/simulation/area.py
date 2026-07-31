@@ -1,4 +1,4 @@
-"""Resolve user geometry to a deterministic local 30 m simulation domain."""
+"""Resolve user geometry to a deterministic product-aligned domain."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import rasterio
 from pyproj import Transformer
 from rasterio.features import geometry_mask, geometry_window
 from rasterio.windows import Window, transform as window_transform
-from shapely.geometry import Polygon, mapping, shape
+from shapely.geometry import Polygon, box, mapping, shape
 from shapely.ops import transform as transform_geometry
 
 
@@ -111,6 +111,10 @@ class SimulationAreaResolver:
                     source_crs, dem.crs, always_xy=True
                 )
                 projected = transform_geometry(transformer.transform, requested)
+            if not box(*dem.bounds).covers(projected):
+                raise SimulationAreaError(
+                    "simulation area extends beyond the DEM coverage"
+                )
 
             try:
                 raw_window = geometry_window(
@@ -122,7 +126,7 @@ class SimulationAreaResolver:
                 ) from error
             window = _integer_window(raw_window)
             local_transform = window_transform(window, dem.transform)
-            selected = geometry_mask(
+            requested_cells = geometry_mask(
                 [mapping(projected)],
                 out_shape=(int(window.height), int(window.width)),
                 transform=local_transform,
@@ -130,9 +134,14 @@ class SimulationAreaResolver:
                 invert=True,
             )
             elevations = dem.read(1, window=window, masked=True)
-            selected &= ~np.ma.getmaskarray(elevations)
+            invalid = np.ma.getmaskarray(elevations)
             if dem.nodata is not None:
-                selected &= np.asarray(elevations) != dem.nodata
+                invalid |= np.asarray(elevations) == dem.nodata
+            if np.any(requested_cells & invalid):
+                raise SimulationAreaError(
+                    "simulation area contains DEM NoData cells"
+                )
+            selected = requested_cells
             _require_no_holes(selected)
 
             local_rows, local_columns = np.nonzero(selected)
@@ -202,7 +211,7 @@ class SimulationAreaResolver:
 
 
 def build_local_mesh(area: SimulationArea) -> LocalMesh:
-    """Split every selected square into two deterministic 450 m² triangles."""
+    """Split every selected square into two deterministic triangles."""
     a, b, c, d, e, f = area.transform
     if b != 0 or d != 0 or a <= 0 or e >= 0:
         raise SimulationAreaError("area transform is not a north-up grid")
