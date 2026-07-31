@@ -6,10 +6,21 @@ import type { FrictionScenario } from '../api/types'
 import { useInletStore } from '../inlets/inletStore'
 import { useLayerStore } from './mapStore'
 import { BASE_MAP_ATTRIBUTION, BASE_MAP_TILE_URL } from './baseMap'
+import { TerrainControl } from './TerrainControl'
+import {
+  applyTerrain,
+  HILLSHADE_LAYER,
+  installTerrain,
+  setTerrainCamera,
+  TERRAIN_SOURCE,
+  terrainSourceFromEvent,
+} from './terrain'
+import { useTerrainStore } from './terrainStore'
 
 interface ModelMapProps {
   grid?: FeatureCollection
   demTilejsonUrl?: string
+  terrainTilejsonUrl?: string
   frictionScenario: FrictionScenario
   areaDrawMode?: 'rectangle' | 'polygon' | null
   onAreaDrawn?: (geometry: Polygon) => void
@@ -35,6 +46,7 @@ const MANNING_RANGES: Record<FrictionScenario, [number, number]> = {
 export function ModelMap({
   grid,
   demTilejsonUrl,
+  terrainTilejsonUrl,
   frictionScenario,
   areaDrawMode = null,
   onAreaDrawn,
@@ -49,6 +61,11 @@ export function ModelMap({
   const [box, setBox] = useState<React.CSSProperties | null>(null)
   const [demReady, setDemReady] = useState(false)
   const [gridReady, setGridReady] = useState(false)
+  const [terrainReady, setTerrainReady] = useState(false)
+  const [terrainError, setTerrainError] = useState<string | null>(null)
+  const [terrainRetry, setTerrainRetry] = useState(0)
+  const [baseFailed, setBaseFailed] = useState(false)
+  const terrainCamera = useRef({ pitch: 55, bearing: -20 })
   const inlets = useInletStore((state) => state.inlets)
   const activeId = useInletStore((state) => state.activeId)
   const selectionMode = useInletStore((state) => state.selectionMode)
@@ -58,6 +75,14 @@ export function ModelMap({
   const demVisible = useLayerStore((state) => state.dem)
   const gridVisible = useLayerStore((state) => state.grid)
   const manningVisible = useLayerStore((state) => state.manning)
+  const terrainEnabled = useTerrainStore((state) => state.modelEnabled)
+  const terrainExaggeration = useTerrainStore((state) => state.exaggeration)
+  const hillshade = useTerrainStore((state) => state.hillshade)
+  const editingInTwoDimensions = Boolean(areaDrawMode)
+    || selectionMode === 'brush' || selectionMode === 'box'
+  const effectiveTerrain = terrainEnabled && !editingInTwoDimensions
+    && !terrainError
+  const demSurfaceVisible = baseFailed || (demVisible && !effectiveTerrain)
 
   useEffect(() => {
     if (!container.current || mapRef.current) return
@@ -232,7 +257,7 @@ export function ModelMap({
         id: DEM_LAYER,
         type: 'raster',
         source: DEM_SOURCE,
-        layout: { visibility: demVisible ? 'visible' : 'none' },
+        layout: { visibility: demSurfaceVisible ? 'visible' : 'none' },
         paint: {
           'raster-opacity': 0.82,
           'raster-saturation': -0.18,
@@ -250,7 +275,51 @@ export function ModelMap({
     if (map.isStyleLoaded()) install()
     else map.once('load', install)
     return () => { map.off('load', install) }
-  }, [demTilejsonUrl, demVisible])
+  }, [demSurfaceVisible, demTilejsonUrl])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !terrainTilejsonUrl) return
+    const install = () => {
+      try {
+        installTerrain(map, terrainTilejsonUrl, AREA_FILL)
+        setTerrainReady(true)
+      } catch (error) {
+        setTerrainError((error as Error).message || '地形初始化失败')
+      }
+    }
+    const onError = (event: unknown) => {
+      const sourceId = (event as { sourceId?: string }).sourceId
+      if (terrainSourceFromEvent(event)) {
+        setTerrainError('地形瓦片加载失败')
+      } else if (sourceId === 'base-map') {
+        setBaseFailed(true)
+      }
+    }
+    if (map.isStyleLoaded()) install()
+    else map.once('load', install)
+    map.on('error', onError)
+    return () => {
+      map.off('load', install)
+      map.off('error', onError)
+    }
+  }, [terrainTilejsonUrl, terrainRetry])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !terrainReady) return
+    try {
+      applyTerrain(map, effectiveTerrain, terrainExaggeration, hillshade)
+    } catch (error) {
+      setTerrainError((error as Error).message || '地形渲染失败')
+    }
+  }, [effectiveTerrain, hillshade, terrainExaggeration, terrainReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !terrainReady) return
+    setTerrainCamera(map, effectiveTerrain, terrainCamera.current)
+  }, [effectiveTerrain, terrainReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -380,7 +449,11 @@ export function ModelMap({
     if (!map?.getLayer('base-map')) return
     map.setLayoutProperty('base-map', 'visibility', baseVisible ? 'visible' : 'none')
     if (map.getLayer(DEM_LAYER)) {
-      map.setLayoutProperty(DEM_LAYER, 'visibility', demVisible ? 'visible' : 'none')
+      map.setLayoutProperty(
+        DEM_LAYER,
+        'visibility',
+        demSurfaceVisible ? 'visible' : 'none',
+      )
     }
     if (map.getLayer(BUILDING_LAYER)) {
       map.setLayoutProperty(BUILDING_LAYER, 'visibility', buildingsVisible ? 'visible' : 'none')
@@ -393,7 +466,7 @@ export function ModelMap({
       map.setLayoutProperty(GRID_FILL, 'visibility', visibility)
       map.setLayoutProperty(GRID_LINE, 'visibility', visibility)
     }
-  }, [baseVisible, buildingsVisible, demVisible, gridVisible, grid, manningVisible])
+  }, [baseVisible, buildingsVisible, demSurfaceVisible, gridVisible, grid, manningVisible])
 
   useEffect(() => {
     const map = mapRef.current
@@ -480,6 +553,18 @@ export function ModelMap({
     }
   }, [activeId, areaDrawMode, selectionMode, selectCells])
 
+  const retryTerrain = () => {
+    const map = mapRef.current
+    if (map) {
+      map.setTerrain(null)
+      if (map.getLayer(HILLSHADE_LAYER)) map.removeLayer(HILLSHADE_LAYER)
+      if (map.getSource(TERRAIN_SOURCE)) map.removeSource(TERRAIN_SOURCE)
+    }
+    setTerrainError(null)
+    setTerrainReady(false)
+    setTerrainRetry((value) => value + 1)
+  }
+
   const [manningMinimum, manningMaximum] = MANNING_RANGES[frictionScenario]
 
   return (
@@ -491,11 +576,17 @@ export function ModelMap({
         data-dem-ready={demReady}
         data-grid-ready={gridReady}
       />
+      <TerrainControl
+        scope="model"
+        temporarilyFlat={editingInTwoDimensions}
+        error={terrainError}
+        onRetry={retryTerrain}
+      />
       {box && <div className="selection-box" style={box} />}
       <div className="map-coordinate-chip">EPSG 32651 · 30 M GRID</div>
-      {((demVisible && demReady) || (buildingsVisible && gridReady) || (manningVisible && gridReady)) && (
+      {((demSurfaceVisible && demReady) || (buildingsVisible && gridReady) || (manningVisible && gridReady)) && (
         <div className="map-legends">
-          {demVisible && demReady && (
+          {demSurfaceVisible && demReady && (
             <div className="dem-legend" aria-label="DEM 高程图例">
               <span>DEM ELEVATION</span>
               <i />

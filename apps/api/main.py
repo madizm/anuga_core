@@ -120,7 +120,12 @@ def create_app(
 
     @app.get("/api/model")
     def model_metadata() -> dict:
-        return area_catalog.metadata()
+        metadata = dict(area_catalog.metadata())
+        dataset_version = metadata["datasetVersion"]
+        metadata["terrainTilejsonUrl"] = (
+            f"/api/model/terrain/{dataset_version}/tilejson"
+        )
+        return metadata
 
     def simulation_area_response(area) -> dict:
         grid_url = f"/api/model/simulation-areas/{area.area_hash}/grid"
@@ -237,6 +242,68 @@ def create_app(
             content=response.content,
             media_type="image/png",
             headers={"cache-control": "public, max-age=86400"},
+        )
+
+    def require_current_terrain_version(dataset_version: str) -> None:
+        current = area_catalog.metadata()["datasetVersion"]
+        if dataset_version != current:
+            raise HTTPException(
+                status_code=404, detail="terrain dataset version not found"
+            )
+
+    @app.get("/api/model/terrain/{dataset_version}/tilejson")
+    def model_terrain_tilejson(dataset_version: str) -> dict:
+        require_current_terrain_version(dataset_version)
+        return {
+            "tilejson": "3.0.0",
+            "name": "Bayuquan 3D terrain",
+            "tiles": [
+                f"/api/model/terrain/{dataset_version}/tiles/"
+                "{z}/{x}/{y}.png"
+            ],
+            "minzoom": 0,
+            "maxzoom": 14,
+            "encoding": "mapbox",
+        }
+
+    @app.get(
+        "/api/model/terrain/{dataset_version}/tiles/{z}/{x}/{y}.png"
+    )
+    def model_terrain_tile(
+        dataset_version: str, z: int, x: int, y: int
+    ) -> Response:
+        require_current_terrain_version(dataset_version)
+        upstream = (
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
+            f"{z}/{x}/{y}.png"
+        )
+        response = httpx.get(
+            upstream,
+            params={
+                "url": settings.model_dem_url,
+                "bidx": 1,
+                "resampling": "bilinear",
+                "algorithm": "terrainrgb",
+            },
+            timeout=20,
+        )
+        cache_headers = {
+            "cache-control": "public, max-age=2592000, immutable"
+        }
+        if response.status_code == 404:
+            return Response(
+                content=TRANSPARENT_TILE,
+                media_type="image/png",
+                headers=cache_headers,
+            )
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502, detail="terrain tile renderer failed"
+            )
+        return Response(
+            content=response.content,
+            media_type="image/png",
+            headers=cache_headers,
         )
 
     @app.post("/api/scenarios", status_code=status.HTTP_201_CREATED)

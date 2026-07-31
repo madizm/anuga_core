@@ -229,6 +229,7 @@ export default function App() {
             <ModelMap
               grid={grid.data}
               demTilejsonUrl={model.data?.demTilejsonUrl}
+              terrainTilejsonUrl={model.data?.terrainTilejsonUrl}
               frictionScenario={friction}
               areaDrawMode={areaDrawMode}
               onAreaDrawn={handleAreaDrawn}

@@ -28,6 +28,7 @@ test('user locks a local domain before selecting inlet cells', async ({ page }) 
   })
   await page.goto('/')
   await expect(page.getByText(/MODEL [a-f0-9]{8}/)).toBeVisible()
+  await expect(page.getByRole('button', { name: '切换到三维地形' })).toBeVisible()
   await expect(page.locator('.model-map')).toHaveAttribute('data-dem-ready', 'true')
   await expect(page.getByRole('button', { name: '新建入口' })).toBeDisabled()
   await expect(page.getByText('步骤 01 未完成')).toBeVisible()
@@ -134,6 +135,7 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await page.getByRole('button', { name: '确认并运行' }).click()
 
   await expect(page.getByRole('region', { name: '模拟结果播放' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '切换到二维地图' })).toBeVisible()
   await expect(page.getByText(/FRAMES/)).toContainText('3 / 3', {
     timeout: 150_000,
   })
@@ -142,7 +144,7 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await expect(page.getByText(/FRAMES/)).toContainText('3 / 3')
   await page.getByRole('button', { name: /水位/ }).click()
   await expect(page.getByText('水位 STAGE')).toBeVisible()
-  const resultCanvas = page.locator('.result-map-canvas canvas')
+  const resultCanvas = page.locator('.result-map-canvas .maplibregl-canvas')
   const resultBox = await resultCanvas.boundingBox()
   if (!resultBox) throw new Error('result map canvas has no bounds')
   await resultCanvas.click({
@@ -151,10 +153,12 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await expect(page.getByText(/FRAME SAMPLE/)).toBeVisible()
   await page.getByRole('button', { name: /三联/ }).click()
   await expect(page.locator('.result-map-canvas')).toHaveCount(3)
+  await expect(page.locator('.terrain-control')).toHaveCount(1)
   await expect(page.getByText('流速 SPEED')).toBeVisible()
   await page.getByRole('button', { name: /流向/ }).click()
   await expect(page.locator('.flow-particle-canvas[data-flow-frame="2"]')).toHaveCount(3)
   await expect(page.getByText('DYNAMIC FLOW')).toHaveCount(3)
+  await expect(page.getByText('二维流向投影')).toBeVisible()
 })
 
 function flowPayload() {

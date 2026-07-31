@@ -21,6 +21,7 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
   const [flowEnabled, setFlowEnabled] = useState(false)
   const [point, setPoint] = useState<FramePointValue | null>(null)
   const [displayedFrameIndex, setDisplayedFrameIndex] = useState<number | null>(null)
+  const model = useQuery({ queryKey: ['model'], queryFn: api.model })
   const requested = frames[Math.min(framePosition, Math.max(frames.length - 1, 0))]
   const current = frames.find((frame) => frame.frameIndex === displayedFrameIndex) ?? requested
   const flowFrameIndex = requested?.frameIndex ?? null
@@ -97,6 +98,8 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
             flowEnabled={flowEnabled}
             flowField={flow.data?.field}
             flowFrameIndex={flow.data?.frameIndex}
+            demTilejsonUrl={model.data?.demTilejsonUrl}
+            terrainTilejsonUrl={model.data?.terrainTilejsonUrl}
             onPoint={(longitude, latitude) => pointMutation.mutate({ longitude, latitude })}
             onFrameDisplayed={setDisplayedFrameIndex}
           />

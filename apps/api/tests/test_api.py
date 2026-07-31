@@ -354,6 +354,61 @@ def test_model_dem_tiles_are_rendered_through_titiler(
     )]
 
 
+def test_model_terrain_tiles_are_versioned_and_terrain_rgb_encoded(
+    tmp_path, monkeypatch
+):
+    tile = BytesIO()
+    Image.new("RGBA", (1, 1), (1, 134, 160, 255)).save(tile, "PNG")
+    requests = []
+
+    def render(url, *, params, timeout):
+        requests.append((url, params, timeout))
+        return SimpleNamespace(status_code=200, content=tile.getvalue())
+
+    monkeypatch.setattr("apps.api.main.httpx.get", render)
+    test_client, _ = client(tmp_path)
+    with test_client:
+        model = test_client.get("/api/model")
+        tilejson = test_client.get(
+            "/api/model/terrain/dataset-v1/tilejson"
+        )
+        rendered = test_client.get(
+            "/api/model/terrain/dataset-v1/tiles/14/13753/6184.png"
+        )
+        stale = test_client.get(
+            "/api/model/terrain/stale/tiles/14/13753/6184.png"
+        )
+
+    assert model.json()["terrainTilejsonUrl"] == (
+        "/api/model/terrain/dataset-v1/tilejson"
+    )
+    assert tilejson.json() == {
+        "tilejson": "3.0.0",
+        "name": "Bayuquan 3D terrain",
+        "tiles": [
+            "/api/model/terrain/dataset-v1/tiles/{z}/{x}/{y}.png"
+        ],
+        "minzoom": 0,
+        "maxzoom": 14,
+        "encoding": "mapbox",
+    }
+    assert rendered.status_code == 200
+    assert rendered.headers["cache-control"] == (
+        "public, max-age=2592000, immutable"
+    )
+    assert stale.status_code == 404
+    assert requests == [(
+        "http://unused/cog/tiles/WebMercatorQuad/14/13753/6184.png",
+        {
+            "url": "/data/model/web/elevation_cog.tif",
+            "bidx": 1,
+            "resampling": "bilinear",
+            "algorithm": "terrainrgb",
+        },
+        20,
+    )]
+
+
 def test_scenario_update_replaces_all_inlets_transactionally(tmp_path):
     test_client, _ = client(tmp_path)
     with test_client:

@@ -17,6 +17,15 @@ uv run --extra data python bayuquan/build_web_map_assets.py \
 
 The output is tiled, compressed, contains internal overviews, and is exposed
 through `/api/model/dem/tilejson` rather than revealing its filesystem path.
+The same COG is also exposed as versioned Mapbox Terrain-RGB tiles through
+`/api/model/terrain/{datasetVersion}/tilejson`. TiTiler encodes these tiles on
+demand with bilinear resampling; Nginx caches the immutable, versioned tile
+URLs. The source DEM remains authoritative and is not upsampled into a second
+raster.
+
+MapLibre uses this source for optional 3D terrain. The editor defaults to a 2D
+orthographic view, while desktop result maps default to 3D. Both workspaces
+offer 1.0×, 1.5×, and 2.0× vertical exaggeration and optional hillshade.
 
 ## 2. Define a scenario
 

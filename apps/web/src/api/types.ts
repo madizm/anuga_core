@@ -55,6 +55,7 @@ export interface ModelMetadata {
   simulationAreaResolveUrl: string
   maxSimulationAreaCells: number
   demTilejsonUrl: string
+  terrainTilejsonUrl: string
   boundaryCondition: string
 }
 

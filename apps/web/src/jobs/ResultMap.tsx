@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import maplibregl, { type Map, type MapOptions } from 'maplibre-gl'
 import type { FlowField, ResultQuantity, SimulationFrame } from '../api/types'
 import { BASE_MAP_ATTRIBUTION, BASE_MAP_TILE_URL } from '../map/baseMap'
@@ -8,6 +8,16 @@ import {
   type BufferState,
 } from './bufferedRasterFrames'
 import { FlowParticleLayer } from './FlowParticleLayer'
+import { TerrainControl } from '../map/TerrainControl'
+import {
+  applyTerrain,
+  HILLSHADE_LAYER,
+  installTerrain,
+  setTerrainCamera,
+  TERRAIN_SOURCE,
+  terrainSourceFromEvent,
+} from '../map/terrain'
+import { useTerrainStore } from '../map/terrainStore'
 
 const QUANTITIES: ResultQuantity[] = ['depth', 'stage', 'speed']
 const LABELS: Record<ResultQuantity, string> = {
@@ -24,6 +34,8 @@ interface ResultMapProps {
   flowEnabled: boolean
   flowField?: FlowField
   flowFrameIndex?: number
+  demTilejsonUrl?: string
+  terrainTilejsonUrl?: string
   onPoint: (longitude: number, latitude: number) => void
   onFrameDisplayed?: (frameIndex: number) => void
 }
@@ -36,6 +48,8 @@ export function ResultMap({
   flowEnabled,
   flowField,
   flowFrameIndex,
+  demTilejsonUrl,
+  terrainTilejsonUrl,
   onPoint,
   onFrameDisplayed,
 }: ResultMapProps) {
@@ -52,6 +66,13 @@ export function ResultMap({
     frameIndex: null,
   })
   const displayedFrames = useRef<number[]>([])
+  const terrainCameras = useRef<{ pitch: number; bearing: number }[]>([])
+  const [terrainError, setTerrainError] = useState<string | null>(null)
+  const [terrainRetry, setTerrainRetry] = useState(0)
+  const terrainEnabled = useTerrainStore((state) => state.resultEnabled)
+  const terrainExaggeration = useTerrainStore((state) => state.exaggeration)
+  const hillshade = useTerrainStore((state) => state.hillshade)
+  const effectiveTerrain = terrainEnabled && !terrainError
   const quantities = triple ? QUANTITIES : [quantity]
 
   useEffect(() => {
@@ -93,6 +114,78 @@ export function ResultMap({
   }, [triple, bounds])
 
   useEffect(() => {
+    if (!terrainTilejsonUrl) return
+    const cleanups = maps.current.map((map) => {
+      const install = () => {
+        try {
+          const firstResultLayer = map.getLayer('result-layer-0')
+            ? 'result-layer-0'
+            : map.getLayer('result-layer-1') ? 'result-layer-1' : undefined
+          installTerrain(map, terrainTilejsonUrl, firstResultLayer)
+          if (demTilejsonUrl && !map.getSource('terrain-dem-fallback')) {
+            map.addSource('terrain-dem-fallback', {
+              type: 'raster', url: demTilejsonUrl, tileSize: 256,
+            })
+            map.addLayer({
+              id: 'terrain-dem-fallback',
+              type: 'raster',
+              source: 'terrain-dem-fallback',
+              layout: { visibility: 'none' },
+              paint: { 'raster-opacity': 0.78, 'raster-saturation': -0.12 },
+            }, HILLSHADE_LAYER)
+          }
+        } catch (error) {
+          setTerrainError((error as Error).message || '地形初始化失败')
+        }
+      }
+      const onError = (event: unknown) => {
+        const sourceId = (event as { sourceId?: string }).sourceId
+        if (terrainSourceFromEvent(event)) {
+          setTerrainError('地形瓦片加载失败')
+        } else if (sourceId === 'base' && map.getLayer('terrain-dem-fallback')) {
+          map.setLayoutProperty('terrain-dem-fallback', 'visibility', 'visible')
+        }
+      }
+      if (map.isStyleLoaded()) install()
+      else map.once('load', install)
+      map.on('error', onError)
+      return () => {
+        map.off('load', install)
+        map.off('error', onError)
+      }
+    })
+    return () => cleanups.forEach((cleanup) => cleanup())
+  }, [bounds, demTilejsonUrl, terrainRetry, terrainTilejsonUrl, triple])
+
+  useEffect(() => {
+    const apply = (map: Map) => {
+      if (!map.getSource(TERRAIN_SOURCE)) return
+      try {
+        applyTerrain(map, effectiveTerrain, terrainExaggeration, hillshade)
+      } catch (error) {
+        setTerrainError((error as Error).message || '地形渲染失败')
+      }
+    }
+    maps.current.forEach((map) => {
+      if (map.isStyleLoaded()) apply(map)
+      else map.once('load', () => apply(map))
+    })
+  }, [bounds, effectiveTerrain, hillshade, terrainExaggeration, terrainRetry, terrainTilejsonUrl, triple])
+
+  useEffect(() => {
+    while (terrainCameras.current.length < maps.current.length) {
+      terrainCameras.current.push({ pitch: 55, bearing: -20 })
+    }
+    maps.current.forEach((map, index) => {
+      const apply = () => setTerrainCamera(
+        map, effectiveTerrain, terrainCameras.current[index],
+      )
+      if (map.isStyleLoaded()) apply()
+      else map.once('load', apply)
+    })
+  }, [bounds, effectiveTerrain, terrainRetry, triple])
+
+  useEffect(() => {
     maps.current.forEach((map, index) => {
       const displayedQuantity = triple ? QUANTITIES[index] : quantity
       installBufferedFrame(map, buffers.current[index], frame, displayedQuantity, (frameIndex) => {
@@ -114,6 +207,16 @@ export function ResultMap({
     }
   }, [flowEnabled, flowField, flowFrameIndex, triple])
 
+  const retryTerrain = () => {
+    for (const map of maps.current) {
+      map.setTerrain(null)
+      if (map.getLayer(HILLSHADE_LAYER)) map.removeLayer(HILLSHADE_LAYER)
+      if (map.getSource(TERRAIN_SOURCE)) map.removeSource(TERRAIN_SOURCE)
+    }
+    setTerrainError(null)
+    setTerrainRetry((value) => value + 1)
+  }
+
   return (
     <div className={triple ? 'result-maps triple' : 'result-maps'}>
       {quantities.map((displayedQuantity, index) => (
@@ -129,6 +232,12 @@ export function ResultMap({
           </div>
         </div>
       ))}
+      <TerrainControl
+        scope="result"
+        error={terrainError}
+        flowIsTwoDimensional={flowEnabled && Boolean(flowField)}
+        onRetry={retryTerrain}
+      />
     </div>
   )
 }
