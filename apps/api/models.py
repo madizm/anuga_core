@@ -82,6 +82,7 @@ class Scenario(Base):
     rainfall: Mapped[dict] = mapped_column(
         JSON, default=lambda: {"enabled": False, "points": []}
     )
+    hydraulic_features: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),

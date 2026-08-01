@@ -58,6 +58,9 @@ class ScenarioRequest(BaseModel):
     )
     inlets: list[InletRequest]
     rainfall: RainfallRequest = Field(default_factory=RainfallRequest)
+    hydraulic_features: list[dict] = Field(
+        default_factory=list, alias="hydraulicFeatures"
+    )
 
     def snapshot(self) -> dict:
         return self.model_dump(by_alias=True, exclude_none=True)
@@ -78,3 +81,16 @@ class GridSelectionRequest(BaseModel):
 
 class SimulationAreaResolveRequest(BaseModel):
     geometry: dict
+
+
+class ElevationProfileRequest(BaseModel):
+    geometry: dict
+    spacing_m: float | None = Field(default=None, alias="spacingM", gt=0)
+
+
+class HydraulicMeshPreviewRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    hydraulic_features: list[dict] = Field(
+        default_factory=list, alias="hydraulicFeatures"
+    )

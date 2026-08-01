@@ -88,6 +88,7 @@ export function ScenarioHistory({
                     <i>ΔT {scenario.yieldstepSeconds} S</i>
                     <i>MANNING {scenario.frictionScenario.toUpperCase()}</i>
                     {scenario.rainfall?.enabled && <i className="rain-tag">降雨 {rain.cumulativeDepthMm.toFixed(1)} mm · 峰值 {rain.peakIntensityMmPerHour.toLocaleString()} mm/h</i>}
+                    {(scenario.hydraulicFeatures?.length ?? 0) > 0 && <i className="structure-tag">水力要素 {scenario.hydraulicFeatures.length}</i>}
                   </div>
                   <small title={scenario.simulationAreaId}>AREA / {scenario.simulationAreaId.slice(0, 12)}</small>
                 </div>

@@ -6,7 +6,10 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .hydraulic_features import HydraulicFeaturesSpec
 
 from .grid_mapping import GridSelection, GridTriangleMapping
 
@@ -261,6 +264,7 @@ class ScenarioSpec:
     friction_scenario: str
     inlets: tuple[InletSpec, ...]
     rainfall: RainfallSpec
+    hydraulic_features: HydraulicFeaturesSpec
 
     @property
     def frame_count(self) -> int:
@@ -313,6 +317,10 @@ class ScenarioSpec:
             )
 
         rainfall = RainfallSpec.from_dict(data.get("rainfall"), duration)
+        from .hydraulic_features import HydraulicFeaturesSpec
+        hydraulic_features = HydraulicFeaturesSpec.from_list(
+            data.get("hydraulicFeatures")
+        )
         raw_inlets = data.get("inlets")
         if not isinstance(raw_inlets, list):
             raise ScenarioValidationError("inlets must be an array")
@@ -348,4 +356,5 @@ class ScenarioSpec:
             friction_scenario=friction,
             inlets=inlets,
             rainfall=rainfall,
+            hydraulic_features=hydraulic_features,
         )

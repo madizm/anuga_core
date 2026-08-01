@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from bayuquan.simulation.spec import ScenarioSpec, ScenarioValidationError
+from bayuquan.simulation.feature_compiler import compile_features
 
 from bayuquan.simulation.area_catalog import SimulationAreaCatalog
 from ..models import Scenario, ScenarioInlet, ScenarioInletCell
@@ -34,6 +35,19 @@ def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
             raise ScenarioValidationError("simulationAreaId is required")
         area = catalog.area(area_hash)
         spec = ScenarioSpec.from_dict(payload, catalog.mapping(area_hash))
+        if spec.hydraulic_features.all:
+            compiled_features = compile_features(
+                spec.hydraulic_features, area, str(catalog.dem_path)
+            )
+            for levee in compiled_features.levees:
+                if levee.minimum_freeboard_m <= 0:
+                    warnings.append({
+                        "code": "LEVEE_BELOW_TERRAIN",
+                        "message": (
+                            f"{levee.id} crest is not above terrain "
+                            "at every drawn vertex"
+                        ),
+                    })
     except (KeyError, ScenarioValidationError) as error:
         errors.append({"code": "INVALID_SCENARIO", "message": str(error)})
 
@@ -124,6 +138,17 @@ def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
         "demProductId": payload.get("demProductId"),
         "datasetVersion": area.dataset_version,
         "boundaryCondition": "transmissive",
+        "hydraulicFeatureCount": len(spec.hydraulic_features.all),
+        "leveeCount": len(spec.hydraulic_features.levees),
+        "channelCount": (
+            len(spec.hydraulic_features.simple_channels)
+            + len(spec.hydraulic_features.engineering_channels)
+        ),
+        "structureCount": (
+            len(spec.hydraulic_features.culverts)
+            + len(spec.hydraulic_features.bridges)
+        ),
+        "customMeshRequired": spec.hydraulic_features.requires_custom_mesh,
     }
     return {
         "valid": not errors,
@@ -158,6 +183,7 @@ def save_scenario(
     scenario.yieldstep_seconds = request.yieldstep_seconds
     scenario.friction_scenario = request.friction_scenario
     scenario.rainfall = request.rainfall.model_dump(by_alias=True)
+    scenario.hydraulic_features = request.hydraulic_features
     scenario.inlets.clear()
     for order, item in enumerate(request.inlets):
         inlet = ScenarioInlet(
@@ -215,6 +241,7 @@ def scenario_snapshot(scenario: Scenario) -> dict:
         "yieldstepSeconds": scenario.yieldstep_seconds,
         "frictionScenario": scenario.friction_scenario,
         "rainfall": scenario.rainfall or {"enabled": False, "points": []},
+        "hydraulicFeatures": scenario.hydraulic_features or [],
         "inlets": inlets,
     }
 

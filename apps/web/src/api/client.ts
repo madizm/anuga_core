@@ -1,7 +1,8 @@
-import type { Polygon } from 'geojson'
+import type { LineString, Polygon } from 'geojson'
 import type { FeatureCollection } from 'geojson'
 import type {
   DemProductCatalog,
+  ElevationProfile,
   SavedScenario,
   ScenarioPayload,
   SelectionStats,
@@ -10,6 +11,8 @@ import type {
   SimulationArea,
   FramePointValue,
   FlowField,
+  HydraulicFeature,
+  HydraulicMeshPreview,
   ValidationResult,
 } from './types'
 
@@ -92,6 +95,16 @@ export const api = {
     request<FeatureCollection>(`/api/dem-products/${productId}/simulation-areas/${areaHash}/grid`),
   simulationArea: (productId: string, areaHash: string) =>
     request<SimulationArea>(`/api/dem-products/${productId}/simulation-areas/${areaHash}`),
+  elevationProfile: (productId: string, areaHash: string, geometry: LineString) =>
+    request<ElevationProfile>(`/api/dem-products/${productId}/simulation-areas/${areaHash}/elevation-profile`, {
+      method: 'POST',
+      body: JSON.stringify({ geometry }),
+    }),
+  hydraulicMeshPreview: (productId: string, areaHash: string, hydraulicFeatures: HydraulicFeature[]) =>
+    request<HydraulicMeshPreview>(`/api/dem-products/${productId}/simulation-areas/${areaHash}/hydraulic-mesh-preview`, {
+      method: 'POST',
+      body: JSON.stringify({ hydraulicFeatures }),
+    }),
   resolveSelection: (productId: string, areaHash: string, cellIds: string[], frictionScenario: string) =>
     request<SelectionStats>(`/api/dem-products/${productId}/simulation-areas/${areaHash}/selection/resolve`, {
       method: 'POST',

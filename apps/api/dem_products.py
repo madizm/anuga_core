@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from bayuquan.simulation.area_catalog import SimulationAreaCatalog
 
@@ -177,11 +177,17 @@ def register_manifest(database: Database, manifest_path: Path | str) -> None:
         raise DemProductError("DEM product manifest has no products")
     defaults = [item for item in products if item.get("isDefault")]
     if len(defaults) != 1 or defaults[0].get("status", "active") != "active":
-        raise DemProductError("manifest needs exactly one active default product")
+        raise DemProductError(
+            "manifest needs exactly one active default product")
 
     validated = [_validate_manifest_product(item) for item in products]
     _validate_product_set(validated)
     with database.session_factory.begin() as session:
+        if session.bind is not None \
+                and session.bind.dialect.name == "postgresql":
+            session.execute(text(
+                "SELECT pg_advisory_xact_lock(191220240731)"
+            ))
         for values in validated:
             existing = session.get(DemProduct, values["id"])
             if existing is None:
@@ -266,7 +272,8 @@ def _validate_aligned_bundle(values: dict) -> None:
         if not np.allclose(tuple(dem.transform), tuple(model_inputs.transform)):
             raise DemProductError("model inputs transform does not match DEM")
         if not np.isclose(abs(dem.transform.a), values["cell_size_m"]):
-            raise DemProductError("DEM cell size does not match product metadata")
+            raise DemProductError(
+                "DEM cell size does not match product metadata")
         if model_inputs.descriptions != (
             "building_fraction", "building_density_class", "manning_low",
             "manning_middle", "manning_high",
@@ -288,6 +295,7 @@ def _validate_aligned_bundle(values: dict) -> None:
                 raise DemProductError(
                     f"{field} does not match registered file"
                 )
+
 
 def _validate_product_set(products: list[dict]) -> None:
     standards = {

@@ -8,6 +8,7 @@
     "points": []
   },
   "inlets": [
+  "hydraulicFeatures": [],
     {
       "id": "inlet-001",
       "name": "北侧入口",

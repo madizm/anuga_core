@@ -1,3 +1,5 @@
+import type { FeatureCollection } from 'geojson'
+
 export type VelocityMode = 'zero' | 'components' | 'bearing'
 export type FrictionScenario = 'low' | 'middle' | 'high'
 
@@ -26,6 +28,88 @@ export interface Rainfall {
   points: RainfallPoint[]
 }
 
+export type Position = [number, number]
+
+interface HydraulicFeatureBase {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+export interface LeveeFeature extends HydraulicFeatureBase {
+  type: 'levee'
+  geometry: { type: 'LineString'; coordinates: Position[] }
+  crestMode: 'absolute' | 'relative' | 'profile'
+  crestElevationM?: number
+  heightAboveGroundM?: number
+  crestElevationsM?: number[]
+  qFactor: number
+}
+
+export interface SimpleChannelFeature extends HydraulicFeatureBase {
+  type: 'simpleChannel'
+  geometry: { type: 'Polygon'; coordinates: Position[][] }
+  elevationMode: 'lowerBy' | 'absolute'
+  depthM?: number
+  elevationM?: number
+  manningN: number
+  maxTriangleAreaM2: number
+}
+
+export interface ChannelCrossSection {
+  distanceM: number
+  bedElevationM: number
+  bottomWidthM: number
+  sideSlope: number
+}
+
+export interface EngineeringChannelFeature extends HydraulicFeatureBase {
+  type: 'engineeringChannel'
+  geometry: { type: 'LineString'; coordinates: Position[] }
+  crossSections: ChannelCrossSection[]
+  bankHeightM: number
+  manningN: number
+  maxTriangleAreaM2: number
+}
+
+export interface CulvertFeature extends HydraulicFeatureBase {
+  type: 'culvert'
+  geometry: { type: 'LineString'; coordinates: Position[] }
+  shape: 'box' | 'pipe'
+  widthM?: number
+  heightM?: number
+  diameterM?: number
+  barrels: number
+  blockage: number
+  losses: number
+  manningN: number
+  invertElevationsM?: [number, number]
+}
+
+export interface BridgeFeature extends HydraulicFeatureBase {
+  type: 'bridge'
+  geometry: { type: 'LineString'; coordinates: Position[] }
+  widthM: number
+  heightM: number
+  leftSideSlope: number
+  rightSideSlope: number
+  blockage: number
+  losses: number
+  manningN: number
+  invertElevationsM?: [number, number]
+}
+
+export interface BreachFeature extends HydraulicFeatureBase {
+  type: 'breach'
+  leveeId: string
+  geometry: { type: 'Point'; coordinates: Position }
+  widthM: number
+  crestElevationM: number
+}
+
+export type HydraulicFeature = LeveeFeature | SimpleChannelFeature
+  | EngineeringChannelFeature | CulvertFeature | BridgeFeature | BreachFeature
+
 export interface ScenarioPayload {
   demProductId: string
   simulationAreaId: string
@@ -35,6 +119,7 @@ export interface ScenarioPayload {
   frictionScenario: FrictionScenario
   inlets: Inlet[]
   rainfall: Rainfall
+  hydraulicFeatures: HydraulicFeature[]
 }
 
 export interface ValidationIssue {
@@ -60,6 +145,11 @@ export interface ValidationResult {
     demProductId: string
     datasetVersion: string
     boundaryCondition: string
+    hydraulicFeatureCount: number
+    leveeCount: number
+    channelCount: number
+    structureCount: number
+    customMeshRequired: boolean
   }
 }
 
@@ -178,4 +268,22 @@ export interface SelectionStats {
   elevationM: { minimum: number; maximum: number; mean: number }
   buildingFraction: { minimum: number; maximum: number }
   manning: { minimum: number; maximum: number }
+}
+
+export interface ElevationProfile {
+  lengthM: number
+  spacingM: number
+  samples: Array<{
+    distanceM: number
+    elevationM: number
+    longitude: number
+    latitude: number
+  }>
+}
+
+export interface HydraulicMeshPreview extends FeatureCollection {
+  triangleCount: number
+  edgeCount: number
+  displayedEdgeCount: number
+  decimated: boolean
 }

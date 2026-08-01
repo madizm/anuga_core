@@ -94,6 +94,7 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
         <div className="job-identity"><span>JOB</span><strong>{jobId.slice(0, 8).toUpperCase()}</strong></div>
         <div className="job-identity"><span>DEM</span><strong>{demProduct ? `${demProduct.cellSizeM} M` : '—'}</strong></div>
         {rain && <div className="job-identity rain-job"><span>RAIN</span><strong>{rain.cumulativeDepthMm.toFixed(1)} MM · {rain.peakIntensityMmPerHour.toLocaleString()} MM/H · {rain.pointCount} PT</strong></div>}
+        {(job?.scenarioSnapshot?.hydraulicFeatures?.length ?? 0) > 0 && <div className="job-identity structure-job"><span>STRUCT</span><strong>{job?.scenarioSnapshot.hydraulicFeatures.length} FEATURES</strong></div>}
         <div className={`connection ${connected || terminal ? 'online' : ''}`}><i />{terminal ? '事件归档' : connected ? '实时连接' : '正在重连'}</div>
         <div className="progress-copy"><strong>{statusLabel}</strong><span>{job?.simulationTimeSeconds ?? 0} / {job?.scenarioSnapshot?.durationSeconds ?? '—'} s</span></div>
         <div className="job-progress"><i style={{ width: `${progress}%` }} /></div>

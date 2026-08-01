@@ -521,3 +521,59 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .rainfall-check-table small { color: var(--muted); }
 .rain-job { min-width: 175px; }
 .rain-job strong { color: #83eaf5 !important; font-size: 10px !important; }
+
+/* Hydraulic feature workbench */
+.hydraulic-panel { position: absolute; left: 18px; top: 132px; z-index: 14; width: 350px; color: #dcecf1; }
+.hydraulic-panel-trigger { width: 190px; height: 42px; border: 1px solid #1f5968; background: rgba(5, 22, 28, .94); color: #b8d1d8; display: flex; align-items: center; gap: 10px; padding: 0 13px; text-transform: uppercase; }
+.hydraulic-panel-trigger span { color: #ffb020; font-size: 20px; }
+.hydraulic-panel-trigger strong { flex: 1; text-align: left; font-size: 13px; }
+.hydraulic-panel-trigger em { color: #00e5ff; font: 700 11px var(--mono); }
+.hydraulic-panel-body { margin-top: 6px; max-height: calc(100vh - 300px); overflow: auto; border: 1px solid #1f5968; background: rgba(4, 17, 22, .97); box-shadow: 0 18px 50px rgba(0, 0, 0, .45); }
+.hydraulic-panel-body > header { position: sticky; top: 0; z-index: 2; background: #071b22; border-bottom: 1px solid #17434f; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
+.hydraulic-panel-body h2 { margin: 3px 0 0; font-size: 18px; }
+.hydraulic-gate, .draw-hint { margin: 12px; padding: 10px 12px; border-left: 2px solid #ffb020; background: #10252b; color: #9fb7be; font-size: 12px; }
+.draw-hint { border-color: #00e5ff; color: #cae8ee; }
+.hydraulic-tool-groups { padding: 12px; display: grid; gap: 10px; }
+.hydraulic-tool-groups > div > span { display: block; margin-bottom: 6px; color: #668a94; font: 700 10px var(--mono); letter-spacing: .08em; }
+.hydraulic-tool-groups > div > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.hydraulic-tool-groups button { border: 1px solid #275462; background: #0c252d; color: #bdd1d7; padding: 7px 9px; font-size: 11px; }
+.hydraulic-tool-groups button.active { border-color: #00e5ff; color: #00e5ff; box-shadow: inset 0 -2px #00e5ff; }
+.hydraulic-tool-groups button:disabled { opacity: .35; }
+.hydraulic-feature-list { border-top: 1px solid #173b46; border-bottom: 1px solid #173b46; padding: 8px; display: grid; gap: 4px; }
+.hydraulic-feature-list > button { border: 1px solid transparent; background: #091e25; color: #bdd1d7; display: flex; align-items: center; padding: 8px; gap: 9px; text-align: left; }
+.hydraulic-feature-list > button.active { border-color: #2c7182; background: #102b34; }
+.hydraulic-feature-list i { width: 8px; height: 28px; background: #c880ff; }
+.hydraulic-feature-list i[data-type="levee"] { background: #ffb020; }
+.hydraulic-feature-list i[data-type="simpleChannel"], .hydraulic-feature-list i[data-type="engineeringChannel"] { background: #00a8ff; }
+.hydraulic-feature-list i[data-type="breach"] { background: #ff3b5c; }
+.hydraulic-feature-list span { flex: 1; display: grid; gap: 2px; }
+.hydraulic-feature-list strong { font-size: 12px; }
+.hydraulic-feature-list small { color: #62838c; font-size: 10px; }
+.hydraulic-feature-list em { color: #57e6a2; font: 700 9px var(--mono); }
+.hydraulic-feature-list > p { color: #66838b; text-align: center; font-size: 12px; }
+.hydraulic-editor { padding: 13px; display: grid; gap: 9px; }
+.hydraulic-editor-title { display: flex; justify-content: space-between; align-items: center; color: #00e5ff; }
+.hydraulic-editor-title button { border: 0; background: none; color: #ff687d; }
+.hydraulic-editor label { display: grid; grid-template-columns: 1fr 145px; align-items: center; gap: 8px; color: #8eabb3; font-size: 11px; }
+.hydraulic-editor input, .hydraulic-editor select { min-width: 0; border: 1px solid #264b56; background: #07191f; color: #deedf0; padding: 7px 8px; }
+.hydraulic-editor .switch-row input { justify-self: end; width: 18px; }
+.levee-profile-editor, .cross-section-table { border: 1px solid #1d4550; padding: 9px; display: grid; gap: 7px; }
+.levee-profile-editor > span, .cross-section-table > span { color: #ffb020; font: 700 10px var(--mono); }
+.cross-section-table > div { position: relative; border-top: 1px solid #183943; padding-top: 8px; display: grid; gap: 5px; }
+.cross-section-table > div > button { position: absolute; right: 0; top: 4px; border: 0; background: none; color: #ff687d; }
+.cross-section-table > button { border: 1px dashed #2b6675; background: transparent; color: #6fcddd; padding: 6px; }
+
+@media (max-width: 1050px) {
+  .hydraulic-panel { width: min(350px, calc(100vw - 36px)); top: 178px; }
+}
+.levee-profile { border: 1px solid #244954; background: #06161b; padding: 8px; }
+.levee-profile > span { display: block; margin-bottom: 6px; color: #72939c; font: 700 10px var(--mono); }
+.levee-profile svg { width: 100%; height: 72px; overflow: visible; }
+.levee-profile polyline { fill: none; vector-effect: non-scaling-stroke; }
+.levee-profile .terrain { stroke: #769099; stroke-width: 1.5; }
+.levee-profile .crest { stroke: #ffb020; stroke-width: 2; }
+.mesh-preview-button { display: block; width: calc(100% - 24px); margin: 0 12px 8px; border: 1px solid #00a9c0; background: #08252d; color: #75eaff; padding: 9px; font: 700 11px var(--mono); }
+.mesh-preview-button:disabled { opacity: .35; }
+.mesh-preview-summary { margin: 0 12px 10px; color: #75a7b2; font: 10px var(--mono); }
+.history-tags .structure-tag { color: #ffbd52; border-color: #79551d; }
+.structure-job span { color: #ffb020; }

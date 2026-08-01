@@ -1,0 +1,55 @@
+import { describe, expect, it } from 'vitest'
+import type { LineString, Point, Polygon } from 'geojson'
+import type { SimulationArea } from '../api/types'
+import { createHydraulicFeature, lineLengthM } from './hydraulicFeatures'
+
+const area: SimulationArea = {
+  id: 'a', areaHash: 'a', demProductId: 'dem', datasetVersion: 'v1',
+  crs: 'EPSG:32651', cellCount: 100, areaM2: 90_000, cellSizeM: 30,
+  triangleCount: 200, window: { rowStart: 0, rowStop: 10, columnStart: 0, columnStop: 10 },
+  elevationM: { minimum: 1, maximum: 8, mean: 4 }, gridUrl: '',
+  boundaryCondition: 'transmissive',
+}
+const line: LineString = {
+  type: 'LineString', coordinates: [[122.18, 40.3], [122.181, 40.3]],
+}
+const polygon: Polygon = {
+  type: 'Polygon', coordinates: [[
+    [122.18, 40.3], [122.181, 40.3], [122.181, 40.301],
+    [122.18, 40.301], [122.18, 40.3],
+  ]],
+}
+
+
+describe('hydraulic feature defaults', () => {
+  it('creates all three version feature families', () => {
+    const levee = createHydraulicFeature('levee', line, area, [])
+    const simple = createHydraulicFeature('simpleChannel', polygon, area, [levee])
+    const engineering = createHydraulicFeature(
+      'engineeringChannel', line, area, [levee, simple],
+    )
+    const culvert = createHydraulicFeature('culvert', line, area, [levee])
+    const bridge = createHydraulicFeature('bridge', line, area, [levee])
+    const point: Point = { type: 'Point', coordinates: [122.1805, 40.3] }
+    const breach = createHydraulicFeature('breach', point, area, [levee])
+
+    expect(levee.type).toBe('levee')
+    expect(simple.type).toBe('simpleChannel')
+    expect(engineering.type).toBe('engineeringChannel')
+    expect(engineering.type === 'engineeringChannel'
+      && engineering.crossSections.at(-1)?.distanceM).toBeGreaterThan(80)
+    expect(culvert.type).toBe('culvert')
+    expect(bridge.type).toBe('bridge')
+    expect(breach.type === 'breach' && breach.leveeId).toBe(levee.id)
+  })
+
+  it('computes projected line length closely enough for section chainage', () => {
+    expect(lineLengthM(line.coordinates as [number, number][])).toBeCloseTo(85, -1)
+  })
+
+  it('requires a levee before creating a breach', () => {
+    expect(() => createHydraulicFeature(
+      'breach', { type: 'Point', coordinates: [122.18, 40.3] }, area, [],
+    )).toThrow('请先绘制')
+  })
+})

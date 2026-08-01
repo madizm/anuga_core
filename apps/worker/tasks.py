@@ -80,28 +80,28 @@ class JobRunner:
             area = area_catalog.area(area_hash)
             mapping = area_catalog.mapping(area_hash)
             spec = ScenarioSpec.from_dict(snapshot, mapping)
-            with np.load(
-                area_catalog.mesh_path(area_hash), allow_pickle=False
-            ) as mesh:
-                triangle_cells = mesh["triangle_cell_index"]
-            rasterizer = LocalFrameRasterizer(
-                area,
-                triangle_cells,
-                np.full(
-                    len(triangle_cells), area.cell_size_m ** 2 / 2.0
-                ),
-            )
-            writer = CogWriter(rasterizer.grid)
-
             prefix = f"bayuquan-{job_id}-"
             with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
                 output = Path(tmp)
+                rasterizer = None
+                writer = None
                 snapshot_path = output / "scenario.json"
                 snapshot_path.write_text(
                     json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n"
                 )
 
+                def accept_prepared(local):
+                    nonlocal rasterizer, writer
+                    rasterizer = LocalFrameRasterizer(
+                        area,
+                        local.triangle_cell_index,
+                        np.asarray(local.prepared.domain.areas, dtype=float),
+                    )
+                    writer = CogWriter(rasterizer.grid)
+
                 def publish_frame(domain, time_seconds, frame_index):
+                    if rasterizer is None or writer is None:
+                        raise RuntimeError("frame publisher was not prepared")
                     frame = rasterizer.rasterize(domain, time_seconds)
                     filename = f"{int(time_seconds):09d}.tif"
                     local = output / "frames" / filename
@@ -148,6 +148,7 @@ class JobRunner:
                     product.compute_model_inputs_uri,
                     output,
                     frame_sink=publish_frame,
+                    prepared_sink=accept_prepared,
                 )
                 artifacts = [
                     ("SWW", output / "model.sww", "result/model.sww"),

@@ -1,8 +1,8 @@
-import type { FeatureCollection, Polygon } from 'geojson'
+import type { FeatureCollection, LineString, Point, Polygon } from 'geojson'
 import { useEffect, useRef, useState } from 'react'
 import maplibregl, { type GeoJSONSource, type Map, type MapMouseEvent, type PointLike } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import type { FrictionScenario } from '../api/types'
+import type { FrictionScenario, HydraulicFeature } from '../api/types'
 import { useInletStore } from '../inlets/inletStore'
 import { useLayerStore } from './mapStore'
 import { BASE_MAP_ATTRIBUTION, BASE_MAP_TILE_URL } from './baseMap'
@@ -25,6 +25,10 @@ interface ModelMapProps {
   frictionScenario: FrictionScenario
   areaDrawMode?: 'rectangle' | 'polygon' | null
   onAreaDrawn?: (geometry: Polygon) => void
+  hydraulicFeatures?: HydraulicFeature[]
+  hydraulicMeshPreview?: FeatureCollection | null
+  featureDrawMode?: 'levee' | 'simpleChannel' | 'engineeringChannel' | 'culvert' | 'bridge' | 'breach' | null
+  onFeatureDrawn?: (geometry: LineString | Polygon | Point) => void
 }
 
 const DEM_SOURCE = 'model-dem'
@@ -37,6 +41,14 @@ const GRID_LINE = 'model-grid-line'
 const AREA_SOURCE = 'simulation-area-draft'
 const AREA_FILL = 'simulation-area-draft-fill'
 const AREA_LINE = 'simulation-area-draft-line'
+const FEATURE_SOURCE = 'hydraulic-features'
+const FEATURE_FILL = 'hydraulic-features-fill'
+const FEATURE_LINE = 'hydraulic-features-line'
+const FEATURE_POINT = 'hydraulic-features-point'
+const FEATURE_DRAFT_SOURCE = 'hydraulic-feature-draft'
+const FEATURE_DRAFT_LINE = 'hydraulic-feature-draft-line'
+const MESH_PREVIEW_SOURCE = 'hydraulic-mesh-preview'
+const MESH_PREVIEW_LINE = 'hydraulic-mesh-preview-line'
 
 const MANNING_RANGES: Record<FrictionScenario, [number, number]> = {
   low: [0.03, 0.1],
@@ -52,6 +64,10 @@ export function ModelMap({
   frictionScenario,
   areaDrawMode = null,
   onAreaDrawn,
+  hydraulicFeatures = [],
+  hydraulicMeshPreview = null,
+  featureDrawMode = null,
+  onFeatureDrawn,
 }: ModelMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
@@ -60,6 +76,7 @@ export function ModelMap({
   const boxStart = useRef<MapMouseEvent['point'] | null>(null)
   const areaStart = useRef<MapMouseEvent['lngLat'] | null>(null)
   const polygonPoints = useRef<[number, number][]>([])
+  const featurePoints = useRef<[number, number][]>([])
   const [box, setBox] = useState<React.CSSProperties | null>(null)
   const [demReady, setDemReady] = useState(false)
   const [gridReady, setGridReady] = useState(false)
@@ -80,7 +97,7 @@ export function ModelMap({
   const terrainEnabled = useTerrainStore((state) => state.modelEnabled)
   const terrainExaggeration = useTerrainStore((state) => state.exaggeration)
   const hillshade = useTerrainStore((state) => state.hillshade)
-  const editingInTwoDimensions = Boolean(areaDrawMode)
+  const editingInTwoDimensions = Boolean(areaDrawMode || featureDrawMode)
     || selectionMode === 'brush' || selectionMode === 'box'
   const effectiveTerrain = terrainEnabled && !editingInTwoDimensions
     && !terrainError
@@ -149,11 +166,109 @@ export function ModelMap({
           'line-dasharray': [2, 1],
         },
       })
+      map.addSource(FEATURE_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: FEATURE_FILL,
+        type: 'fill',
+        source: FEATURE_SOURCE,
+        filter: ['==', '$type', 'Polygon'],
+        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.22 },
+      })
+      map.addLayer({
+        id: FEATURE_LINE,
+        type: 'line',
+        source: FEATURE_SOURCE,
+        filter: ['in', '$type', 'LineString', 'Polygon'],
+        paint: { 'line-color': ['get', 'color'], 'line-width': 4 },
+      })
+      map.addLayer({
+        id: FEATURE_POINT,
+        type: 'circle',
+        source: FEATURE_SOURCE,
+        filter: ['==', '$type', 'Point'],
+        paint: {
+          'circle-color': ['get', 'color'],
+          'circle-radius': 7,
+          'circle-stroke-color': '#051319',
+          'circle-stroke-width': 2,
+        },
+      })
+      map.addSource(FEATURE_DRAFT_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: FEATURE_DRAFT_LINE,
+        type: 'line',
+        source: FEATURE_DRAFT_SOURCE,
+        paint: {
+          'line-color': '#ffcc33',
+          'line-width': 3,
+          'line-dasharray': [1, 1],
+        },
+      })
+      map.addSource(MESH_PREVIEW_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: MESH_PREVIEW_LINE,
+        type: 'line',
+        source: MESH_PREVIEW_SOURCE,
+        paint: {
+          'line-color': '#63f1ff',
+          'line-width': 0.7,
+          'line-opacity': 0.58,
+        },
+      })
     }
     if (map.isStyleLoaded()) install()
     else map.once('load', install)
     return () => { map.off('load', install) }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const update = () => {
+      const source = map.getSource(FEATURE_SOURCE) as GeoJSONSource | undefined
+      source?.setData({
+        type: 'FeatureCollection',
+        features: hydraulicFeatures.filter((feature) => feature.enabled).map((feature) => ({
+          type: 'Feature',
+          properties: {
+            id: feature.id,
+            type: feature.type,
+            color: feature.type === 'levee' ? '#ffb020'
+              : feature.type === 'simpleChannel' || feature.type === 'engineeringChannel' ? '#00a8ff'
+                : feature.type === 'breach' ? '#ff3b5c' : '#c880ff',
+          },
+          geometry: feature.geometry,
+        })),
+      })
+    }
+    if (map.isStyleLoaded()) update()
+    else map.once('load', update)
+    return () => { map.off('load', update) }
+  }, [hydraulicFeatures])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const update = () => {
+      const source = map.getSource(MESH_PREVIEW_SOURCE) as GeoJSONSource | undefined
+      source?.setData(hydraulicMeshPreview ?? {
+        type: 'FeatureCollection', features: [],
+      })
+      if (map.getLayer(MESH_PREVIEW_LINE)) map.moveLayer(MESH_PREVIEW_LINE)
+    }
+    if (map.isStyleLoaded()) update()
+    else map.once('load', update)
+    return () => { map.off('load', update) }
+  }, [hydraulicMeshPreview])
 
   useEffect(() => {
     const map = mapRef.current
@@ -244,6 +359,68 @@ export function ModelMap({
       polygonPoints.current = []
     }
   }, [areaDrawMode, onAreaDrawn])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !featureDrawMode) return
+    const source = () => map.getSource(FEATURE_DRAFT_SOURCE) as GeoJSONSource | undefined
+    const clear = () => source()?.setData({ type: 'FeatureCollection', features: [] })
+    const show = () => {
+      if (featurePoints.current.length < 2) return
+      const geometry: LineString | Polygon = featureDrawMode === 'simpleChannel'
+        ? { type: 'Polygon', coordinates: [[...featurePoints.current, featurePoints.current[0]]] }
+        : { type: 'LineString', coordinates: featurePoints.current }
+      source()?.setData({ type: 'Feature', properties: {}, geometry })
+    }
+    const complete = () => {
+      if (featureDrawMode === 'simpleChannel') {
+        if (featurePoints.current.length < 3) return
+        onFeatureDrawn?.({
+          type: 'Polygon',
+          coordinates: [[...featurePoints.current, featurePoints.current[0]]],
+        })
+      } else {
+        if (featurePoints.current.length < 2) return
+        onFeatureDrawn?.({ type: 'LineString', coordinates: [...featurePoints.current] })
+      }
+      featurePoints.current = []
+      clear()
+    }
+    const click = (event: MapMouseEvent) => {
+      const point: [number, number] = [event.lngLat.lng, event.lngLat.lat]
+      if (featureDrawMode === 'breach') {
+        onFeatureDrawn?.({ type: 'Point', coordinates: point })
+        clear()
+        return
+      }
+      const previous = featurePoints.current.at(-1)
+      if (previous && previous[0] === point[0] && previous[1] === point[1]) return
+      featurePoints.current.push(point)
+      show()
+      if ((featureDrawMode === 'culvert' || featureDrawMode === 'bridge')
+        && featurePoints.current.length === 2) complete()
+    }
+    const doubleClick = (event: MapMouseEvent) => {
+      event.preventDefault()
+      if (featureDrawMode === 'breach'
+        || featureDrawMode === 'culvert' || featureDrawMode === 'bridge') return
+      complete()
+    }
+    featurePoints.current = []
+    clear()
+    map.getCanvas().style.cursor = 'crosshair'
+    map.doubleClickZoom.disable()
+    map.on('click', click)
+    map.on('dblclick', doubleClick)
+    return () => {
+      map.off('click', click)
+      map.off('dblclick', doubleClick)
+      map.getCanvas().style.cursor = ''
+      map.doubleClickZoom.enable()
+      featurePoints.current = []
+      clear()
+    }
+  }, [featureDrawMode, onFeatureDrawn])
 
   useEffect(() => {
     const map = mapRef.current
@@ -484,7 +661,7 @@ export function ModelMap({
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || areaDrawMode) return
+    if (!map || areaDrawMode || featureDrawMode) return
     const featureAt = (point: PointLike) => {
       if (!map.getLayer(GRID_FILL)) return undefined
       return map.queryRenderedFeatures(point, { layers: [GRID_FILL] })[0]
@@ -553,7 +730,7 @@ export function ModelMap({
       map.off('mousemove', onMouseMove)
       map.off('mouseup', onMouseUp)
     }
-  }, [activeId, areaDrawMode, selectionMode, selectCells])
+  }, [activeId, areaDrawMode, featureDrawMode, selectionMode, selectCells])
 
   const retryTerrain = () => {
     const map = mapRef.current

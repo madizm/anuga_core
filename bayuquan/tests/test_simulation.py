@@ -227,3 +227,84 @@ def test_zero_rainfall_without_an_inlet_is_not_an_effective_source():
 
     with pytest.raises(ScenarioValidationError, match="effective water source"):
         ScenarioSpec.from_dict(data, mapping())
+
+
+def test_all_hydraulic_feature_versions_are_parsed():
+    data = scenario(inlet())
+    data["hydraulicFeatures"] = [
+        {
+            "type": "levee", "id": "levee-1", "enabled": True,
+            "geometry": {"type": "LineString", "coordinates": [
+                [122.18, 40.30], [122.181, 40.30],
+            ]},
+            "crestMode": "relative", "heightAboveGroundM": 2,
+            "qFactor": 1,
+        },
+        {
+            "type": "simpleChannel", "id": "simple-1", "enabled": True,
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [122.18, 40.30], [122.181, 40.30],
+                [122.181, 40.301], [122.18, 40.301], [122.18, 40.30],
+            ]]},
+            "elevationMode": "lowerBy", "depthM": 2,
+            "manningN": 0.03, "maxTriangleAreaM2": 50,
+        },
+        {
+            "type": "engineeringChannel", "id": "channel-1",
+            "enabled": True,
+            "geometry": {"type": "LineString", "coordinates": [
+                [122.18, 40.30], [122.182, 40.30],
+            ]},
+            "crossSections": [
+                {"distanceM": 0, "bedElevationM": 1,
+                 "bottomWidthM": 10, "sideSlope": 2},
+                {"distanceM": 100, "bedElevationM": 0.5,
+                 "bottomWidthM": 12, "sideSlope": 2},
+            ],
+            "bankHeightM": 3, "manningN": 0.03,
+            "maxTriangleAreaM2": 40,
+        },
+        {
+            "type": "culvert", "id": "culvert-1", "enabled": True,
+            "geometry": {"type": "LineString", "coordinates": [
+                [122.18, 40.30], [122.181, 40.30],
+            ]},
+            "shape": "box", "widthM": 2, "heightM": 2,
+            "barrels": 1, "blockage": 0, "losses": 1.5,
+            "manningN": 0.013,
+        },
+        {
+            "type": "bridge", "id": "bridge-1", "enabled": True,
+            "geometry": {"type": "LineString", "coordinates": [
+                [122.18, 40.30], [122.181, 40.30],
+            ]},
+            "widthM": 10, "heightM": 3,
+            "leftSideSlope": 0, "rightSideSlope": 0,
+            "blockage": 0, "losses": 1, "manningN": 0.03,
+        },
+        {
+            "type": "breach", "id": "breach-1", "enabled": True,
+            "leveeId": "levee-1",
+            "geometry": {"type": "Point", "coordinates": [122.1805, 40.30]},
+            "widthM": 10, "crestElevationM": 3,
+        },
+    ]
+
+    spec = ScenarioSpec.from_dict(data, mapping())
+
+    assert len(spec.hydraulic_features.all) == 6
+    assert spec.hydraulic_features.requires_custom_mesh
+    assert spec.hydraulic_features.breaches[0].levee_id == "levee-1"
+
+
+def test_hydraulic_features_reject_unknown_breach_levee():
+    data = scenario(inlet())
+    data["hydraulicFeatures"] = [{
+        "type": "breach", "id": "breach-1", "enabled": True,
+        "leveeId": "missing",
+        "geometry": {"type": "Point", "coordinates": [122.18, 40.30]},
+        "widthM": 10, "crestElevationM": 3,
+    }]
+
+    with pytest.raises(ScenarioValidationError, match="unknown levee"):
+        ScenarioSpec.from_dict(data, mapping())

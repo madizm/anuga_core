@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Polygon } from 'geojson'
+import type { LineString, Point, Polygon } from 'geojson'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api/client'
 import type {
   FrictionScenario,
+  HydraulicFeature,
+  HydraulicMeshPreview,
   Rainfall,
   DemProduct,
   SavedScenario,
@@ -16,6 +18,8 @@ import { ResultWorkspace } from './jobs/ResultWorkspace'
 import { JobHistory } from './jobs/JobHistory'
 import { ScenarioHistory } from './scenarios/ScenarioHistory'
 import { isFourNeighbourConnected, useInletStore } from './inlets/inletStore'
+import { HydraulicFeaturePanel } from './hydraulics/HydraulicFeaturePanel'
+import { createHydraulicFeature, type HydraulicDrawMode } from './hydraulics/hydraulicFeatures'
 import { LayerPanel } from './map/LayerPanel'
 import { ModelMap } from './map/ModelMap'
 import { DISABLED_RAINFALL, hasEffectiveRainfall, rainfallIntervals, rainfallValidationError } from './rainfall/rainfall'
@@ -28,6 +32,10 @@ export default function App() {
   const [yieldstep, setYieldstep] = useState(300)
   const [friction, setFriction] = useState<FrictionScenario>('middle')
   const [rainfall, setRainfall] = useState<Rainfall>(DISABLED_RAINFALL)
+  const [hydraulicFeatures, setHydraulicFeatures] = useState<HydraulicFeature[]>([])
+  const [featureDrawMode, setFeatureDrawMode] = useState<HydraulicDrawMode | null>(null)
+  const [hydraulicMeshPreview, setHydraulicMeshPreview] = useState<HydraulicMeshPreview | null>(null)
+  useEffect(() => setHydraulicMeshPreview(null), [hydraulicFeatures])
   const [demProductId, setDemProductId] = useState('')
   const [saved, setSaved] = useState<SavedScenario | null>(null)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
@@ -100,6 +108,8 @@ export default function App() {
     const hasSelections = inlets.some((inlet) => inlet.cellIds.length > 0)
     if (hasSelections && !window.confirm('重新选择模拟区域将清空全部入口网格，是否继续？')) return
     if (hasSelections) clearAllSelections()
+    setHydraulicFeatures([])
+    setFeatureDrawMode(null)
     setArea(null)
     setSaved(null)
     setValidation(null)
@@ -110,6 +120,8 @@ export default function App() {
     if (!area) return
     if (!window.confirm('将保留非空间参数，但清空模拟区域和全部入口位置。是否继续？')) return
     clearAllSelections()
+    setHydraulicFeatures([])
+    setFeatureDrawMode(null)
     setArea(null)
     setSaved(null)
     setValidation(null)
@@ -128,6 +140,7 @@ export default function App() {
     frictionScenario: friction,
     inlets,
     rainfall,
+    hydraulicFeatures,
   })
 
   const saveMutation = useMutation({
@@ -158,6 +171,7 @@ export default function App() {
       setYieldstep(scenario.yieldstepSeconds)
       setFriction(scenario.frictionScenario)
       setRainfall(scenario.rainfall ?? DISABLED_RAINFALL)
+      setHydraulicFeatures(scenario.hydraulicFeatures ?? [])
       replaceInlets(scenario.inlets)
       setArea(simulationArea)
       setSaved(scenario)
@@ -179,6 +193,7 @@ export default function App() {
     frictionScenario: saved.frictionScenario,
     inlets: saved.inlets,
     rainfall: saved.rainfall ?? DISABLED_RAINFALL,
+    hydraulicFeatures: saved.hydraulicFeatures ?? [],
   }
   const isDirty = !saved || JSON.stringify(currentPayload) !== JSON.stringify(savedPayload)
 
@@ -222,6 +237,20 @@ export default function App() {
   const rainfallReady = hasEffectiveRainfall(rainfall, duration)
   const rainfallValid = rainfallValidationError(rainfall, duration) === null
   const localReady = Boolean(area) && rainfallValid && (inletsReady || rainfallReady)
+
+  const handleFeatureDrawn = useCallback((geometry: LineString | Polygon | Point) => {
+    if (!featureDrawMode || !area) return
+    try {
+      const feature = createHydraulicFeature(
+        featureDrawMode, geometry, area, hydraulicFeatures,
+      )
+      setHydraulicFeatures((items) => [...items, feature])
+      setFeatureDrawMode(null)
+      setMessage(`已添加：${feature.name}`)
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }, [area, featureDrawMode, hydraulicFeatures])
 
   if (jobId) {
     return <ResultWorkspace jobId={jobId} onClose={() => {
@@ -281,6 +310,10 @@ export default function App() {
               frictionScenario={friction}
               areaDrawMode={areaDrawMode}
               onAreaDrawn={handleAreaDrawn}
+              hydraulicFeatures={hydraulicFeatures}
+              hydraulicMeshPreview={hydraulicMeshPreview}
+              featureDrawMode={featureDrawMode}
+              onFeatureDrawn={handleFeatureDrawn}
             />
           )}
           <AreaControl
@@ -289,6 +322,23 @@ export default function App() {
             resolving={areaMutation.isPending}
             demReady={Boolean(demProduct)}
             onDraw={beginAreaDrawing}
+          />
+          <HydraulicFeaturePanel
+            areaReady={Boolean(area)}
+            demProductId={demProductId}
+            areaHash={area?.areaHash ?? null}
+            areaMeanElevationM={area?.elevationM.mean ?? 0}
+            features={hydraulicFeatures}
+            drawMode={featureDrawMode}
+            onDrawModeChange={(mode) => {
+              setAreaDrawMode(null)
+              setFeatureDrawMode(mode)
+            }}
+            onChange={(features) => {
+              setHydraulicFeatures(features)
+              setHydraulicMeshPreview(null)
+            }}
+            onMeshPreview={setHydraulicMeshPreview}
           />
           {area && grid.isLoading && <div className="loading-grid"><span />正在装载局部 {demProduct?.cellSizeM ?? '—'} m 网格</div>}
         </section>
@@ -442,6 +492,7 @@ function RunCheck({ validation, demProduct, rainfall, durationSeconds, onClose, 
             <div><span>输入水量</span><strong>{summary.totalInputVolumeM3.toLocaleString()}<em> m³</em></strong></div>
             <div><span>输出帧</span><strong>{summary.frameCount}</strong></div>
             {summary.rainfallEnabled && <div><span>累计降雨</span><strong>{summary.rainfallDepthMm.toFixed(1)}<em> mm</em></strong></div>}
+            {summary.hydraulicFeatureCount > 0 && <div><span>水力要素</span><strong>{summary.hydraulicFeatureCount}</strong></div>}
           </div>
         )}
         {summary?.rainfallEnabled && <details className="rainfall-check-details">
@@ -456,6 +507,7 @@ function RunCheck({ validation, demProduct, rainfall, durationSeconds, onClose, 
           {demProduct && <li className="pass"><b>✓</b><span>DEM 产品</span><strong>{demProduct.name} · 网格 {demProduct.cellSizeM} m / 原始信息 {demProduct.sourceResolutionM} m</strong></li>}
           <li className="pass"><b>✓</b><span>外边界</span><strong>固定透射边界</strong></li>
           <li className="pass"><b>✓</b><span>局部计算域</span><strong>{summary?.simulationAreaId.slice(0, 12)}</strong></li>
+          {summary?.customMeshRequired && <li className="pass"><b>✓</b><span>计算网格</span><strong>结构物约束 breakline 网格</strong></li>}
           {validation.warnings.map((warning) => <li className="warning" key={warning.code}><b>!</b><span>警告</span><strong>{warning.message}</strong></li>)}
           {validation.errors.map((error) => <li className="failure" key={error.code}><b>×</b><span>错误</span><strong>{error.message}</strong></li>)}
         </ul>

@@ -23,6 +23,7 @@ class PreparedSimulation:
     domain: object
     operators: dict[str, object]
     rainfall_operator: object | None
+    structure_operators: dict[str, object]
     initial_water_volume_m3: float
     rainfall_area_m2: float
 
@@ -98,6 +99,10 @@ def prepare_simulation(
     output_dir: Path | str,
 ) -> PreparedSimulation:
     """Load assets, initialize quantities, and install inlet operators."""
+    if spec.hydraulic_features.all:
+        raise ValueError(
+            "hydraulic features require a local-domain simulation"
+        )
     mapping = GridTriangleMapping.load(paths.mapping)
     domain = anuga.Domain(str(paths.mesh), use_cache=False, verbose=False)
     mapping.validate_mesh(paths.mesh, len(domain.areas))
@@ -153,7 +158,12 @@ def prepare_simulation(
     rainfall_area = float(domain.areas.sum())
     rainfall_operator = install_rainfall_operator(domain, spec)
     return PreparedSimulation(
-        domain, operators, rainfall_operator, initial_volume, rainfall_area
+        domain,
+        operators,
+        rainfall_operator,
+        {},
+        initial_volume,
+        rainfall_area,
     )
 
 

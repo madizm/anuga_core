@@ -84,6 +84,51 @@ test('user locks a local domain before selecting inlet cells', async ({ page }) 
   expect(errors).toEqual([])
 })
 
+test('user draws a levee, reviews its profile and previews the conforming mesh', async ({ page }) => {
+  await page.goto('/')
+  await drawLocalRectangle(page)
+  await page.getByRole('button', { name: /地形与工程/ }).click()
+  await page.getByRole('button', { name: '绘制堤防' }).click()
+
+  const canvas = page.locator('.maplibregl-canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('map canvas has no bounds')
+  await canvas.click({ position: { x: box.width * 0.47, y: box.height * 0.48 } })
+  await canvas.dblclick({ position: { x: box.width * 0.53, y: box.height * 0.48 } })
+
+  await expect(page.getByText('堤防 1', { exact: true })).toBeVisible()
+  await expect(page.locator('.selection-readout strong').first()).toHaveText('0')
+  await page.getByText('堤防 1', { exact: true }).click()
+  await expect(page.getByRole('img', { name: '堤防地面与堤顶纵断面' })).toBeVisible()
+  await expect(page.getByText(/纵断面 · \d+ m/)).toBeVisible({ timeout: 20_000 })
+
+  const previewResponse = page.waitForResponse((response) => (
+    response.url().includes('/hydraulic-mesh-preview')
+    && response.request().method() === 'POST'
+    && response.status() === 200
+  ))
+  await page.getByRole('button', { name: '预览最终计算网格' }).click()
+  await previewResponse
+  await expect(page.locator('.mesh-preview-summary')).toContainText('triangles', {
+    timeout: 20_000,
+  })
+  await page.getByLabel('入口名称').locator('..').getByText('启用').click()
+  await page.getByRole('tab', { name: /降雨/ }).click()
+  await page.locator('.rainfall-switch').getByText('启用').click()
+
+  const savedResponse = page.waitForResponse((response) => (
+    response.url().endsWith('/api/scenarios')
+    && response.request().method() === 'POST'
+    && response.status() === 201
+  ))
+  await page.getByRole('button', { name: '保存场景' }).click()
+  const request = (await savedResponse).request().postDataJSON()
+  expect(request.hydraulicFeatures).toHaveLength(1)
+  expect(request.hydraulicFeatures[0]).toMatchObject({
+    type: 'levee', crestMode: 'relative', heightAboveGroundM: 2,
+  })
+})
+
 test('editor keeps inlet controls gated until an area is locked', async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 844 })
   await page.goto('/')
@@ -223,6 +268,7 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await expect(page.locator('.flow-particle-canvas[data-flow-frame="2"]')).toHaveCount(3)
   await expect(page.getByText('DYNAMIC FLOW')).toHaveCount(3)
   await expect(page.getByText('二维流向投影')).toBeVisible()
+  await page.goto('about:blank')
 })
 
 function flowPayload() {

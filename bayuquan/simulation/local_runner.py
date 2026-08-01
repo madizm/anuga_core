@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -12,14 +13,22 @@ import numpy as np
 import rasterio
 
 import anuga
+from anuga.structures.boyd_box_operator import Boyd_box_operator
+from anuga.structures.boyd_pipe_operator import Boyd_pipe_operator
+from anuga.structures.weir_orifice_trapezoid_operator import (
+    Weir_orifice_trapezoid_operator,
+)
 
 from .area_catalog import SimulationAreaCatalog
-from .runner import (
-    PreparedSimulation,
-    apply_initial_water_levels,
-    install_rainfall_operator,
-    rainfall_report,
+from .feature_compiler import (
+    CompiledFeatures,
+    apply_feature_quantities,
+    compile_features,
+    create_feature_domain,
+    install_riverwalls,
+    triangle_cell_indices,
 )
+from .runner import PreparedSimulation, install_rainfall_operator, rainfall_report
 from .spec import ScenarioSpec
 
 
@@ -28,6 +37,8 @@ class LocalSimulation:
     prepared: PreparedSimulation
     triangle_cell_index: np.ndarray
     area_hash: str
+    compiled_features: CompiledFeatures
+    mesh_sha256: str
 
 
 def prepare_local_simulation(
@@ -37,30 +48,19 @@ def prepare_local_simulation(
     model_inputs_path: str,
     output_dir: Path | str,
 ) -> LocalSimulation:
-    """Load a cached local mesh and assign cell-aligned model quantities."""
+    """Compile features, construct a domain, and install all operators."""
     area = catalog.area(area_hash)
-    with np.load(catalog.mesh_path(area_hash), allow_pickle=False) as mesh:
-        coordinates = mesh["coordinates"]
-        triangles = mesh["triangles"]
-        triangle_cells = mesh["triangle_cell_index"].astype(np.int64)
-        origin = mesh["origin"]
-        boundary = {
-            (int(triangle), int(edge)): "open"
-            for triangle, edge in zip(
-                mesh["boundary_triangle"], mesh["boundary_edge"]
-            )
-        }
-    domain = anuga.Domain(
-        coordinates,
-        triangles,
-        boundary,
-        geo_reference=anuga.Geo_reference(
-            epsg=32651,
-            xllcorner=float(origin[0]),
-            yllcorner=float(origin[1]),
-        ),
-        verbose=False,
+    compiled = compile_features(
+        spec.hydraulic_features, area, str(catalog.dem_path)
     )
+    if spec.hydraulic_features.requires_custom_mesh:
+        domain = create_feature_domain(area, compiled)
+        triangle_cells = triangle_cell_indices(domain, area)
+    else:
+        domain, triangle_cells = _load_cached_domain(
+            catalog.mesh_path(area_hash)
+        )
+
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     domain.set_flow_algorithm("DE0")
@@ -73,28 +73,49 @@ def prepare_local_simulation(
         "ymomentum": 2,
     })
 
-    elevation, friction = _triangle_model_values(
-        area,
-        triangle_cells,
-        catalog.dem_path,
-        model_inputs_path,
-        spec.friction_scenario,
-    )
-    domain.set_quantity(
-        "elevation",
-        np.repeat(elevation[:, None], 3, axis=1),
-        location="vertices",
-    )
-    domain.set_quantity("friction", friction, location="centroids")
+    if spec.hydraulic_features.requires_custom_mesh:
+        apply_feature_quantities(
+            domain,
+            compiled,
+            str(catalog.dem_path),
+            model_inputs_path,
+            spec.friction_scenario,
+        )
+    else:
+        elevation, friction = _triangle_model_values(
+            area,
+            triangle_cells,
+            str(catalog.dem_path),
+            model_inputs_path,
+            spec.friction_scenario,
+        )
+        domain.set_quantity(
+            "elevation",
+            np.repeat(elevation[:, None], 3, axis=1),
+            location="vertices",
+        )
+        domain.set_quantity("friction", friction, location="centroids")
     domain.set_quantity("stage", expression="elevation")
     domain.set_quantity("xmomentum", 0.0)
     domain.set_quantity("ymomentum", 0.0)
 
-    initial_volume = apply_initial_water_levels(domain, spec)
+    inlet_triangles = _inlet_triangle_indices(
+        spec, triangle_cells, area.ncols
+    )
+    initial_volume = _apply_initial_water_levels(
+        domain, spec, inlet_triangles
+    )
     domain.set_boundary({"open": anuga.Transmissive_boundary(domain)})
+    install_riverwalls(domain, compiled)
+
     operators = {}
     for inlet in spec.inlets:
-        region = anuga.Region(domain, indices=inlet.selection.triangle_ids)
+        triangle_ids = inlet_triangles[inlet.id]
+        if not len(triangle_ids):
+            raise ValueError(
+                f"inlet {inlet.id} has no triangles in the compiled mesh"
+            )
+        region = anuga.Region(domain, indices=triangle_ids)
         operators[inlet.id] = anuga.Inlet_operator(
             domain,
             region=region,
@@ -103,18 +124,26 @@ def prepare_local_simulation(
             zero_velocity=inlet.zero_velocity,
             label=inlet.id,
         )
+    structure_operators = _install_structure_operators(
+        domain, spec, compiled
+    )
     rainfall_area = float(domain.areas.sum())
     rainfall_operator = install_rainfall_operator(domain, spec)
+    mesh_sha256 = _domain_mesh_sha256(domain)
+    setattr(domain, "bayuquan_triangle_cell_index", triangle_cells)
     return LocalSimulation(
         prepared=PreparedSimulation(
             domain,
             operators,
             rainfall_operator,
+            structure_operators,
             initial_volume,
             rainfall_area,
         ),
         triangle_cell_index=triangle_cells,
         area_hash=area_hash,
+        compiled_features=compiled,
+        mesh_sha256=mesh_sha256,
     )
 
 
@@ -127,6 +156,7 @@ def run_local_simulation(
     *,
     frame_sink: Callable[[object, float, int], None] | None = None,
     progress_sink: Callable[[float, int], None] | None = None,
+    prepared_sink: Callable[[LocalSimulation], None] | None = None,
 ) -> dict:
     """Execute one local-area scenario and return its hydraulic report."""
     started = time.monotonic()
@@ -134,6 +164,8 @@ def run_local_simulation(
     local = prepare_local_simulation(
         spec, area_hash, catalog, model_inputs_path, output_dir
     )
+    if prepared_sink is not None:
+        prepared_sink(local)
     prepared = local.prepared
     domain = prepared.domain
     maximum_depth = np.zeros(len(domain.areas), dtype=float)
@@ -187,6 +219,8 @@ def run_local_simulation(
         "crs": "EPSG:32651",
         "simulationAreaId": area_hash,
         "datasetVersion": area.dataset_version,
+        "meshSha256": local.mesh_sha256,
+        "meshTriangleCount": len(domain.areas),
         "durationSeconds": spec.duration_seconds,
         "yieldstepSeconds": spec.yieldstep_seconds,
         "frameCount": spec.frame_count,
@@ -207,12 +241,195 @@ def run_local_simulation(
         "everWetAreaM2": float(domain.areas[ever_wet].sum()),
         "runtimeSeconds": time.monotonic() - started,
         "rainfall": rain,
+        "hydraulicFeatures": _hydraulic_feature_report(spec, local),
     }
     output = Path(output_dir)
     (output / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     )
     return report
+
+
+def _load_cached_domain(mesh_path):
+    with np.load(mesh_path, allow_pickle=False) as mesh:
+        coordinates = mesh["coordinates"]
+        triangles = mesh["triangles"]
+        triangle_cells = mesh["triangle_cell_index"].astype(np.int64)
+        origin = mesh["origin"]
+        boundary = {
+            (int(triangle), int(edge)): "open"
+            for triangle, edge in zip(
+                mesh["boundary_triangle"], mesh["boundary_edge"]
+            )
+        }
+    domain = anuga.Domain(
+        coordinates,
+        triangles,
+        boundary,
+        geo_reference=anuga.Geo_reference(
+            epsg=32651,
+            xllcorner=float(origin[0]),
+            yllcorner=float(origin[1]),
+        ),
+        verbose=False,
+    )
+    return domain, triangle_cells
+
+
+def _inlet_triangle_indices(spec, triangle_cells, ncols):
+    result = {}
+    for inlet in spec.inlets:
+        selected = {
+            int(cell_id.split("-c", 1)[0][1:]) * ncols
+            + int(cell_id.split("-c", 1)[1])
+            for cell_id in inlet.cell_ids
+        }
+        result[inlet.id] = np.flatnonzero(
+            np.isin(triangle_cells, list(selected))
+        ).astype(np.int32)
+    return result
+
+
+def _apply_initial_water_levels(domain, spec, inlet_triangles) -> float:
+    stage = domain.quantities["stage"]
+    elevation = domain.quantities["elevation"]
+    for inlet in spec.inlets:
+        if inlet.initial_water_level_m is None:
+            continue
+        indices = inlet_triangles[inlet.id]
+        values = np.maximum(
+            elevation.vertex_values[indices], inlet.initial_water_level_m
+        )
+        stage.set_values(values, location="vertices", indices=indices)
+    return float(domain.get_water_volume())
+
+
+def _install_structure_operators(domain, spec, compiled):
+    operators = {}
+    for culvert in spec.hydraulic_features.culverts:
+        common = {
+            "domain": domain,
+            "losses": culvert.losses,
+            "barrels": culvert.barrels,
+            "blockage": culvert.blockage,
+            "end_points": [
+                list(point)
+                for point in compiled.projected_structures[culvert.id]
+            ],
+            "invert_elevations": (
+                None if culvert.invert_elevations_m is None
+                else list(culvert.invert_elevations_m)
+            ),
+            "manning": culvert.manning_n,
+            "label": culvert.id,
+            "description": culvert.name,
+            "verbose": False,
+        }
+        if culvert.shape == "box":
+            operators[culvert.id] = Boyd_box_operator(
+                width=culvert.width_m,
+                height=culvert.height_m,
+                **common,
+            )
+        else:
+            operators[culvert.id] = Boyd_pipe_operator(
+                diameter=culvert.diameter_m,
+                **common,
+            )
+    for bridge in spec.hydraulic_features.bridges:
+        operators[bridge.id] = Weir_orifice_trapezoid_operator(
+            domain,
+            losses=bridge.losses,
+            width=bridge.width_m,
+            height=bridge.height_m,
+            blockage=bridge.blockage,
+            z1=bridge.left_side_slope,
+            z2=bridge.right_side_slope,
+            end_points=[
+                list(point)
+                for point in compiled.projected_structures[bridge.id]
+            ],
+            invert_elevations=(
+                None if bridge.invert_elevations_m is None
+                else list(bridge.invert_elevations_m)
+            ),
+            manning=bridge.manning_n,
+            label=bridge.id,
+            description=bridge.name,
+            verbose=False,
+        )
+    return operators
+
+
+def _hydraulic_feature_report(spec, local):
+    operators = local.prepared.structure_operators
+    return {
+        "levees": [
+            {
+                "id": levee.id,
+                "vertexCount": len(levee.points_xyz),
+                "lengthM": float(sum(
+                    np.hypot(b[0] - a[0], b[1] - a[1])
+                    for a, b in zip(levee.points_xyz, levee.points_xyz[1:])
+                )),
+                "minimumCrestElevationM": min(
+                    point[2] for point in levee.points_xyz
+                ),
+                "maximumCrestElevationM": max(
+                    point[2] for point in levee.points_xyz
+                ),
+                "minimumFreeboardM": levee.minimum_freeboard_m,
+            }
+            for levee in local.compiled_features.levees
+        ],
+        "simpleChannels": [
+            {
+                "id": channel.spec.id,
+                "areaM2": channel.polygon.area,
+                "manningN": channel.spec.manning_n,
+            }
+            for channel in local.compiled_features.simple_channels
+        ],
+        "engineeringChannels": [
+            {
+                "id": channel.spec.id,
+                "lengthM": channel.centerline.length,
+                "crossSectionCount": len(channel.spec.cross_sections),
+                "manningN": channel.spec.manning_n,
+            }
+            for channel in local.compiled_features.engineering_channels
+        ],
+        "structures": [
+            {
+                "id": feature.id,
+                "type": type(feature).__name__.removesuffix("Spec"),
+                "accumulatedFlowM3": float(
+                    operators[feature.id].accumulated_flow
+                ),
+                "finalDischargeM3s": float(operators[feature.id].discharge),
+            }
+            for feature in (
+                *spec.hydraulic_features.culverts,
+                *spec.hydraulic_features.bridges,
+            )
+        ],
+        "breaches": [
+            {
+                "id": breach.id,
+                "leveeId": breach.levee_id,
+                "widthM": breach.width_m,
+                "crestElevationM": breach.crest_elevation_m,
+            }
+            for breach in spec.hydraulic_features.breaches
+        ],
+    }
+
+
+def _domain_mesh_sha256(domain) -> str:
+    digest = hashlib.sha256()
+    digest.update(np.asarray(domain.nodes, dtype=np.float64).tobytes())
+    digest.update(np.asarray(domain.triangles, dtype=np.int32).tobytes())
+    return digest.hexdigest()
 
 
 def _triangle_model_values(

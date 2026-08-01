@@ -725,3 +725,47 @@ def test_invalid_enabled_rainfall_is_rejected(tmp_path):
 
     assert response.status_code == 422
     assert "first rainfall point" in response.text
+
+
+def test_hydraulic_features_are_persisted_and_snapshotted(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(FakeAreaCatalog, "dem_path", "unused", raising=False)
+    monkeypatch.setattr(
+        "apps.api.scenarios.service.compile_features",
+        lambda features, area, dem_path: SimpleNamespace(levees=[]),
+    )
+    test_client, _ = client(tmp_path)
+    payload = scenario("levee scenario")
+    payload["hydraulicFeatures"] = [{
+        "type": "levee",
+        "id": "levee-1",
+        "name": "north levee",
+        "enabled": True,
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[122.18, 40.30], [122.181, 40.30]],
+        },
+        "crestMode": "relative",
+        "heightAboveGroundM": 2,
+        "qFactor": 1,
+    }]
+
+    with test_client:
+        created = test_client.post("/api/scenarios", json=payload)
+        assert created.status_code == 201, created.text
+        scenario_id = created.json()["id"]
+        loaded = test_client.get(f"/api/scenarios/{scenario_id}")
+        assert loaded.json()[
+            "hydraulicFeatures"] == payload["hydraulicFeatures"]
+
+        validation = test_client.post(
+            f"/api/scenarios/{scenario_id}/validate"
+        )
+        assert validation.status_code == 200
+        assert validation.json()["summary"]["leveeCount"] == 1
+
+        job = test_client.post(f"/api/scenarios/{scenario_id}/jobs", json={})
+        assert job.status_code == 202
+        assert job.json()["scenarioSnapshot"]["hydraulicFeatures"] \
+            == payload["hydraulicFeatures"]

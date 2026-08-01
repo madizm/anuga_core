@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_origin
+from pyproj import Transformer
 
 from bayuquan.simulation.area import (
     SimulationAreaError,
@@ -11,6 +12,11 @@ from bayuquan.simulation.area import (
     build_local_mesh,
 )
 from bayuquan.simulation.area_catalog import SimulationAreaCatalog
+from bayuquan.simulation.feature_compiler import (
+    compile_features,
+    sample_elevation_profile,
+)
+from bayuquan.simulation.hydraulic_features import HydraulicFeaturesSpec
 
 
 def write_dem(tmp_path, values):
@@ -99,6 +105,69 @@ def test_resolver_snaps_polygon_to_dem_cell_centres(tmp_path):
     assert area.window == (0, 2, 0, 2)
     assert area.elevation_m == {"minimum": 0.0, "maximum": 5.0, "mean": 2.5}
     assert len(area.area_hash) == 64
+
+
+def test_elevation_profile_samples_a_drawn_line_inside_the_area(tmp_path):
+    dem = write_dem(tmp_path, np.arange(16).reshape(4, 4))
+    resolver = SimulationAreaResolver(
+        dem, dataset_version="dem-v1", max_cells=25_000
+    )
+    area = resolver.resolve(
+        polygon(100, 200, 220, 320), geometry_crs="EPSG:32651"
+    )
+    to_wgs84 = Transformer.from_crs(
+        "EPSG:32651", "OGC:CRS84", always_xy=True
+    )
+    first = to_wgs84.transform(115, 305)
+    second = to_wgs84.transform(205, 305)
+
+    profile = sample_elevation_profile({
+        "type": "LineString",
+        "coordinates": [first, second],
+    }, area, str(dem), spacing_m=30)
+
+    assert profile["lengthM"] == pytest.approx(90)
+    elevations = [item["elevationM"] for item in profile["samples"]]
+    assert elevations[0] == 0
+    assert elevations[-1] == 3
+    assert set(elevations) == {0, 1, 2, 3}
+
+
+def test_levee_compiler_projects_profiles_and_embeds_a_breach(tmp_path):
+    dem = write_dem(tmp_path, np.full((4, 4), 2.0))
+    resolver = SimulationAreaResolver(
+        dem, dataset_version="dem-v1", max_cells=25_000
+    )
+    area = resolver.resolve(
+        polygon(100, 200, 220, 320), geometry_crs="EPSG:32651"
+    )
+    to_wgs84 = Transformer.from_crs(
+        "EPSG:32651", "OGC:CRS84", always_xy=True
+    )
+    first = to_wgs84.transform(115, 275)
+    middle = to_wgs84.transform(160, 275)
+    last = to_wgs84.transform(205, 275)
+    features = HydraulicFeaturesSpec.from_list([
+        {
+            "type": "levee", "id": "levee-1", "enabled": True,
+            "geometry": {"type": "LineString", "coordinates": [first, last]},
+            "crestMode": "relative", "heightAboveGroundM": 2,
+            "qFactor": 1,
+        },
+        {
+            "type": "breach", "id": "breach-1", "enabled": True,
+            "leveeId": "levee-1",
+            "geometry": {"type": "Point", "coordinates": middle},
+            "widthM": 10, "crestElevationM": 1,
+        },
+    ])
+
+    compiled = compile_features(features, area, str(dem))
+
+    levee = compiled.levees[0]
+    assert levee.minimum_freeboard_m == pytest.approx(2)
+    assert len(levee.points_xyz) == 4
+    assert min(point[2] for point in levee.points_xyz) == 1
 
 
 def test_area_hash_identifies_the_cell_mask_not_ring_order(tmp_path):
@@ -209,7 +278,8 @@ def test_area_catalog_caches_resolved_grid_and_mesh_by_hash(tmp_path):
         "r0000-c0001",
     ]
     assert grid["features"][0]["properties"]["building_fraction"] == 0.25
-    assert grid["features"][0]["properties"]["manning_middle"] == pytest.approx(0.08)
+    assert grid["features"][0]["properties"]["manning_middle"] == pytest.approx(
+        0.08)
     stats = catalog.resolve_selection(
         first.area_hash,
         ["r0000-c0000", "r0000-c0001"],
@@ -226,7 +296,8 @@ def test_area_catalog_caches_resolved_grid_and_mesh_by_hash(tmp_path):
         allow_pickle=False,
     ) as mesh:
         assert mesh["triangles"].shape == (4, 3)
-        np.testing.assert_array_equal(mesh["triangle_cell_index"], [0, 0, 1, 1])
+        np.testing.assert_array_equal(
+            mesh["triangle_cell_index"], [0, 0, 1, 1])
 
 
 def test_local_mesh_runs_with_transmissive_boundary_and_conserves_flat_water(

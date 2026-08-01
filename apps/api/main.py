@@ -23,6 +23,11 @@ from pyproj import Transformer
 from bayuquan.simulation.area_catalog import (
     SimulationAreaCatalog,
 )
+from bayuquan.simulation.feature_compiler import (
+    feature_mesh_preview,
+    sample_elevation_profile,
+)
+from bayuquan.simulation.hydraulic_features import HydraulicFeaturesSpec
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi import status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -51,6 +56,8 @@ from .scenarios.service import (
     validate_scenario,
 )
 from .schemas import (
+    ElevationProfileRequest,
+    HydraulicMeshPreviewRequest,
     GridSelectionRequest,
     JobCreateRequest,
     ScenarioRequest,
@@ -222,6 +229,60 @@ def create_app(
                 status_code=404, detail="simulation area not found"
             ) from error
         return JSONResponse(grid)
+
+    @app.post(
+        "/api/dem-products/{product_id}/simulation-areas/"
+        "{area_hash}/elevation-profile"
+    )
+    def simulation_area_elevation_profile(
+        product_id: str,
+        area_hash: str,
+        request: ElevationProfileRequest,
+    ) -> dict:
+        catalog = catalog_or_404(product_id)
+        try:
+            area = catalog.area(area_hash)
+            return sample_elevation_profile(
+                request.geometry,
+                area,
+                str(catalog.dem_path),
+                spacing_m=request.spacing_m,
+            )
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail="simulation area not found"
+            ) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post(
+        "/api/dem-products/{product_id}/simulation-areas/"
+        "{area_hash}/hydraulic-mesh-preview"
+    )
+    def simulation_area_hydraulic_mesh_preview(
+        product_id: str,
+        area_hash: str,
+        request: HydraulicMeshPreviewRequest,
+    ) -> dict:
+        catalog = catalog_or_404(product_id)
+        try:
+            area = catalog.area(area_hash)
+            features = HydraulicFeaturesSpec.from_list(
+                request.hydraulic_features
+            )
+            if not features.requires_custom_mesh:
+                raise ValueError(
+                    "mesh preview needs a levee or channel feature"
+                )
+            return feature_mesh_preview(
+                features, area, str(catalog.dem_path)
+            )
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail="simulation area not found"
+            ) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.post(
         "/api/dem-products/{product_id}/simulation-areas/"
