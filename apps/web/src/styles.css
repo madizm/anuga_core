@@ -599,8 +599,13 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 
 .water-error-badge { border-right-color: var(--cyan-dim); background: rgba(11, 24, 28, .94); color: #7fdce9; }
 
-.water-ripple-debug { position: fixed; right: 12px; bottom: 12px; z-index: 30; width: 230px; padding: 10px 12px; border: 1px solid var(--cyan-dim); background: rgba(7, 18, 23, .94); color: #bfe9ef; font: 10px var(--mono); }
-.water-ripple-debug header { margin-bottom: 8px; color: var(--cyan); font: 600 10px var(--display); letter-spacing: .12em; }
-.water-ripple-debug label { display: grid; grid-template-columns: 84px 1fr 34px; align-items: center; gap: 6px; margin-bottom: 4px; }
-.water-ripple-debug input[type="range"] { width: 100%; accent-color: var(--cyan); }
-.water-ripple-debug output { text-align: right; color: #75eaff; }
+.water-ripple-tuning { position: fixed; right: 12px; bottom: 176px; z-index: 30; font: 10px var(--mono); }
+.water-ripple-trigger { display: block; margin-left: auto; width: 30px; height: 30px; border: 1px solid var(--cyan-dim); background: rgba(7, 18, 23, .94); color: var(--cyan); font: 600 15px/1 var(--display); cursor: pointer; }
+.water-ripple-trigger:hover, .water-ripple-trigger.active { border-color: var(--cyan); background: #0d2831; }
+.water-ripple-panel { position: absolute; right: 0; bottom: 38px; width: 230px; padding: 10px 12px; border: 1px solid var(--cyan-dim); background: rgba(7, 18, 23, .94); color: #bfe9ef; }
+.water-ripple-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; color: var(--cyan); font: 600 10px var(--display); letter-spacing: .12em; }
+.water-ripple-close { border: none; background: none; color: #75a7b2; font: 400 14px/1 var(--mono); cursor: pointer; padding: 0 2px; }
+.water-ripple-close:hover { color: var(--cyan); }
+.water-ripple-panel label { display: grid; grid-template-columns: 84px 1fr 34px; align-items: center; gap: 6px; margin-bottom: 4px; }
+.water-ripple-panel input[type="range"] { width: 100%; accent-color: var(--cyan); }
+.water-ripple-panel output { text-align: right; color: #75eaff; }

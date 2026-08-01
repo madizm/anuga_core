@@ -63,17 +63,27 @@ const SLIDERS: SliderSpec[] = [
   { key: 'fullAmplitudeDepthM', label: '满幅水深(m)', min: 0.1, max: 2, step: 0.05 },
 ]
 
+const PANEL_OPEN_KEY = 'waterRippleTuningOpen'
 /**
- * Mounts a live tuning panel for the ripple shader. Development builds only;
- * safe to call multiple times (mounts once).
+ * Mounts the live tuning panel for the ripple shader together with its
+ * floating trigger button. The panel starts collapsed and remembers its
+ * open state across sessions. Safe to call multiple times (mounts once).
  */
-export function installWaterRippleDebugPanel() {
-  if (!import.meta.env.DEV) return
-  if (document.querySelector('.water-ripple-debug')) return
+export function installWaterRippleTuningPanel() {
+  if (document.querySelector('.water-ripple-tuning')) return
+  const root = document.createElement('div')
+  root.className = 'water-ripple-tuning'
   const panel = document.createElement('aside')
-  panel.className = 'water-ripple-debug'
+  panel.className = 'water-ripple-panel'
+  panel.setAttribute('aria-label', '水波参数调节')
   const header = document.createElement('header')
-  header.textContent = 'WATER RIPPLE · 调参'
+  const title = document.createElement('span')
+  title.textContent = 'WATER RIPPLE · 调参'
+  const close = document.createElement('button')
+  close.className = 'water-ripple-close'
+  close.setAttribute('aria-label', '关闭水波参数面板')
+  close.textContent = '×'
+  header.append(title, close)
   panel.appendChild(header)
   for (const spec of SLIDERS) {
     const row = document.createElement('label')
@@ -94,5 +104,30 @@ export function installWaterRippleDebugPanel() {
     row.append(name, input, value)
     panel.appendChild(row)
   }
-  document.body.appendChild(panel)
+  const trigger = document.createElement('button')
+  trigger.className = 'water-ripple-trigger'
+  trigger.setAttribute('aria-label', '水波参数调节')
+  trigger.textContent = '≋'
+
+  const setOpen = (open: boolean) => {
+    panel.hidden = !open
+    trigger.setAttribute('aria-expanded', String(open))
+    trigger.classList.toggle('active', open)
+    try {
+      window.localStorage.setItem(PANEL_OPEN_KEY, open ? '1' : '0')
+    } catch {
+      // Storage may be unavailable (private mode); the panel still works.
+    }
+  }
+  trigger.addEventListener('click', () => setOpen(panel.hidden))
+  close.addEventListener('click', () => setOpen(false))
+  let initiallyOpen = false
+  try {
+    initiallyOpen = window.localStorage.getItem(PANEL_OPEN_KEY) === '1'
+  } catch {
+    // Ignore storage failures; default to collapsed.
+  }
+  setOpen(initiallyOpen)
+  root.append(panel, trigger)
+  document.body.appendChild(root)
 }

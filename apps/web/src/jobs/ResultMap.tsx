@@ -9,7 +9,7 @@ import {
 } from './bufferedRasterFrames'
 import { FlowParticleLayer } from './FlowParticleLayer'
 import { WaterRippleLayer } from './WaterRippleLayer'
-import { installWaterRippleDebugPanel } from './waterRippleParams'
+import { installWaterRippleTuningPanel } from './waterRippleParams'
 import { TerrainControl } from '../map/TerrainControl'
 import {
   applyTerrain,
@@ -106,7 +106,7 @@ export function ResultMap({
       layer.setField(flowState.current.field, flowState.current.frameIndex)
     }
     createRippleLayers()
-    installWaterRippleDebugPanel()
+    installWaterRippleTuningPanel()
     displayedFrames.current = quantities.map(() => -1)
     return () => {
       for (const layer of flowLayers.current) layer.destroy()

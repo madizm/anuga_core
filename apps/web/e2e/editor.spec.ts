@@ -412,6 +412,17 @@ test('dynamic water toggle mounts the ripple layer without errors', async ({ pag
     'animated',
   )
   await expect(page.getByText('DYNAMIC FLOW')).toBeVisible()
+
+  const tuningTrigger = page.getByRole('button', { name: '水波参数调节' })
+  const tuningPanel = page.getByRole('complementary', { name: '水波参数调节' })
+  await expect(tuningTrigger).toBeVisible()
+  await expect(tuningPanel).toBeHidden()
+  await tuningTrigger.click()
+  await expect(tuningPanel).toBeVisible()
+  await expect(tuningPanel.getByText('高光强度')).toBeVisible()
+  await tuningPanel.getByRole('button', { name: '关闭水波参数面板' }).click()
+  await expect(tuningPanel).toBeHidden()
+
   await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.locator('.result-map-canvas')).not.toHaveAttribute(
     'data-water-ripple',
