@@ -14,6 +14,12 @@ accepting traffic:
 docker compose up --build
 ```
 
+The simulation workers use ANUGA's compiled OpenMP kernels with four threads
+per job by default. Override that value when starting Compose, for example
+`ANUGA_OMP_NUM_THREADS=1 docker compose up --build`, to benchmark thread counts
+on the target host. Keep the combined thread count of the standard and
+high-resource workers within the host's available CPU cores.
+
 Endpoints:
 
 - API/OpenAPI: <http://localhost:8000/docs>

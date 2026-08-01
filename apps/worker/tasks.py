@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from celery import Celery
+from celery.utils.log import get_task_logger
 from redis import Redis
 from sqlalchemy import select
 
@@ -29,6 +30,7 @@ from .storage import ObjectStorage
 
 settings = Settings.from_environment()
 celery_app = Celery("bayuquan-worker", broker=settings.celery_broker_url)
+logger = get_task_logger(__name__)
 celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
@@ -92,6 +94,12 @@ class JobRunner:
 
                 def accept_prepared(local):
                     nonlocal rasterizer, writer
+                    logger.info(
+                        "job %s prepared %d triangles with %d OpenMP threads",
+                        job_id,
+                        len(local.prepared.domain.areas),
+                        local.prepared.domain.omp_num_threads,
+                    )
                     rasterizer = LocalFrameRasterizer(
                         area,
                         local.triangle_cell_index,

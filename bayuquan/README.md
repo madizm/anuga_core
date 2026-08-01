@@ -109,7 +109,17 @@ surveyed bathymetry are conceptual inputs, not measured terrain.
 
 ## 4. Run
 
-Using Docker:
+Using Docker, each Compose simulation worker uses four OpenMP threads by
+default. Set the thread count explicitly for reproducible benchmarks:
+
+```bash
+ANUGA_OMP_NUM_THREADS=4 docker compose up --build
+```
+
+Use `ANUGA_OMP_NUM_THREADS=1` as the single-thread baseline. The worker log and
+`report.json` record the effective thread count; because the standard and
+high-resource workers can run simultaneously, their combined thread count
+must fit the host CPU allocation.
 
 ```bash
 bayuquan/run_in_docker.sh \

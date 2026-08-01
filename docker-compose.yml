@@ -93,7 +93,10 @@ services:
     command: >-
       celery -A apps.worker.tasks:celery_app worker
       --loglevel=INFO --concurrency=1 --prefetch-multiplier=1 -Q standard
-    environment: *service-environment
+    environment:
+      <<: *service-environment
+      OMP_NUM_THREADS: ${ANUGA_OMP_NUM_THREADS:-4}
+      OMP_DYNAMIC: "FALSE"
     working_dir: /opt/webgis
     volumes:
       - ./OUTPUT:/workspace/OUTPUT:ro
@@ -114,7 +117,10 @@ services:
       celery -A apps.worker.tasks:celery_app worker
       --loglevel=INFO --concurrency=1 --prefetch-multiplier=1
       -Q high-resource -n high-resource@%h
-    environment: *service-environment
+    environment:
+      <<: *service-environment
+      OMP_NUM_THREADS: ${ANUGA_OMP_NUM_THREADS:-4}
+      OMP_DYNAMIC: "FALSE"
     working_dir: /opt/webgis
     volumes:
       - ./OUTPUT:/workspace/OUTPUT:ro

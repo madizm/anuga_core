@@ -239,6 +239,7 @@ def run_simulation(
         "scenario": spec.name,
         "crs": "EPSG:32651",
         "meshSha256": GridTriangleMapping.file_sha256(paths.mesh),
+        "openmpThreads": int(domain.omp_num_threads),
         "durationSeconds": spec.duration_seconds,
         "yieldstepSeconds": spec.yieldstep_seconds,
         "frameCount": spec.frame_count,

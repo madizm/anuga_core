@@ -221,6 +221,7 @@ def run_local_simulation(
         "datasetVersion": area.dataset_version,
         "meshSha256": local.mesh_sha256,
         "meshTriangleCount": len(domain.areas),
+        "openmpThreads": int(domain.omp_num_threads),
         "durationSeconds": spec.duration_seconds,
         "yieldstepSeconds": spec.yieldstep_seconds,
         "frameCount": spec.frame_count,
