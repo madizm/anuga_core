@@ -100,20 +100,13 @@ export function ResultMap({
     })
     buffers.current = quantities.map(createBufferState)
     flowLayers.current = maps.current.map((map) => new FlowParticleLayer(map))
-    setWaterError(null)
-    rippleLayers.current = maps.current.map((map) => new WaterRippleLayer(
-      map,
-      (message) => setWaterError(message),
-    ))
-    installWaterRippleDebugPanel()
     // Maps may be recreated after flow was enabled (e.g. asynchronously
     // loaded bounds arrive): restore the latest field on the fresh layers.
     for (const layer of flowLayers.current) {
       layer.setField(flowState.current.field, flowState.current.frameIndex)
     }
-    for (const layer of rippleLayers.current) {
-      layer.setField(rippleField.current)
-    }
+    createRippleLayers()
+    installWaterRippleDebugPanel()
     displayedFrames.current = quantities.map(() => -1)
     return () => {
       for (const layer of flowLayers.current) layer.destroy()
@@ -238,9 +231,25 @@ export function ResultMap({
     setTerrainRetry((value) => value + 1)
   }
 
-  const retryWater = () => {
+  const createRippleLayers = () => {
     setWaterError(null)
-    for (const layer of rippleLayers.current) layer.retry()
+    const layers: WaterRippleLayer[] = []
+    for (const map of maps.current) {
+      try {
+        const layer = new WaterRippleLayer(map)
+        layer.setField(rippleField.current)
+        layers.push(layer)
+      } catch (error) {
+        setWaterError((error as Error).message || '水波效果初始化失败')
+      }
+    }
+    rippleLayers.current = layers
+  }
+
+  const retryWater = () => {
+    for (const layer of rippleLayers.current) layer.destroy()
+    rippleLayers.current = []
+    createRippleLayers()
   }
 
   return (

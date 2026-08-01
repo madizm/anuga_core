@@ -319,6 +319,7 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .result-map-cell { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
 .result-map-canvas { width: 100%; height: 100%; }
 .flow-particle-canvas { position: absolute; z-index: 2; inset: 0; pointer-events: none; mix-blend-mode: screen; }
+.water-ripple-canvas { position: absolute; z-index: 2; inset: 0; pointer-events: none; mix-blend-mode: screen; }
 .result-map-label { position: absolute; z-index: 4; left: 14px; top: 14px; padding: 7px 10px; border-left: 2px solid var(--cyan); background: rgba(5, 15, 19, .88); color: #c8dadd; font: 600 11px var(--display); letter-spacing: .1em; }
 .result-map-label.speed { border-color: var(--orange); }
 .flow-field-status { position: absolute; z-index: 4; top: 14px; right: 14px; padding: 6px 9px; border: 1px solid rgba(0, 229, 255, .35); background: rgba(5, 20, 25, .88); color: #9df4ff; font: 600 8px var(--display); letter-spacing: .14em; }
