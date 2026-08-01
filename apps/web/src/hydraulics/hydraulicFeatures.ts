@@ -1,6 +1,26 @@
 import type { LineString, Point, Polygon } from 'geojson'
 import type { HydraulicFeature, Position, SimulationArea } from '../api/types'
 
+let fallbackIdSequence = 0
+
+function randomIdToken(): string {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    return cryptoApi.randomUUID().slice(0, 8)
+  }
+
+  const bytes = new Uint8Array(4)
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    cryptoApi.getRandomValues(bytes)
+  } else {
+    fallbackIdSequence = (fallbackIdSequence + 1) >>> 0
+    new DataView(bytes.buffer).setUint32(
+      0, (Date.now() + fallbackIdSequence) >>> 0,
+    )
+  }
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+}
+
 export type HydraulicDrawMode = 'levee' | 'simpleChannel' | 'engineeringChannel'
   | 'culvert' | 'bridge' | 'breach'
 
@@ -11,7 +31,7 @@ export function createHydraulicFeature(
   existing: HydraulicFeature[],
 ): HydraulicFeature {
   const sequence = existing.filter((feature) => feature.type === mode).length + 1
-  const id = `${mode}-${crypto.randomUUID().slice(0, 8)}`
+  const id = `${mode}-${randomIdToken()}`
   const common = { id, enabled: true }
   if (mode === 'levee' && geometry.type === 'LineString') return {
     ...common,

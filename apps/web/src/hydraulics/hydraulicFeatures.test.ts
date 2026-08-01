@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { LineString, Point, Polygon } from 'geojson'
 import type { SimulationArea } from '../api/types'
 import { createHydraulicFeature, lineLengthM } from './hydraulicFeatures'
@@ -21,6 +21,8 @@ const polygon: Polygon = {
 }
 
 
+afterEach(() => vi.unstubAllGlobals())
+
 describe('hydraulic feature defaults', () => {
   it('creates all three version feature families', () => {
     const levee = createHydraulicFeature('levee', line, area, [])
@@ -41,6 +43,18 @@ describe('hydraulic feature defaults', () => {
     expect(culvert.type).toBe('culvert')
     expect(bridge.type).toBe('bridge')
     expect(breach.type === 'breach' && breach.leveeId).toBe(levee.id)
+  })
+
+  it('creates IDs when randomUUID is unavailable on an insecure origin', () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues: (values: Uint8Array) => {
+        values.set([0x12, 0x34, 0x56, 0x78])
+        return values
+      },
+    })
+
+    expect(createHydraulicFeature('levee', line, area, []).id)
+      .toBe('levee-12345678')
   })
 
   it('computes projected line length closely enough for section chainage', () => {
