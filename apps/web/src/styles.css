@@ -319,6 +319,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .result-map-cell { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
 .result-map-canvas { width: 100%; height: 100%; }
 .flow-particle-canvas { position: absolute; z-index: 2; inset: 0; pointer-events: none; mix-blend-mode: screen; }
+.water-ripple-canvas { position: absolute; z-index: 2; inset: 0; pointer-events: none; mix-blend-mode: screen; }
+.water-ripple-canvas.colorize { mix-blend-mode: normal; }
 .result-map-label { position: absolute; z-index: 4; left: 14px; top: 14px; padding: 7px 10px; border-left: 2px solid var(--cyan); background: rgba(5, 15, 19, .88); color: #c8dadd; font: 600 11px var(--display); letter-spacing: .1em; }
 .result-map-label.speed { border-color: var(--orange); }
 .flow-field-status { position: absolute; z-index: 4; top: 14px; right: 14px; padding: 6px 9px; border: 1px solid rgba(0, 229, 255, .35); background: rgba(5, 20, 25, .88); color: #9df4ff; font: 600 8px var(--display); letter-spacing: .14em; }
@@ -595,3 +597,16 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .mesh-preview-summary { margin: 0 12px 10px; color: #75a7b2; font: 10px var(--mono); }
 .history-tags .structure-tag { color: #ffbd52; border-color: #79551d; }
 .structure-job span { color: #ffb020; }
+
+.water-error-badge { border-right-color: var(--cyan-dim); background: rgba(11, 24, 28, .94); color: #7fdce9; }
+
+.water-ripple-tuning { position: fixed; right: 12px; bottom: 176px; z-index: 30; font: 10px var(--mono); }
+.water-ripple-trigger { display: block; margin-left: auto; width: 30px; height: 30px; border: 1px solid var(--cyan-dim); background: rgba(7, 18, 23, .94); color: var(--cyan); font: 600 15px/1 var(--display); cursor: pointer; }
+.water-ripple-trigger:hover, .water-ripple-trigger.active { border-color: var(--cyan); background: #0d2831; }
+.water-ripple-panel { position: absolute; right: 0; bottom: 38px; width: 230px; padding: 10px 12px; border: 1px solid var(--cyan-dim); background: rgba(7, 18, 23, .94); color: #bfe9ef; }
+.water-ripple-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; color: var(--cyan); font: 600 10px var(--display); letter-spacing: .12em; }
+.water-ripple-close { border: none; background: none; color: #75a7b2; font: 400 14px/1 var(--mono); cursor: pointer; padding: 0 2px; }
+.water-ripple-close:hover { color: var(--cyan); }
+.water-ripple-panel label { display: grid; grid-template-columns: 84px 1fr 34px; align-items: center; gap: 6px; margin-bottom: 4px; }
+.water-ripple-panel input[type="range"] { width: 100%; accent-color: var(--cyan); }
+.water-ripple-panel output { text-align: right; color: #75eaff; }

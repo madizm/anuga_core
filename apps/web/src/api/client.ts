@@ -64,10 +64,12 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
   const version = view.getUint16(4, true)
   const width = view.getUint16(6, true)
   const height = view.getUint16(8, true)
-  if (magic !== 'BQFV' || version !== 1 || width === 0 || height === 0) {
+  if (magic !== 'BQFV' || (version !== 1 && version !== 2 && version !== 3) || width === 0 || height === 0) {
     throw new Error('流向场格式不受支持')
   }
-  const expectedBytes = 44 + width * height * 2 * Float32Array.BYTES_PER_ELEMENT
+  // v3 packs fp16 RGBA texels (2 bytes × 4 channels); v1/v2 use float32.
+  const bytesPerCell = version === 3 ? 8 : (version === 2 ? 3 : 2) * 4
+  const expectedBytes = 44 + width * height * bytesPerCell
   if (buffer.byteLength !== expectedBytes) throw new Error('流向场数据不完整')
   const bounds: [number, number, number, number] = [
     view.getFloat64(12, true), view.getFloat64(20, true),
@@ -76,12 +78,42 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
   if (!bounds.every(Number.isFinite) || bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) {
     throw new Error('流向场范围无效')
   }
-  return {
-    width,
-    height,
-    bounds,
-    vectors: new Float32Array(buffer.slice(44)),
+  const cellCount = width * height
+  if (version === 3) {
+    // Texels upload verbatim; only the particle layer needs a CPU-side
+    // float32 copy of the velocity channels.
+    const texels = new Uint16Array(buffer.slice(44))
+    const vectors = new Float32Array(cellCount * 2)
+    for (let cell = 0; cell < cellCount; cell += 1) {
+      vectors[cell * 2] = decodeFloat16(texels[cell * 4])
+      vectors[cell * 2 + 1] = decodeFloat16(texels[cell * 4 + 1])
+    }
+    return { width, height, bounds, vectors, depths: null, texels }
   }
+  const packed = new Float32Array(buffer.slice(44))
+  if (version === 1) {
+    return { width, height, bounds, vectors: packed, depths: null, texels: null }
+  }
+  // v2 interleaves (depth, u, v) per cell; split the planes so consumers of
+  // the legacy velocity layout keep working unchanged.
+  const vectors = new Float32Array(cellCount * 2)
+  const depths = new Float32Array(cellCount)
+  for (let cell = 0; cell < cellCount; cell += 1) {
+    depths[cell] = packed[cell * 3]
+    vectors[cell * 2] = packed[cell * 3 + 1]
+    vectors[cell * 2 + 1] = packed[cell * 3 + 2]
+  }
+  return { width, height, bounds, vectors, depths, texels: null }
+}
+
+/** Decodes one IEEE 754 binary16 value. */
+export function decodeFloat16(bits: number): number {
+  const sign = bits & 0x8000 ? -1 : 1
+  const exponent = (bits >> 10) & 0x1f
+  const fraction = bits & 0x03ff
+  if (exponent === 0) return sign * fraction * 2 ** -24
+  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15)
 }
 
 export const api = {

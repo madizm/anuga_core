@@ -1,0 +1,658 @@
+import type { Map } from 'maplibre-gl'
+import type { FlowField, ResultQuantity } from '../api/types'
+import { waterRippleParams } from './waterRippleParams'
+
+const CROSSFADE_MS = 220
+
+/**
+ * Packs a flow field into RGBA texels for the ripple shader:
+ * R = velocity u, G = velocity v, B = depth, A = wet flag (0/1).
+ * Non-finite (dry) cells are zeroed; NaN never reaches the GPU because NaN
+ * behaviour in texture sampling varies across drivers. Legacy v1 fields have
+ * no depth plane: wet cells get depth 1 so the feather saturates and the wet
+ * flag alone drives the boundary.
+ */
+export function packFieldPixels(field: FlowField): Float32Array {
+  const cellCount = field.width * field.height
+  const pixels = new Float32Array(cellCount * 4)
+  for (let cell = 0; cell < cellCount; cell += 1) {
+    const u = field.vectors[cell * 2]
+    const v = field.vectors[cell * 2 + 1]
+    const depth = field.depths ? field.depths[cell] : Number.NaN
+    const velocityValid = Number.isFinite(u) && Number.isFinite(v)
+    const wet = field.depths
+      ? velocityValid && Number.isFinite(depth)
+      : velocityValid
+    if (!wet) continue
+    pixels[cell * 4] = u
+    pixels[cell * 4 + 1] = v
+    pixels[cell * 4 + 2] = field.depths ? depth : 1
+    pixels[cell * 4 + 3] = 1
+  }
+  return pixels
+}
+
+/** Approximate ground size of one grid cell in metres, [east, north]. */
+export function cellSizeMeters(field: FlowField): [number, number] {
+  const [west, south, east, north] = field.bounds
+  const latitudeRadians = ((south + north) / 2) * Math.PI / 180
+  return [
+    (east - west) * 111_320 * Math.cos(latitudeRadians) / field.width,
+    (north - south) * 110_540 / field.height,
+  ]
+}
+
+/**
+ * Unit vector toward the sun in (east, north, up). The azimuth is degrees
+ * clockwise from north, matching the hillshade illumination convention.
+ */
+export function sunDirection(
+  azimuthDegrees: number,
+  elevationDegrees: number,
+): [number, number, number] {
+  const azimuth = azimuthDegrees * Math.PI / 180
+  const elevation = elevationDegrees * Math.PI / 180
+  return [
+    Math.sin(azimuth) * Math.cos(elevation),
+    Math.cos(azimuth) * Math.cos(elevation),
+    Math.sin(elevation),
+  ]
+}
+
+/** Crossfade weight of the incoming field, 1 when the transition is done. */
+export function crossfadeWeight(elapsedMs: number, reducedMotion: boolean) {
+  if (reducedMotion || elapsedMs >= CROSSFADE_MS) return 1
+  return Math.max(0, elapsedMs / CROSSFADE_MS)
+}
+
+const VERTEX_SHADER = `
+attribute vec2 a_clip;
+attribute vec2 a_uv;
+varying vec2 v_uv;
+void main() {
+  v_uv = a_uv;
+  gl_Position = vec4(a_clip, 0.0, 1.0);
+}
+`
+
+const FRAGMENT_SHADER = `
+precision highp float;
+varying vec2 v_uv;
+uniform sampler2D u_field_current;
+uniform sampler2D u_field_previous;
+uniform float u_fade;
+uniform vec2 u_grid_size;
+uniform vec2 u_cell_meters;
+uniform float u_time;
+uniform vec3 u_sun;
+uniform float u_specular;
+uniform float u_sheen;
+uniform float u_sparkle;
+uniform float u_amplitude;
+uniform vec2 u_wave_length;
+uniform float u_advect;
+uniform float u_feather;
+uniform float u_full_depth;
+uniform float u_colorize;
+uniform float u_shadow;
+uniform float u_water_alpha;
+uniform float u_format;
+uniform float u_quantity;
+
+vec4 sampleField(sampler2D tex, vec2 uv) {
+  vec2 g = uv * u_grid_size - 0.5;
+  vec2 base = floor(g);
+  vec2 f = g - base;
+  vec4 sum = vec4(0.0);
+  float weightSum = 0.0;
+  for (int i = 0; i < 4; i++) {
+    vec2 corner = vec2(mod(float(i), 2.0), floor(float(i) / 2.0));
+    vec2 texel = base + corner;
+    float w = mix(1.0 - f.x, f.x, corner.x) * mix(1.0 - f.y, f.y, corner.y);
+    if (w == 0.0) continue;
+    if (texel.x < 0.0 || texel.y < 0.0) continue;
+    if (texel.x > u_grid_size.x - 1.0 || texel.y > u_grid_size.y - 1.0) continue;
+    sum += texture2D(tex, (texel + 0.5) / u_grid_size) * w;
+    weightSum += w;
+  }
+  if (weightSum == 0.0) return vec4(0.0);
+  return sum / weightSum;
+}
+
+// Sin-free hash (David Hoskins): trigonometric hashes are measurably slower
+// in fragment shaders on some mobile GPUs.
+float hash(vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 t = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
+}
+
+float waveHeight(vec2 q) {
+  return vnoise(q / u_wave_length.x) + vnoise(q / u_wave_length.y) * 0.45;
+}
+
+// Matches the depth legend (ColorBrewer Blues), with the shallow end nudged
+// from #f7fbff toward a touch of blue so ripple shading stays visible.
+vec3 depthRamp(float t) {
+  vec3 c0 = vec3(0.886, 0.933, 0.973);
+  vec3 c1 = vec3(0.620, 0.792, 0.882);
+  vec3 c2 = vec3(0.259, 0.573, 0.776);
+  vec3 c3 = vec3(0.031, 0.318, 0.612);
+  if (t < 0.34) return mix(c0, c1, t / 0.34);
+  if (t < 0.67) return mix(c1, c2, (t - 0.34) / 0.33);
+  return mix(c2, c3, (t - 0.67) / 0.33);
+}
+
+// Matches the stage legend (viridis approximation).
+vec3 stageRamp(float t) {
+  vec3 c0 = vec3(0.267, 0.005, 0.329);
+  vec3 c1 = vec3(0.192, 0.408, 0.557);
+  vec3 c2 = vec3(0.208, 0.718, 0.475);
+  vec3 c3 = vec3(0.992, 0.906, 0.145);
+  if (t < 0.34) return mix(c0, c1, t / 0.34);
+  if (t < 0.67) return mix(c1, c2, (t - 0.34) / 0.33);
+  return mix(c2, c3, (t - 0.67) / 0.33);
+}
+
+// Matches the speed legend (ColorBrewer YlOrRd).
+vec3 speedRamp(float t) {
+  vec3 c0 = vec3(1.0, 1.0, 0.8);
+  vec3 c1 = vec3(0.996, 0.698, 0.298);
+  vec3 c2 = vec3(0.941, 0.231, 0.125);
+  vec3 c3 = vec3(0.502, 0.0, 0.149);
+  if (t < 0.34) return mix(c0, c1, t / 0.34);
+  if (t < 0.67) return mix(c1, c2, (t - 0.34) / 0.33);
+  return mix(c2, c3, (t - 0.67) / 0.33);
+}
+
+void main() {
+  vec4 field = sampleField(u_field_current, v_uv);
+  if (u_fade < 1.0) {
+    field = mix(sampleField(u_field_previous, v_uv), field, u_fade);
+  }
+  // v3 fields carry (u, v, depth, stage) with dry cells marked by the exact
+  // sentinel depth -1; legacy fields carry (u, v, depth, wetFlag).
+  float depth = field.b;
+  float wet;
+  float stage;
+  if (u_format > 0.5) {
+    wet = step(0.0, depth);
+    depth = max(depth, 0.0);
+    stage = field.a;
+  } else {
+    wet = field.a;
+    stage = 0.0;
+  }
+  float alpha = wet * smoothstep(0.0, u_feather, depth);
+  if (alpha < 0.004) discard;
+
+  vec2 velocity = field.rg;
+  float speed = length(velocity);
+
+  // Ripple coordinates in grid cells, y increasing northward, advected by
+  // the local flow so the wave pattern travels with the water.
+  vec2 cell = vec2(v_uv.x, 1.0 - v_uv.y) * u_grid_size;
+  vec2 q = cell - velocity * (u_time * u_advect) / max(u_cell_meters, vec2(0.001));
+
+  float eps = 0.18;
+  float dx = waveHeight(q + vec2(eps, 0.0)) - waveHeight(q - vec2(eps, 0.0));
+  float dy = waveHeight(q + vec2(0.0, eps)) - waveHeight(q - vec2(0.0, eps));
+
+  float depthFactor = clamp(depth / u_full_depth, 0.0, 1.0);
+  float speedFactor = clamp(speed / 1.5, 0.15, 1.0);
+  float amp = u_amplitude * depthFactor * speedFactor * 0.6;
+  vec3 normal = normalize(vec3(-dx * amp, -dy * amp, 1.0));
+
+  float diffuse = max(dot(normal, u_sun), 0.0);
+  float sheen = max(diffuse - u_sun.z, 0.0) / max(1.0 - u_sun.z, 0.001);
+  float specular = pow(max(dot(reflect(-u_sun, normal), vec3(0.0, 0.0, 1.0)), 0.0), 64.0);
+  float light = u_sheen * sheen + u_specular * specular;
+
+  if (u_sparkle > 0.0 && speed > 0.5) {
+    float sparkle = vnoise(q * 2.7 + vec2(u_time * 3.0, -u_time * 2.2));
+    light += u_sparkle * smoothstep(0.72, 0.95, sparkle) * clamp(speed / 2.0, 0.0, 1.0);
+  }
+  light = max(light, 0.0);
+
+  if (u_colorize > 0.5) {
+    // Full water-surface rendering: legend-aligned ramps for the selected
+    // quantity, ripple relief from two-tone shading (shadows carry the
+    // shallow end where additive highlights would vanish on pale blue).
+    vec3 base;
+    if (u_quantity < 0.5) {
+      base = depthRamp(clamp((depth - 0.01) / (3.0 - 0.01), 0.0, 1.0));
+    } else if (u_quantity < 1.5) {
+      base = stageRamp(clamp(stage / 30.0, 0.0, 1.0));
+    } else {
+      base = speedRamp(clamp(speed / 3.0, 0.0, 1.0));
+    }
+    float shade = clamp((u_sun.z - diffuse) / max(u_sun.z, 0.001), 0.0, 1.0);
+    vec3 color = base * (1.0 - u_shadow * shade) + vec3(light);
+    float a = alpha * u_water_alpha;
+    gl_FragColor = vec4(color * a, a);
+    return;
+  }
+
+  gl_FragColor = vec4(vec3(light * alpha), 1.0);
+}
+`
+
+interface RippleResources {
+  program: WebGLProgram
+  quad: WebGLBuffer
+  current: WebGLTexture | null
+  previous: WebGLTexture | null
+  attributes: { clip: number; uv: number }
+  uniforms: Record<string, WebGLUniformLocation | null>
+}
+
+const UNIFORM_NAMES = [
+  'u_field_current', 'u_field_previous', 'u_fade', 'u_grid_size',
+  'u_cell_meters', 'u_time', 'u_sun', 'u_specular', 'u_sheen', 'u_sparkle',
+  'u_amplitude', 'u_wave_length', 'u_advect', 'u_feather', 'u_full_depth',
+  'u_colorize', 'u_shadow', 'u_water_alpha', 'u_format', 'u_quantity',
+]
+
+const QUANTITY_CODES: Record<ResultQuantity, number> = {
+  depth: 0,
+  stage: 1,
+  speed: 2,
+}
+
+/**
+ * Additive water-surface shimmer on its own overlay canvas (the same pattern
+ * as the particle layer): procedural ripple normals advected by the frame
+ * velocity field, sun specular, wet-edge feathering from the depth plane.
+ *
+ * It deliberately does NOT render as a MapLibre custom layer: animating a
+ * custom layer requires map.triggerRepaint() every frame, which re-renders
+ * the whole style on the main thread and was measured to drop the page from
+ * 120 fps to 7 fps. A private canvas redraws only a single textured quad per
+ * frame and leaves the map's render loop untouched.
+ */
+export class WaterRippleLayer {
+  private readonly canvas = document.createElement('canvas')
+  private readonly gl: WebGL2RenderingContext
+  private resources: RippleResources | null = null
+  private field: FlowField | null = null
+  private fadeStartedAt = 0
+  private readonly startedAt = performance.now()
+  private animationFrame: number | null = null
+  private rendered = false
+  private colorize = false
+  private quantity: ResultQuantity = 'depth'
+  private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+
+  constructor(private readonly map: Map) {
+    this.canvas.className = 'water-ripple-canvas'
+    this.canvas.setAttribute('aria-hidden', 'true')
+    map.getContainer().appendChild(this.canvas)
+    const context = this.canvas.getContext('webgl2', {
+      alpha: true,
+      antialias: false,
+      premultipliedAlpha: true,
+    })
+    if (!context) {
+      this.canvas.remove()
+      throw new Error('水波效果需要 WebGL2')
+    }
+    this.gl = context
+    try {
+      this.initGL()
+    } catch (error) {
+      this.canvas.remove()
+      throw error
+    }
+    this.canvas.addEventListener('webglcontextlost', this.handleContextLost)
+    this.canvas.addEventListener('webglcontextrestored', this.handleContextRestored)
+    this.map.on('resize', this.resize)
+    this.map.on('move', this.handleMove)
+    this.reducedMotion.addEventListener('change', this.motionPreferenceChanged)
+    this.resize()
+  }
+
+  setField(field: FlowField | null) {
+    const previous = this.field
+    this.field = field
+    if (!field) {
+      this.stop()
+      this.clearTextures()
+      this.rendered = false
+      delete this.map.getContainer().dataset.waterRipple
+      this.clearCanvas()
+      return
+    }
+    const sameGrid = previous != null
+      && previous.width === field.width && previous.height === field.height
+    this.fadeStartedAt = performance.now()
+    this.upload(field, sameGrid)
+    if (this.reducedMotion.matches) {
+      this.draw()
+    } else if (this.animationFrame == null) {
+      this.animationFrame = requestAnimationFrame(this.animate)
+    }
+  }
+
+  /**
+   * Switches between full water-surface rendering (depth ramp, normal
+   * blending — used when the depth raster is hidden) and the additive
+   * highlight veil used on top of the stage/speed rasters.
+   */
+  setColorize(colorize: boolean) {
+    if (this.colorize === colorize) return
+    this.colorize = colorize
+    this.canvas.classList.toggle('colorize', colorize)
+    this.updateDataset()
+    if (this.reducedMotion.matches) this.draw()
+  }
+
+  /** Selects which quantity the colorize ramp encodes. */
+  setQuantity(quantity: ResultQuantity) {
+    if (this.quantity === quantity) return
+    this.quantity = quantity
+    this.updateDataset()
+    if (this.reducedMotion.matches) this.draw()
+  }
+
+  private updateDataset() {
+    const container = this.map.getContainer()
+    if (this.colorize) container.dataset.waterColorize = '1'
+    else delete container.dataset.waterColorize
+    if (this.colorize) container.dataset.waterQuantity = this.quantity
+    else delete container.dataset.waterQuantity
+  }
+
+  destroy() {
+    this.stop()
+    delete this.map.getContainer().dataset.waterRipple
+    delete this.map.getContainer().dataset.waterColorize
+    delete this.map.getContainer().dataset.waterQuantity
+    this.canvas.removeEventListener('webglcontextlost', this.handleContextLost)
+    this.canvas.removeEventListener('webglcontextrestored', this.handleContextRestored)
+    this.map.off('resize', this.resize)
+    this.map.off('move', this.handleMove)
+    this.reducedMotion.removeEventListener('change', this.motionPreferenceChanged)
+    this.releaseGL()
+    this.canvas.remove()
+  }
+
+  private initGL() {
+    const gl = this.gl
+    this.releaseGL()
+    const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER)
+    const fragment = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER)
+    const program = gl.createProgram()
+    gl.attachShader(program, vertex)
+    gl.attachShader(program, fragment)
+    gl.linkProgram(program)
+    gl.deleteShader(vertex)
+    gl.deleteShader(fragment)
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(program)
+      gl.deleteProgram(program)
+      throw new Error(`水波 shader 链接失败: ${log ?? '未知错误'}`)
+    }
+    const uniforms: Record<string, WebGLUniformLocation | null> = {}
+    for (const name of UNIFORM_NAMES) {
+      uniforms[name] = gl.getUniformLocation(program, name)
+    }
+    this.resources = {
+      program,
+      quad: mustCreate(gl.createBuffer(), '顶点缓冲'),
+      current: null,
+      previous: null,
+      attributes: {
+        clip: gl.getAttribLocation(program, 'a_clip'),
+        uv: gl.getAttribLocation(program, 'a_uv'),
+      },
+      uniforms,
+    }
+    if (this.field) this.upload(this.field, false)
+  }
+
+  private releaseGL() {
+    const resources = this.resources
+    if (!resources) return
+    const gl = this.gl
+    if (resources.current) gl.deleteTexture(resources.current)
+    if (resources.previous) gl.deleteTexture(resources.previous)
+    gl.deleteBuffer(resources.quad)
+    gl.deleteProgram(resources.program)
+    this.resources = null
+  }
+
+  private upload(field: FlowField, keepPrevious: boolean) {
+    const resources = this.resources
+    if (!resources) return
+    const gl = this.gl
+    const texture = mustCreate(gl.createTexture(), '场纹理')
+    gl.bindTexture(gl.TEXTURE_2D, texture)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    if (field.texels) {
+      // v3 payload uploads verbatim — the server already laid out fp16
+      // (u, v, depth, stage) texels in RGBA order.
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA16F, field.width, field.height, 0,
+        gl.RGBA, gl.HALF_FLOAT, field.texels,
+      )
+    } else {
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA32F, field.width, field.height, 0,
+        gl.RGBA, gl.FLOAT, packFieldPixels(field),
+      )
+    }
+    if (resources.current && keepPrevious) {
+      if (resources.previous) gl.deleteTexture(resources.previous)
+      resources.previous = resources.current
+    } else {
+      if (resources.previous) gl.deleteTexture(resources.previous)
+      if (resources.current) gl.deleteTexture(resources.current)
+      resources.previous = null
+    }
+    resources.current = texture
+  }
+
+  private clearTextures() {
+    const resources = this.resources
+    if (!resources) return
+    if (resources.current) this.gl.deleteTexture(resources.current)
+    if (resources.previous) this.gl.deleteTexture(resources.previous)
+    resources.current = null
+    resources.previous = null
+  }
+
+  private frameSkip = 0
+
+  private readonly animate = () => {
+    this.animationFrame = null
+    if (!this.field) return
+    // Slow-moving shimmer reads identically at 30 fps, and the time uniform
+    // is wall-clock driven so the animation speed is unchanged. Skipping
+    // every other repaint halves the fullscreen shader cost, which matters
+    // when the GPU is also busy rendering pitched 3D terrain.
+    this.frameSkip = (this.frameSkip + 1) % 2
+    if (this.frameSkip === 0) this.draw()
+    this.animationFrame = requestAnimationFrame(this.animate)
+  }
+
+  private draw() {
+    const resources = this.resources
+    const field = this.field
+    if (!resources || !resources.current || !field) return
+    const gl = this.gl
+    const { program, uniforms } = resources
+    const now = performance.now()
+    const fade = resources.previous
+      ? crossfadeWeight(now - this.fadeStartedAt, this.reducedMotion.matches)
+      : 1
+    if (fade >= 1 && resources.previous) {
+      gl.deleteTexture(resources.previous)
+      resources.previous = null
+    }
+    const time = this.reducedMotion.matches ? 0 : (now - this.startedAt) / 1000
+    const params = waterRippleParams
+    const sun = sunDirection(params.sunAzimuth, params.sunElevation)
+    const cellMeters = cellSizeMeters(field)
+
+    // Project the field corners into the overlay's clip space. Four
+    // map.project() calls per frame is far cheaper than forcing the map to
+    // re-render just to hand us its matrix.
+    const [west, south, east, north] = field.bounds
+    const nw = this.map.project([west, north])
+    const sw = this.map.project([west, south])
+    const ne = this.map.project([east, north])
+    const se = this.map.project([east, south])
+    const width = Number.parseFloat(this.canvas.style.width) || this.canvas.width
+    const height = Number.parseFloat(this.canvas.style.height) || this.canvas.height
+    const clipX = (x: number) => x / width * 2 - 1
+    const clipY = (y: number) => 1 - y / height * 2
+    // a_clip in clip space, a_uv in grid space (row 0 = north).
+    const vertices = new Float32Array([
+      clipX(nw.x), clipY(nw.y), 0, 0,
+      clipX(sw.x), clipY(sw.y), 0, 1,
+      clipX(ne.x), clipY(ne.y), 1, 0,
+      clipX(ne.x), clipY(ne.y), 1, 0,
+      clipX(sw.x), clipY(sw.y), 0, 1,
+      clipX(se.x), clipY(se.y), 1, 1,
+    ])
+
+    gl.useProgram(program)
+    gl.uniform1f(uniforms.u_fade, fade)
+    gl.uniform2f(uniforms.u_grid_size, field.width, field.height)
+    gl.uniform2f(uniforms.u_cell_meters, cellMeters[0], cellMeters[1])
+    gl.uniform1f(uniforms.u_time, time)
+    gl.uniform3f(uniforms.u_sun, sun[0], sun[1], sun[2])
+    gl.uniform1f(uniforms.u_specular, params.specularStrength)
+    gl.uniform1f(uniforms.u_sheen, params.sheenStrength)
+    gl.uniform1f(uniforms.u_sparkle, params.sparkleStrength)
+    gl.uniform1f(uniforms.u_amplitude, params.amplitude)
+    gl.uniform2f(uniforms.u_wave_length, params.waveLengthLarge, params.waveLengthSmall)
+    gl.uniform1f(uniforms.u_advect, params.advectScale)
+    gl.uniform1f(uniforms.u_feather, Math.max(params.featherDepthM, 0.001))
+    gl.uniform1f(uniforms.u_full_depth, Math.max(params.fullAmplitudeDepthM, 0.01))
+    gl.uniform1f(uniforms.u_colorize, this.colorize ? 1 : 0)
+    gl.uniform1f(uniforms.u_shadow, params.shadowStrength)
+    gl.uniform1f(uniforms.u_water_alpha, params.waterAlpha)
+    gl.uniform1f(uniforms.u_format, field.texels ? 1 : 0)
+    // Stage needs the v3 alpha channel; legacy fields fall back to depth.
+    const quantity = this.quantity === 'stage' && !field.texels
+      ? 'depth'
+      : this.quantity
+    gl.uniform1f(uniforms.u_quantity, QUANTITY_CODES[quantity])
+
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, resources.current)
+    gl.uniform1i(uniforms.u_field_current, 0)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, resources.previous ?? resources.current)
+    gl.uniform1i(uniforms.u_field_previous, 1)
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, resources.quad)
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW)
+    gl.enableVertexAttribArray(resources.attributes.clip)
+    gl.vertexAttribPointer(resources.attributes.clip, 2, gl.FLOAT, false, 16, 0)
+    gl.enableVertexAttribArray(resources.attributes.uv)
+    gl.vertexAttribPointer(resources.attributes.uv, 2, gl.FLOAT, false, 16, 8)
+
+    gl.disable(gl.BLEND)
+    gl.clearColor(0, 0, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+    if (!this.rendered) {
+      this.rendered = true
+      this.map.getContainer().dataset.waterRipple = 'active'
+    }
+  }
+
+  private clearCanvas() {
+    this.gl.clearColor(0, 0, 0, 0)
+    this.gl.clear(this.gl.COLOR_BUFFER_BIT)
+  }
+
+  private readonly resize = () => {
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+    const container = this.map.getContainer()
+    this.canvas.width = Math.max(1, Math.round(container.clientWidth * pixelRatio))
+    this.canvas.height = Math.max(1, Math.round(container.clientHeight * pixelRatio))
+    this.canvas.style.width = `${container.clientWidth}px`
+    this.canvas.style.height = `${container.clientHeight}px`
+    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height)
+    if (this.reducedMotion.matches) this.draw()
+  }
+
+  private readonly handleMove = () => {
+    // Redraw on every camera update so the water stays glued to the map
+    // during pan/zoom. MapLibre dispatches "move" inside its own render
+    // pass, so drawing here lands in the same composited frame as the map
+    // canvas and no positional lag is visible. The 30 fps throttle only
+    // applies to the ambient shimmer while the camera is stationary.
+    if (this.field) this.draw()
+  }
+
+  private readonly motionPreferenceChanged = () => {
+    if (this.reducedMotion.matches) {
+      this.stop()
+      this.draw()
+    } else if (this.field && this.animationFrame == null) {
+      this.animationFrame = requestAnimationFrame(this.animate)
+    }
+  }
+
+  private readonly handleContextLost = (event: Event) => {
+    event.preventDefault()
+    this.stop()
+    // The GL objects died with the context; drop the references without
+    // making delete calls into a dead context.
+    this.resources = null
+  }
+
+  private readonly handleContextRestored = () => {
+    try {
+      this.initGL()
+      this.resize()
+      if (this.field && !this.reducedMotion.matches && this.animationFrame == null) {
+        this.animationFrame = requestAnimationFrame(this.animate)
+      }
+      if (this.field && this.reducedMotion.matches) this.draw()
+    } catch {
+      // Leave the layer dormant; the user can retry via the toggle.
+      delete this.map.getContainer().dataset.waterRipple
+    }
+  }
+
+  private stop() {
+    if (this.animationFrame != null) cancelAnimationFrame(this.animationFrame)
+    this.animationFrame = null
+  }
+}
+
+function compileShader(gl: WebGL2RenderingContext, type: number, source: string) {
+  const shader = mustCreate(gl.createShader(type), 'shader')
+  gl.shaderSource(shader, source)
+  gl.compileShader(shader)
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader)
+    gl.deleteShader(shader)
+    throw new Error(`水波 shader 编译失败: ${log ?? '未知错误'}`)
+  }
+  return shader
+}
+
+function mustCreate<T>(value: T | null, label: string): T {
+  if (value == null) throw new Error(`水波效果初始化失败: 无法创建${label}`)
+  return value
+}

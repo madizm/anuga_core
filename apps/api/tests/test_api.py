@@ -653,13 +653,63 @@ def test_flow_field_endpoint_publishes_wet_velocity_components(tmp_path):
     magic, version, width, height, _reserved = unpack_from(
         "<4sHHHH", response.content
     )
-    assert (magic, version, width, height) == (b"BQFV", 1, 2, 1)
+    assert (magic, version, width, height) == (b"BQFV", 3, 2, 1)
     west, south, east, north = unpack_from("<4d", response.content, 12)
     assert 121 < west < east < 123
     assert 39 < south < north < 41
-    vectors = np.frombuffer(response.content, dtype="<f4", offset=44)
-    assert np.isnan(vectors[:2]).all()
-    np.testing.assert_allclose(vectors[2:], [3, 4])
+    # v3 texels are (u, v, depth, stage) float16; dry cells carry the exact
+    # sentinel depth -1 instead of NaN.
+    texels = np.frombuffer(response.content, dtype="<f2", offset=44)
+    np.testing.assert_array_equal(texels[:4], [0, 0, -1, 0])
+    np.testing.assert_allclose(texels[4:], [3, 4, 1, 6])
+
+
+def test_flow_field_endpoint_downsamples_to_max_dim(tmp_path):
+    cog = tmp_path / "flow.tif"
+    rng = np.random.default_rng(7)
+    values = rng.random((5, 32, 64), dtype=np.float32) * 3
+    with rasterio.open(
+        cog, "w", driver="GTiff", width=64, height=32, count=5,
+        dtype="float32", crs="EPSG:32651",
+        transform=from_origin(430_000, 4_462_000, 30, 30),
+        nodata=-9999,
+    ) as dataset:
+        dataset.write(values)
+        dataset.write_mask(np.full((32, 64), 255, dtype=np.uint8))
+
+    test_client, _ = client(tmp_path)
+    test_client.app.state.s3_client = SimpleNamespace(
+        get_object=lambda **kwargs: {"Body": BytesIO(cog.read_bytes())}
+    )
+    with test_client:
+        created = test_client.post("/api/scenarios", json=scenario())
+        job = test_client.post(
+            f"/api/scenarios/{created.json()['id']}/jobs", json={}
+        ).json()
+        database = test_client.app.state.database
+        with database.session_factory.begin() as session:
+            session.add(SimulationFrame(
+                job_id=job["id"], frame_index=0, time_seconds=0,
+                cog_uri="s3://simulation-jobs/jobs/test/flow.tif",
+                maximum_depth_m=1, maximum_speed_mps=5,
+                wet_area_m2=900,
+            ))
+        response = test_client.get(
+            f"/api/jobs/{job['id']}/frames/0/flow",
+            params={"max_dim": 16},
+        )
+    assert response.status_code == 200
+    magic, version, width, height, _reserved = unpack_from(
+        "<4sHHHH", response.content
+    )
+    assert (magic, version, width, height) == (b"BQFV", 3, 16, 8)
+    texels = np.frombuffer(
+        response.content, dtype="<f2", offset=44,
+    ).reshape(height, width, 4)
+    assert np.isfinite(texels).all()
+    assert (texels[..., 2] >= 0).all()
+    # Downsampled depth stays close to the source mean.
+    assert abs(float(texels[..., 2].mean()) - float(values[0].mean())) < 0.5
 
 
 def test_rainfall_only_scenario_is_persisted_validated_and_snapshotted(

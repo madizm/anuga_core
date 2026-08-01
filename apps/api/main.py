@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import struct
 import warnings
+from functools import partial
 from io import BytesIO
 
 import numpy as np
 import rasterio
 from PIL import Image
+from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
 from rasterio.warp import transform_bounds
 from collections.abc import Callable
@@ -596,6 +599,7 @@ def create_app(
     def frame_flow_field(
         job_id: str,
         frame_index: int,
+        max_dim: int = Query(default=512, ge=16, le=4096),
         session: Session = Depends(session_dependency),
     ) -> Response:
         frame = session.get(SimulationFrame, (job_id, frame_index))
@@ -627,34 +631,66 @@ def create_app(
                         status_code=409,
                         detail="flow field is unavailable for this frame",
                     )
+                scale = max(
+                    1,
+                    math.ceil(
+                        max(dataset.width, dataset.height) / max_dim
+                    ),
+                )
+                out_shape = (
+                    max(1, round(dataset.height / scale)),
+                    max(1, round(dataset.width / scale)),
+                )
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
                         "ignore",
                         message="Setting the shape on a NumPy array.*",
                         category=DeprecationWarning,
                     )
-                    velocity_u = dataset.read(4).astype("<f4", copy=False)
-                    velocity_v = dataset.read(5).astype("<f4", copy=False)
-                    wet = dataset.dataset_mask() > 0
-                wet &= np.isfinite(velocity_u) & np.isfinite(velocity_v)
+                    read = partial(
+                        dataset.read,
+                        out_shape=out_shape,
+                        resampling=Resampling.bilinear,
+                    )
+                    depth = read(1).astype("<f4", copy=False)
+                    stage = read(2).astype("<f4", copy=False)
+                    velocity_u = read(4).astype("<f4", copy=False)
+                    velocity_v = read(5).astype("<f4", copy=False)
+                    wet = dataset.read_masks(
+                        1, out_shape=out_shape,
+                        resampling=Resampling.bilinear,
+                    ) > 0
+                wet &= (
+                    np.isfinite(depth)
+                    & np.isfinite(stage)
+                    & np.isfinite(velocity_u)
+                    & np.isfinite(velocity_v)
+                )
                 bounds = transform_bounds(
                     dataset.crs,
                     "OGC:CRS84",
                     *dataset.bounds,
                     densify_pts=21,
                 )
-                vectors = np.empty(
-                    (dataset.height, dataset.width, 2), dtype="<f4"
+                # Version 3 packs (u, v, depth, stage) per cell as float16 in
+                # texture-ready RGBA order: browsers upload the payload
+                # verbatim as an RGBA16F texture. Dry cells use the exact
+                # float16 sentinel depth = -1 so no NaN ever reaches a GPU
+                # sampler. Stage rides the otherwise spare alpha channel.
+                texels = np.zeros(
+                    (out_shape[0], out_shape[1], 4), dtype="<f2"
                 )
-                vectors[..., 0] = velocity_u
-                vectors[..., 1] = velocity_v
-                vectors[~wet] = np.nan
+                texels[..., 0] = velocity_u
+                texels[..., 1] = velocity_v
+                texels[..., 2] = depth
+                texels[..., 3] = stage
+                texels[~wet] = (0, 0, -1, 0)
                 header = struct.pack(
                     "<4sHHHH4d",
                     b"BQFV",
-                    1,
-                    dataset.width,
-                    dataset.height,
+                    3,
+                    out_shape[1],
+                    out_shape[0],
                     0,
                     *bounds,
                 )
@@ -671,7 +707,7 @@ def create_app(
                 status_code=502, detail="flow field could not be read"
             ) from error
         return Response(
-            content=header + vectors.tobytes(order="C"),
+            content=header + texels.tobytes(order="C"),
             media_type="application/vnd.bayuquan.flow-field",
             headers={"cache-control": "public, max-age=3600, immutable"},
         )

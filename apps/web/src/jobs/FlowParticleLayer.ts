@@ -1,4 +1,4 @@
-import type { Map, Point } from 'maplibre-gl'
+import type { Map } from 'maplibre-gl'
 import type { FlowField } from '../api/types'
 
 interface Particle {
@@ -12,6 +12,12 @@ const VISUAL_SECONDS_PER_SECOND = 180
 const TRAIL_TAU_SECONDS = 0.45
 const PARTICLE_MIN_AGE_SECONDS = 1.4
 const PARTICLE_AGE_SPREAD_SECONDS = 3.2
+// Particle count tracks the wet area's on-screen size, not its cell count:
+// a fixed count saturates small basins with overlapping trails (the whole
+// water body turns white), while the same count looks sparse when zoomed in.
+const PARTICLE_DENSITY_PX = 700
+const PARTICLE_MIN_COUNT = 80
+const PARTICLE_MAX_COUNT = 700
 
 /**
  * Advects particles through the frame velocity field and lets their paths
@@ -52,6 +58,7 @@ export class FlowParticleLayer {
       && this.particles.length > 0
       && this.canvas.dataset.flowMode === 'animated'
     this.field = field
+    this.screenProjection = null
     this.wetCells = field ? this.findWetCells(field) : []
     if (frameIndex == null) this.canvas.removeAttribute('data-flow-frame')
     else this.canvas.dataset.flowFrame = String(frameIndex)
@@ -68,7 +75,7 @@ export class FlowParticleLayer {
       return
     }
     this.canvas.dataset.flowMode = 'animated'
-    const count = Math.min(900, Math.max(160, this.wetCells.length * 2))
+    const count = this.desiredCount()
     if (keepTrails) {
       // Keep the surviving particles and the fading trails: the new field
       // takes them over from their current positions, which preserves the
@@ -119,6 +126,63 @@ export class FlowParticleLayer {
       longitude: west + (column + Math.random()) / this.field.width * (east - west),
       latitude: north - (row + Math.random()) / this.field.height * (north - south),
       ageSeconds: PARTICLE_MIN_AGE_SECONDS + Math.random() * PARTICLE_AGE_SPREAD_SECONDS,
+    }
+  }
+
+  /**
+   * Local affine approximation of the map's lngLat → screen transform.
+   *
+   * MapLibre's map.project() becomes dramatically expensive with terrain
+   * enabled (~80µs vs ~0.25µs per call, measured), and this layer needs two
+   * projections per particle per frame — thousands of calls per second that
+   * otherwise saturate the main thread. The simulation domain is at most a
+   * few kilometres across, where the Mercator projection is locally affine
+   * to sub-pixel accuracy, so we measure the affine once per camera change
+   * (three project() calls) and evaluate it arithmetically per particle.
+   * The full 2×2 matrix keeps the approximation exact under map bearing.
+   */
+  private screenProjection: {
+    originX: number
+    originY: number
+    longitude: number
+    latitude: number
+    dXdLng: number
+    dYdLng: number
+    dXdLat: number
+    dYdLat: number
+  } | null = null
+
+  private project(longitude: number, latitude: number) {
+    if (!this.screenProjection) {
+      const bounds = this.field
+        ? this.field.bounds
+        : (() => {
+            const b = this.map.getBounds()
+            return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as [number, number, number, number]
+          })()
+      const originLng = (bounds[0] + bounds[2]) / 2
+      const originLat = (bounds[1] + bounds[3]) / 2
+      const delta = 0.001
+      const origin = this.map.project([originLng, originLat])
+      const eastProbe = this.map.project([originLng + delta, originLat])
+      const northProbe = this.map.project([originLng, originLat + delta])
+      this.screenProjection = {
+        originX: origin.x,
+        originY: origin.y,
+        longitude: originLng,
+        latitude: originLat,
+        dXdLng: (eastProbe.x - origin.x) / delta,
+        dYdLng: (eastProbe.y - origin.y) / delta,
+        dXdLat: (northProbe.x - origin.x) / delta,
+        dYdLat: (northProbe.y - origin.y) / delta,
+      }
+    }
+    const p = this.screenProjection
+    const dLng = longitude - p.longitude
+    const dLat = latitude - p.latitude
+    return {
+      x: p.originX + dLng * p.dXdLng + dLat * p.dXdLat,
+      y: p.originY + dLng * p.dYdLng + dLat * p.dYdLat,
     }
   }
 
@@ -184,12 +248,12 @@ export class FlowParticleLayer {
         this.particles[index] = particle
         continue
       }
-      const before = this.map.project([particle.longitude, particle.latitude])
+      const before = this.project(particle.longitude, particle.latitude)
       const seconds = elapsed * VISUAL_SECONDS_PER_SECOND
       const latitudeRadians = particle.latitude * Math.PI / 180
       particle.longitude += velocity[0] * seconds / Math.max(111_320 * Math.cos(latitudeRadians), 1)
       particle.latitude += velocity[1] * seconds / 110_540
-      const after = this.map.project([particle.longitude, particle.latitude])
+      const after = this.project(particle.longitude, particle.latitude)
       if (!pointIsVisible(before, this.canvas) && !pointIsVisible(after, this.canvas)) continue
       const speed = Math.hypot(...velocity)
       this.context.strokeStyle = `rgba(83, 231, 255, ${Math.min(0.42, 0.05 + speed * 0.26)})`
@@ -232,13 +296,13 @@ export class FlowParticleLayer {
       const latitude = north - (row + 0.5) / this.field.height * (north - south)
       const velocity = this.sample(longitude, latitude)
       if (!velocity) continue
-      const origin = this.map.project([longitude, latitude])
+      const origin = this.project(longitude, latitude)
       const latitudeRadians = latitude * Math.PI / 180
-      const projectedEnd = this.map.project([
+      const projectedEnd = this.project(
         longitude + velocity[0] * VISUAL_SECONDS_PER_SECOND
           / Math.max(111_320 * Math.cos(latitudeRadians), 1),
         latitude + velocity[1] * VISUAL_SECONDS_PER_SECOND / 110_540,
-      ])
+      )
       const deltaX = projectedEnd.x - origin.x
       const deltaY = projectedEnd.y - origin.y
       const projectedLength = Math.hypot(deltaX, deltaY)
@@ -262,6 +326,7 @@ export class FlowParticleLayer {
   }
 
   private readonly resize = () => {
+    this.screenProjection = null
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
     const container = this.map.getContainer()
     this.canvas.width = Math.max(1, Math.round(container.clientWidth * pixelRatio))
@@ -271,13 +336,41 @@ export class FlowParticleLayer {
     if (this.reducedMotion.matches) this.drawStaticArrows()
   }
 
+  private desiredCount() {
+    if (!this.field || this.wetCells.length === 0) return 0
+    const [west, south, east, north] = this.field.bounds
+    const topLeft = this.project(west, north)
+    const bottomRight = this.project(east, south)
+    const cellAreaPx = Math.abs(
+      (bottomRight.x - topLeft.x) * (bottomRight.y - topLeft.y),
+    ) / (this.field.width * this.field.height)
+    if (!Number.isFinite(cellAreaPx) || cellAreaPx <= 0) {
+      return Math.min(900, Math.max(160, this.wetCells.length * 2))
+    }
+    const wetPixels = this.wetCells.length * cellAreaPx
+    return Math.round(Math.min(
+      PARTICLE_MAX_COUNT,
+      Math.max(PARTICLE_MIN_COUNT, wetPixels / PARTICLE_DENSITY_PX),
+    ))
+  }
+
   private readonly handleMove = () => {
+    this.screenProjection = null
     if (this.canvas.dataset.flowMode === 'static') {
       this.drawStaticArrows()
+      return
+    }
+    // Trail pixels are anchored to the previous view; keeping them while
+    // the map pans or zooms would smear stale streamlines across the map.
+    this.clearCanvas()
+    // Zooming changes the wet area's screen size; trim or top up the
+    // particle population so trail density stays roughly constant.
+    const target = this.desiredCount()
+    if (target === 0 || this.particles.length === 0) return
+    if (this.particles.length > target) {
+      this.particles.length = target
     } else {
-      // Trail pixels are anchored to the previous view; keeping them while
-      // the map pans or zooms would smear stale streamlines across the map.
-      this.clearCanvas()
+      while (this.particles.length < target) this.particles.push(this.spawn())
     }
   }
 
@@ -292,7 +385,7 @@ export class FlowParticleLayer {
   }
 }
 
-function pointIsVisible(point: Point, canvas: HTMLCanvasElement) {
+function pointIsVisible(point: { x: number; y: number }, canvas: HTMLCanvasElement) {
   const width = Number.parseFloat(canvas.style.width) || canvas.width
   const height = Number.parseFloat(canvas.style.height) || canvas.height
   return point.x >= -8 && point.y >= -8 && point.x <= width + 8 && point.y <= height + 8
