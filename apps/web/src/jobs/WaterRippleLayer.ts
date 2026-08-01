@@ -595,8 +595,12 @@ export class WaterRippleLayer {
   }
 
   private readonly handleMove = () => {
-    if (this.reducedMotion.matches) this.draw()
-    // Animated mode redraws every frame anyway; nothing else to do.
+    // Redraw on every camera update so the water stays glued to the map
+    // during pan/zoom. MapLibre dispatches "move" inside its own render
+    // pass, so drawing here lands in the same composited frame as the map
+    // canvas and no positional lag is visible. The 30 fps throttle only
+    // applies to the ambient shimmer while the camera is stationary.
+    if (this.field) this.draw()
   }
 
   private readonly motionPreferenceChanged = () => {
