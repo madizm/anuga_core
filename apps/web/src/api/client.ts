@@ -64,10 +64,11 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
   const version = view.getUint16(4, true)
   const width = view.getUint16(6, true)
   const height = view.getUint16(8, true)
-  if (magic !== 'BQFV' || version !== 1 || width === 0 || height === 0) {
+  if (magic !== 'BQFV' || (version !== 1 && version !== 2) || width === 0 || height === 0) {
     throw new Error('流向场格式不受支持')
   }
-  const expectedBytes = 44 + width * height * 2 * Float32Array.BYTES_PER_ELEMENT
+  const componentsPerCell = version === 2 ? 3 : 2
+  const expectedBytes = 44 + width * height * componentsPerCell * Float32Array.BYTES_PER_ELEMENT
   if (buffer.byteLength !== expectedBytes) throw new Error('流向场数据不完整')
   const bounds: [number, number, number, number] = [
     view.getFloat64(12, true), view.getFloat64(20, true),
@@ -76,12 +77,21 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
   if (!bounds.every(Number.isFinite) || bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) {
     throw new Error('流向场范围无效')
   }
-  return {
-    width,
-    height,
-    bounds,
-    vectors: new Float32Array(buffer.slice(44)),
+  const packed = new Float32Array(buffer.slice(44))
+  if (version === 1) {
+    return { width, height, bounds, vectors: packed, depths: null }
   }
+  // v2 interleaves (depth, u, v) per cell; split the planes so consumers of
+  // the legacy velocity layout keep working unchanged.
+  const cellCount = width * height
+  const vectors = new Float32Array(cellCount * 2)
+  const depths = new Float32Array(cellCount)
+  for (let cell = 0; cell < cellCount; cell += 1) {
+    depths[cell] = packed[cell * 3]
+    vectors[cell * 2] = packed[cell * 3 + 1]
+    vectors[cell * 2 + 1] = packed[cell * 3 + 2]
+  }
+  return { width, height, bounds, vectors, depths }
 }
 
 export const api = {

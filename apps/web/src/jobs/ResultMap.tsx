@@ -8,6 +8,8 @@ import {
   type BufferState,
 } from './bufferedRasterFrames'
 import { FlowParticleLayer } from './FlowParticleLayer'
+import { WaterRippleLayer } from './WaterRippleLayer'
+import { installWaterRippleDebugPanel } from './waterRippleParams'
 import { TerrainControl } from '../map/TerrainControl'
 import {
   applyTerrain,
@@ -61,6 +63,8 @@ export function ResultMap({
   const maps = useRef<Map[]>([])
   const buffers = useRef<BufferState[]>([])
   const flowLayers = useRef<FlowParticleLayer[]>([])
+  const rippleLayers = useRef<WaterRippleLayer[]>([])
+  const rippleField = useRef<FlowField | null>(null)
   const flowState = useRef<{ field: FlowField | null; frameIndex: number | null }>({
     field: null,
     frameIndex: null,
@@ -69,6 +73,7 @@ export function ResultMap({
   const terrainCameras = useRef<{ pitch: number; bearing: number }[]>([])
   const [terrainError, setTerrainError] = useState<string | null>(null)
   const [terrainRetry, setTerrainRetry] = useState(0)
+  const [waterError, setWaterError] = useState<string | null>(null)
   const terrainEnabled = useTerrainStore((state) => state.resultEnabled)
   const terrainExaggeration = useTerrainStore((state) => state.exaggeration)
   const hillshade = useTerrainStore((state) => state.hillshade)
@@ -95,15 +100,26 @@ export function ResultMap({
     })
     buffers.current = quantities.map(createBufferState)
     flowLayers.current = maps.current.map((map) => new FlowParticleLayer(map))
+    setWaterError(null)
+    rippleLayers.current = maps.current.map((map) => new WaterRippleLayer(
+      map,
+      (message) => setWaterError(message),
+    ))
+    installWaterRippleDebugPanel()
     // Maps may be recreated after flow was enabled (e.g. asynchronously
     // loaded bounds arrive): restore the latest field on the fresh layers.
     for (const layer of flowLayers.current) {
       layer.setField(flowState.current.field, flowState.current.frameIndex)
     }
+    for (const layer of rippleLayers.current) {
+      layer.setField(rippleField.current)
+    }
     displayedFrames.current = quantities.map(() => -1)
     return () => {
       for (const layer of flowLayers.current) layer.destroy()
       flowLayers.current = []
+      for (const layer of rippleLayers.current) layer.destroy()
+      rippleLayers.current = []
       for (const map of maps.current) map.remove()
       maps.current = []
       buffers.current = []
@@ -202,8 +218,13 @@ export function ResultMap({
       field: flowEnabled ? flowField ?? null : null,
       frameIndex: flowEnabled && flowField ? flowFrameIndex ?? null : null,
     }
+    rippleField.current = flowState.current.field
+    if (!flowEnabled) setWaterError(null)
     for (const layer of flowLayers.current) {
       layer.setField(flowState.current.field, flowState.current.frameIndex)
+    }
+    for (const layer of rippleLayers.current) {
+      layer.setField(rippleField.current)
     }
   }, [flowEnabled, flowField, flowFrameIndex, triple])
 
@@ -215,6 +236,11 @@ export function ResultMap({
     }
     setTerrainError(null)
     setTerrainRetry((value) => value + 1)
+  }
+
+  const retryWater = () => {
+    setWaterError(null)
+    for (const layer of rippleLayers.current) layer.retry()
   }
 
   return (
@@ -236,7 +262,9 @@ export function ResultMap({
         scope="result"
         error={terrainError}
         flowIsTwoDimensional={flowEnabled && Boolean(flowField)}
+        waterError={waterError}
         onRetry={retryTerrain}
+        onWaterRetry={retryWater}
       />
     </div>
   )

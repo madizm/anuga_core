@@ -236,7 +236,10 @@ export interface FlowField {
   width: number
   height: number
   bounds: [number, number, number, number]
+  /** Interleaved (u, v) velocity components, NaN outside wet cells. */
   vectors: Float32Array
+  /** Per-cell water depth in metres (BQFV v2+); null for legacy v1 fields. */
+  depths: Float32Array | null
 }
 
 export interface FramePointValue {

@@ -633,26 +633,35 @@ def create_app(
                         message="Setting the shape on a NumPy array.*",
                         category=DeprecationWarning,
                     )
+                    depth = dataset.read(1).astype("<f4", copy=False)
                     velocity_u = dataset.read(4).astype("<f4", copy=False)
                     velocity_v = dataset.read(5).astype("<f4", copy=False)
                     wet = dataset.dataset_mask() > 0
-                wet &= np.isfinite(velocity_u) & np.isfinite(velocity_v)
+                wet &= (
+                    np.isfinite(depth)
+                    & np.isfinite(velocity_u)
+                    & np.isfinite(velocity_v)
+                )
                 bounds = transform_bounds(
                     dataset.crs,
                     "OGC:CRS84",
                     *dataset.bounds,
                     densify_pts=21,
                 )
+                # Version 2 interleaves depth with the velocity components so
+                # water-surface effects can feather the wet/dry boundary and
+                # attenuate ripples in shallow cells.
                 vectors = np.empty(
-                    (dataset.height, dataset.width, 2), dtype="<f4"
+                    (dataset.height, dataset.width, 3), dtype="<f4"
                 )
-                vectors[..., 0] = velocity_u
-                vectors[..., 1] = velocity_v
+                vectors[..., 0] = depth
+                vectors[..., 1] = velocity_u
+                vectors[..., 2] = velocity_v
                 vectors[~wet] = np.nan
                 header = struct.pack(
                     "<4sHHHH4d",
                     b"BQFV",
-                    1,
+                    2,
                     dataset.width,
                     dataset.height,
                     0,

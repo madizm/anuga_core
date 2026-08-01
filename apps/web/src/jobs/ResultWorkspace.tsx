@@ -143,9 +143,9 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
           <button
             className={flowEnabled ? 'active flow-toggle' : 'flow-toggle'}
             aria-pressed={flowEnabled}
-            aria-label={flowEnabled ? '关闭流向' : '显示流向'}
+            aria-label={flowEnabled ? '关闭动态水面' : '显示动态水面'}
             onClick={() => setFlowEnabled((value) => !value)}
-          ><span>{flow.isFetching ? '载入中' : '流向'}</span><small>FLOW</small></button>
+          ><span>{flow.isFetching ? '载入中' : '动态水面'}</span><small>WATER</small></button>
         </div>
         <button className="play-button" disabled={frames.length < 2} onClick={() => { setFollowing(false); setPlaying((value) => !value) }} aria-label={playing ? '暂停' : '播放'}>
           {playing ? 'Ⅱ' : '▶'}

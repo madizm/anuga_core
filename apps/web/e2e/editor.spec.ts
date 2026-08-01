@@ -301,10 +301,10 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await expect(page.locator('.result-map-canvas')).toHaveCount(3)
   await expect(page.locator('.terrain-control')).toHaveCount(1)
   await expect(page.getByText('流速 SPEED')).toBeVisible()
-  await page.getByRole('button', { name: /流向/ }).click()
+  await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.locator('.flow-particle-canvas[data-flow-frame="2"]')).toHaveCount(3)
   await expect(page.getByText('DYNAMIC FLOW')).toHaveCount(3)
-  await expect(page.getByText('二维流向投影')).toBeVisible()
+  await expect(page.getByText('水面效果为二维投影')).toBeVisible()
   await page.goto('about:blank')
 })
 
@@ -322,6 +322,106 @@ function flowPayload() {
   buffer.writeFloatLE(0.5, 48)
   return buffer
 }
+
+function flowPayloadV2() {
+  const buffer = Buffer.alloc(44 + 3 * 4)
+  buffer.write('BQFV', 0, 'ascii')
+  buffer.writeUInt16LE(2, 4)
+  buffer.writeUInt16LE(1, 6)
+  buffer.writeUInt16LE(1, 8)
+  buffer.writeDoubleLE(122.12, 12)
+  buffer.writeDoubleLE(40.23, 20)
+  buffer.writeDoubleLE(122.14, 28)
+  buffer.writeDoubleLE(40.25, 36)
+  buffer.writeFloatLE(0.3, 44)
+  buffer.writeFloatLE(1, 48)
+  buffer.writeFloatLE(0.5, 52)
+  return buffer
+}
+
+function mockResultJob(jobId: string) {
+  return {
+    job: {
+      id: jobId,
+      scenarioId: 'scenario-a',
+      simulationAreaId: 'a'.repeat(64),
+      simulationAreaBounds: [122.1200, 40.2317, 122.1393, 40.2444],
+      scenarioSnapshot: { durationSeconds: 300 },
+      status: 'COMPLETED',
+      currentFrame: 0,
+      frameCount: 1,
+      simulationTimeSeconds: 300,
+      maximumDepthM: 1,
+      appliedVolumeM3: 1,
+      finalWaterVolumeM3: 1,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: '2026-01-01T00:00:00Z',
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:00:01Z',
+    },
+    frame: {
+      jobId,
+      frameIndex: 0,
+      timeSeconds: 300,
+      maximumDepthM: 1,
+      maximumSpeedMps: 0,
+      wetAreaM2: 900,
+      tilejson: {
+        depth: `/api/jobs/${jobId}/frames/0/tilejson/depth`,
+        stage: `/api/jobs/${jobId}/frames/0/tilejson/stage`,
+        speed: `/api/jobs/${jobId}/frames/0/tilejson/speed`,
+      },
+      createdAt: '2026-01-01T00:00:01Z',
+    },
+  }
+}
+
+test('dynamic water toggle mounts the ripple layer without errors', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text())
+  })
+  const jobId = 'job-water-ripple'
+  const { job, frame } = mockResultJob(jobId)
+  await page.route(`**/api/jobs/${jobId}`, (route) => route.fulfill({ json: job }))
+  await page.route(`**/api/jobs/${jobId}/frames`, (route) => route.fulfill({ json: [frame] }))
+  await page.route(`**/api/jobs/${jobId}/events`, (route) => route.fulfill({
+    contentType: 'text/event-stream',
+    body: `event: job.completed\ndata: ${JSON.stringify(job)}\n\n`,
+  }))
+  await page.route(`**/api/jobs/${jobId}/frames/0/flow`, (route) => route.fulfill({
+    contentType: 'application/vnd.bayuquan.flow-field',
+    body: flowPayloadV2(),
+  }))
+  await page.route(`**/api/jobs/${jobId}/frames/0/tiles/**`, (route) => route.fulfill({
+    contentType: 'image/png',
+    body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X4W1WQAAAABJRU5ErkJggg==', 'base64'),
+  }))
+  await page.goto(`/?job=${jobId}`)
+  await expect(page.getByText('已完成')).toBeVisible()
+  await page.getByRole('button', { name: /动态水面/ }).click()
+  await expect(page.locator('.result-map-canvas')).toHaveAttribute(
+    'data-water-ripple',
+    'active',
+    { timeout: 10_000 },
+  )
+  await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
+    'data-flow-mode',
+    'animated',
+  )
+  await expect(page.getByText('DYNAMIC FLOW')).toBeVisible()
+  await page.getByRole('button', { name: /动态水面/ }).click()
+  await expect(page.locator('.result-map-canvas')).not.toHaveAttribute(
+    'data-water-ripple',
+    /.+/,
+  )
+  // Tile decode failures come from the mocked raster responses and external
+  // basemap reachability, not from the ripple layer; keep everything else
+  // strictly error-free so shader/GL regressions still fail the test.
+  expect(errors.filter((message) => !message.includes('could not be decoded'))).toEqual([])
+})
 
 test('job deep link fits result tiles to its simulation area', async ({ page }) => {
   const jobId = 'job-outside-default-view'
@@ -383,7 +483,7 @@ test('job deep link fits result tiles to its simulation area', async ({ page }) 
   await page.goto(`/?job=${jobId}`)
   await expect(page.getByText('已完成')).toBeVisible()
   await expect.poll(() => requestedTiles.length).toBeGreaterThan(0)
-  await page.getByRole('button', { name: /流向/ }).click()
+  await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.locator('.flow-particle-canvas')).toBeVisible()
   await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
     'data-flow-frame',
@@ -406,14 +506,14 @@ test('job deep link fits result tiles to its simulation area', async ({ page }) 
     },
   )).toBeGreaterThan(10)
   await expect(page.getByText('DYNAMIC FLOW')).toBeVisible()
-  await page.getByRole('button', { name: /流向/ }).click()
+  await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.getByText('DYNAMIC FLOW')).toBeHidden()
   await expect(page.locator('.flow-particle-canvas')).not.toHaveAttribute(
     'data-flow-frame',
     /.+/,
   )
   await page.emulateMedia({ reducedMotion: 'reduce' })
-  await page.getByRole('button', { name: /流向/ }).click()
+  await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
     'data-flow-mode',
     'static',

@@ -653,13 +653,13 @@ def test_flow_field_endpoint_publishes_wet_velocity_components(tmp_path):
     magic, version, width, height, _reserved = unpack_from(
         "<4sHHHH", response.content
     )
-    assert (magic, version, width, height) == (b"BQFV", 1, 2, 1)
+    assert (magic, version, width, height) == (b"BQFV", 2, 2, 1)
     west, south, east, north = unpack_from("<4d", response.content, 12)
     assert 121 < west < east < 123
     assert 39 < south < north < 41
     vectors = np.frombuffer(response.content, dtype="<f4", offset=44)
-    assert np.isnan(vectors[:2]).all()
-    np.testing.assert_allclose(vectors[2:], [3, 4])
+    assert np.isnan(vectors[:3]).all()
+    np.testing.assert_allclose(vectors[3:], [1, 3, 4])
 
 
 def test_rainfall_only_scenario_is_persisted_validated_and_snapshotted(
