@@ -20,6 +20,7 @@ from anuga.structures.weir_orifice_trapezoid_operator import (
 )
 
 from .area_catalog import SimulationAreaCatalog
+from .drainage_operator import DrainageOutletOperator
 from .feature_compiler import (
     CompiledFeatures,
     apply_feature_quantities,
@@ -210,6 +211,14 @@ def run_local_simulation(
     rain = rainfall_report(
         spec, prepared.rainfall_area_m2, prepared.rainfall_operator
     )
+    drainage_requested_volume = -sum(
+        float(prepared.structure_operators[outlet.id].total_requested_volume)
+        for outlet in spec.hydraulic_features.drainage_outlets
+    )
+    drainage_applied_volume = -sum(
+        float(prepared.structure_operators[outlet.id].total_applied_volume)
+        for outlet in spec.hydraulic_features.drainage_outlets
+    )
     applied_volume = rain["appliedVolumeM3"] + sum(
         float(operator.total_applied_volume)
         for operator in prepared.operators.values()
@@ -233,9 +242,12 @@ def run_local_simulation(
             + rain["requestedVolumeM3"]
         ),
         "appliedInputVolumeM3": applied_volume,
+        "requestedDrainageVolumeM3": drainage_requested_volume,
+        "drainedVolumeM3": drainage_applied_volume,
         "finalDomainWaterVolumeM3": final_volume,
         "inferredBoundaryOutflowM3": (
-            prepared.initial_water_volume_m3 + applied_volume - final_volume
+            prepared.initial_water_volume_m3 + applied_volume
+            - drainage_applied_volume - final_volume
         ),
         "maximumDepthM": float(maximum_depth.max()),
         "maximumSpeedMps": maximum_speed,
@@ -359,6 +371,30 @@ def _install_structure_operators(domain, spec, compiled):
             description=bridge.name,
             verbose=False,
         )
+    centroid_coordinates = np.asarray(
+        domain.centroid_coordinates, dtype=float
+    )
+    if not domain.geo_reference.is_absolute():
+        centroid_coordinates = domain.geo_reference.get_absolute(
+            centroid_coordinates
+        )
+    for outlet in spec.hydraulic_features.drainage_outlets:
+        center = np.asarray(
+            compiled.projected_drainage_outlets[outlet.id], dtype=float
+        )
+        distances = np.linalg.norm(centroid_coordinates - center, axis=1)
+        triangle_ids = np.flatnonzero(distances <= outlet.intake_radius_m)
+        if not len(triangle_ids):
+            triangle_ids = np.asarray([int(np.argmin(distances))])
+        operators[outlet.id] = DrainageOutletOperator(
+            domain,
+            anuga.Region(domain, indices=triangle_ids),
+            capacity_m3s=outlet.capacity_m3s,
+            full_capacity_depth_m=outlet.full_capacity_depth_m,
+            blockage=outlet.blockage,
+            label=outlet.id,
+            description=outlet.name,
+        )
     return operators
 
 
@@ -413,6 +449,18 @@ def _hydraulic_feature_report(spec, local):
                 *spec.hydraulic_features.culverts,
                 *spec.hydraulic_features.bridges,
             )
+        ],
+        "drainageOutlets": [
+            {
+                "id": outlet.id,
+                "capacityM3s": outlet.capacity_m3s,
+                "effectiveCapacityM3s": (
+                    operators[outlet.id].effective_capacity_m3s
+                ),
+                "finalDischargeM3s": operators[outlet.id].discharge_m3s,
+                "drainedVolumeM3": operators[outlet.id].drained_volume_m3,
+            }
+            for outlet in spec.hydraulic_features.drainage_outlets
         ],
         "breaches": [
             {

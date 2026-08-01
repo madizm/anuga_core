@@ -283,6 +283,14 @@ def test_all_hydraulic_feature_versions_are_parsed():
             "blockage": 0, "losses": 1, "manningN": 0.03,
         },
         {
+            "type": "drainageOutlet", "id": "drain-1", "enabled": True,
+            "geometry": {
+                "type": "Point", "coordinates": [122.1805, 40.3005]
+            },
+            "capacityM3s": 0.8, "intakeRadiusM": 10,
+            "fullCapacityDepthM": 0.3, "blockage": 0.25,
+        },
+        {
             "type": "breach", "id": "breach-1", "enabled": True,
             "leveeId": "levee-1",
             "geometry": {"type": "Point", "coordinates": [122.1805, 40.30]},
@@ -292,7 +300,8 @@ def test_all_hydraulic_feature_versions_are_parsed():
 
     spec = ScenarioSpec.from_dict(data, mapping())
 
-    assert len(spec.hydraulic_features.all) == 6
+    assert len(spec.hydraulic_features.all) == 7
+    assert spec.hydraulic_features.drainage_outlets[0].capacity_m3s == 0.8
     assert spec.hydraulic_features.requires_custom_mesh
     assert spec.hydraulic_features.breaches[0].levee_id == "levee-1"
 

@@ -737,19 +737,35 @@ def test_hydraulic_features_are_persisted_and_snapshotted(
     )
     test_client, _ = client(tmp_path)
     payload = scenario("levee scenario")
-    payload["hydraulicFeatures"] = [{
-        "type": "levee",
-        "id": "levee-1",
-        "name": "north levee",
-        "enabled": True,
-        "geometry": {
-            "type": "LineString",
-            "coordinates": [[122.18, 40.30], [122.181, 40.30]],
+    payload["hydraulicFeatures"] = [
+        {
+            "type": "levee",
+            "id": "levee-1",
+            "name": "north levee",
+            "enabled": True,
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[122.18, 40.30], [122.181, 40.30]],
+            },
+            "crestMode": "relative",
+            "heightAboveGroundM": 2,
+            "qFactor": 1,
         },
-        "crestMode": "relative",
-        "heightAboveGroundM": 2,
-        "qFactor": 1,
-    }]
+        {
+            "type": "drainageOutlet",
+            "id": "drain-1",
+            "name": "underpass drain",
+            "enabled": True,
+            "geometry": {
+                "type": "Point",
+                "coordinates": [122.1805, 40.3005],
+            },
+            "capacityM3s": 0.8,
+            "intakeRadiusM": 10,
+            "fullCapacityDepthM": 0.3,
+            "blockage": 0.25,
+        },
+    ]
 
     with test_client:
         created = test_client.post("/api/scenarios", json=payload)
@@ -764,6 +780,7 @@ def test_hydraulic_features_are_persisted_and_snapshotted(
         )
         assert validation.status_code == 200
         assert validation.json()["summary"]["leveeCount"] == 1
+        assert validation.json()["summary"]["structureCount"] == 1
 
         job = test_client.post(f"/api/scenarios/{scenario_id}/jobs", json={})
         assert job.status_code == 202

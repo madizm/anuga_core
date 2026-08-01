@@ -54,6 +54,7 @@ class CompiledFeatures:
     simple_channels: tuple[CompiledSimpleChannel, ...]
     engineering_channels: tuple[CompiledEngineeringChannel, ...]
     projected_structures: dict[str, tuple[tuple[float, float], ...]]
+    projected_drainage_outlets: dict[str, tuple[float, float]]
     area_polygon: Polygon
 
     @property
@@ -160,11 +161,22 @@ def compile_features(
                 f"structure {structure.id} must span at least one DEM cell"
             )
 
+    projected_drainage_outlets = {}
+    for outlet in features.drainage_outlets:
+        x, y = project(*outlet.coordinate)
+        point = (float(x), float(y))
+        if not area_polygon.buffer(1.0e-6).covers(Point(point)):
+            raise ScenarioValidationError(
+                f"drainageOutlet {outlet.id} falls outside the simulation area"
+            )
+        projected_drainage_outlets[outlet.id] = point
+
     return CompiledFeatures(
         levees,
         simple_channels,
         engineering_channels,
         projected_structures,
+        projected_drainage_outlets,
         area_polygon,
     )
 

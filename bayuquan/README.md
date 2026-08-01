@@ -82,7 +82,7 @@ must be four-neighbour connected.
 
 ## 3. Draw hydraulic features
 
-The workbench compiles six map-drawn feature types into an immutable,
+The workbench compiles seven map-drawn feature types into an immutable,
 scenario-specific ANUGA model:
 
 - **levees** become mesh-conforming breaklines and ANUGA `RiverWall` edges;
@@ -94,13 +94,16 @@ scenario-specific ANUGA model:
 - **engineering channels** interpolate bed elevation, bottom width, and side
   slope between cross-sections along a drawn centreline;
 - **box/pipe culverts** use ANUGA's Boyd operators;
-- **bridge or gate openings** use the trapezoidal weir/orifice operator.
+- **bridge or gate openings** use the trapezoidal weir/orifice operator;
+- **single-point drainage outlets** remove water from a configurable intake
+  radius, ramp to a blockage-adjusted capacity with local depth, and represent
+  external drainage without downstream tailwater or reverse flow.
 
 All feature geometry is stored as OGC:CRS84 GeoJSON and projected to the DEM
 CRS by the scenario compiler. The editor provides a sampled levee profile and
 an on-demand preview of the final constrained mesh. Runtime reports record the
-compiled mesh hash, levee/channel geometry summaries, breaches, and cumulative
-structure flow.
+compiled mesh hash, levee/channel geometry summaries, breaches, cumulative
+structure flow, and each outlet's drained volume and final discharge.
 
 Feature lines and polygons must stay inside the simulation area. Channel
 terrain polygons cannot overlap, and breaklines currently cannot intersect;

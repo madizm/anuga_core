@@ -22,7 +22,7 @@ function randomIdToken(): string {
 }
 
 export type HydraulicDrawMode = 'levee' | 'simpleChannel' | 'engineeringChannel'
-  | 'culvert' | 'bridge' | 'breach'
+  | 'culvert' | 'bridge' | 'drainageOutlet' | 'breach'
 
 export function createHydraulicFeature(
   mode: HydraulicDrawMode,
@@ -103,6 +103,19 @@ export function createHydraulicFeature(
     blockage: 0,
     losses: 1,
     manningN: 0.03,
+  }
+  if (mode === 'drainageOutlet' && geometry.type === 'Point') return {
+    ...common,
+    type: 'drainageOutlet',
+    name: `排水口 ${sequence}`,
+    geometry: {
+      type: 'Point',
+      coordinates: [...geometry.coordinates] as Position,
+    },
+    capacityM3s: 0.5,
+    intakeRadiusM: area.cellSizeM,
+    fullCapacityDepthM: 0.3,
+    blockage: 0,
   }
   if (mode === 'breach' && geometry.type === 'Point') {
     const levee = existing.find((feature) => feature.type === 'levee')

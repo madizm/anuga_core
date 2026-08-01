@@ -147,6 +147,7 @@ def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
         "structureCount": (
             len(spec.hydraulic_features.culverts)
             + len(spec.hydraulic_features.bridges)
+            + len(spec.hydraulic_features.drainage_outlets)
         ),
         "customMeshRequired": spec.hydraulic_features.requires_custom_mesh,
     }

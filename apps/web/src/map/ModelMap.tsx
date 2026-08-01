@@ -28,7 +28,8 @@ interface ModelMapProps {
   onAreaDrawn?: (geometry: Polygon) => void
   hydraulicFeatures?: HydraulicFeature[]
   hydraulicMeshPreview?: FeatureCollection | null
-  featureDrawMode?: 'levee' | 'simpleChannel' | 'engineeringChannel' | 'culvert' | 'bridge' | 'breach' | null
+  featureDrawMode?: 'levee' | 'simpleChannel' | 'engineeringChannel'
+    | 'culvert' | 'bridge' | 'drainageOutlet' | 'breach' | null
   onFeatureDrawn?: (geometry: LineString | Polygon | Point) => void
 }
 
@@ -251,7 +252,8 @@ export function ModelMap({
             type: feature.type,
             color: feature.type === 'levee' ? '#ffb020'
               : feature.type === 'simpleChannel' || feature.type === 'engineeringChannel' ? '#00a8ff'
-                : feature.type === 'breach' ? '#ff3b5c' : '#c880ff',
+                : feature.type === 'breach' ? '#ff3b5c'
+                  : feature.type === 'drainageOutlet' ? '#39e68b' : '#c880ff',
           },
           geometry: feature.geometry,
         }))
@@ -398,7 +400,7 @@ export function ModelMap({
     }
     const click = (event: MapMouseEvent) => {
       const point: [number, number] = [event.lngLat.lng, event.lngLat.lat]
-      if (featureDrawMode === 'breach') {
+      if (featureDrawMode === 'breach' || featureDrawMode === 'drainageOutlet') {
         onFeatureDrawn?.({ type: 'Point', coordinates: point })
         clear()
         return
@@ -412,7 +414,7 @@ export function ModelMap({
     }
     const doubleClick = (event: MapMouseEvent) => {
       event.preventDefault()
-      if (featureDrawMode === 'breach'
+      if (featureDrawMode === 'breach' || featureDrawMode === 'drainageOutlet'
         || featureDrawMode === 'culvert' || featureDrawMode === 'bridge') return
       complete()
     }

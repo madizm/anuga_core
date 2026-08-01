@@ -32,6 +32,12 @@ describe('hydraulic feature defaults', () => {
     )
     const culvert = createHydraulicFeature('culvert', line, area, [levee])
     const bridge = createHydraulicFeature('bridge', line, area, [levee])
+    const drain = createHydraulicFeature(
+      'drainageOutlet',
+      { type: 'Point', coordinates: [122.1805, 40.3] },
+      area,
+      [levee],
+    )
     const point: Point = { type: 'Point', coordinates: [122.1805, 40.3] }
     const breach = createHydraulicFeature('breach', point, area, [levee])
 
@@ -42,6 +48,10 @@ describe('hydraulic feature defaults', () => {
       && engineering.crossSections.at(-1)?.distanceM).toBeGreaterThan(80)
     expect(culvert.type).toBe('culvert')
     expect(bridge.type).toBe('bridge')
+    expect(drain).toMatchObject({
+      type: 'drainageOutlet', capacityM3s: 0.5,
+      fullCapacityDepthM: 0.3, blockage: 0,
+    })
     expect(breach.type === 'breach' && breach.leveeId).toBe(levee.id)
   })
 

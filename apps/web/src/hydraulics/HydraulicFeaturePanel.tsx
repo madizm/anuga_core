@@ -21,6 +21,7 @@ const TYPE_LABEL: Record<HydraulicFeature['type'], string> = {
   engineeringChannel: '断面河道',
   culvert: '涵洞',
   bridge: '桥梁 / 闸孔',
+  drainageOutlet: '排水口',
   breach: '堤防缺口',
 }
 
@@ -74,6 +75,7 @@ export function HydraulicFeaturePanel({
             <DrawButton label="断面河道" mode="engineeringChannel" active={drawMode} disabled={!areaReady} onClick={begin} />
             <DrawButton label="涵洞" mode="culvert" active={drawMode} disabled={!areaReady} onClick={begin} />
             <DrawButton label="桥梁 / 闸孔" mode="bridge" active={drawMode} disabled={!areaReady} onClick={begin} />
+            <DrawButton label="排水口" mode="drainageOutlet" active={drawMode} disabled={!areaReady} onClick={begin} />
             <DrawButton label="堤防缺口" mode="breach" active={drawMode} disabled={!areaReady || !features.some((item) => item.type === 'levee')} onClick={begin} />
           </ToolGroup>
         </div>
@@ -107,8 +109,9 @@ export function HydraulicFeaturePanel({
           ? '逐点绘制河道范围，双击完成'
           : drawMode === 'culvert' || drawMode === 'bridge'
             ? '依次点击上、下游端点'
-            : drawMode === 'breach' ? '点击堤防线上的缺口中心'
-              : '逐点绘制中心线，双击完成'}</p>}
+            : drawMode === 'drainageOutlet' ? '点击设置单点排水口'
+              : drawMode === 'breach' ? '点击堤防线上的缺口中心'
+                : '逐点绘制中心线，双击完成'}</p>}
         <div className="hydraulic-feature-list">
           {features.map((feature) => <button
             key={feature.id}
@@ -167,6 +170,13 @@ export function HydraulicFeaturePanel({
             <NumberField label="右边坡" value={selected.rightSideSlope} min={0} step={0.1} onChange={(value) => replace({ ...selected, rightSideSlope: value })} />
             <NumberField label="堵塞率" value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
             <NumberField label="损失系数" value={selected.losses} min={0} step={0.1} onChange={(value) => replace({ ...selected, losses: value })} />
+          </>}
+          {selected.type === 'drainageOutlet' && <>
+            <p className="hydraulic-editor-note">水量排出计算域；排水能力随局部积水深度增加，不考虑下游尾水顶托。</p>
+            <NumberField label="最大排水能力 m³/s" value={selected.capacityM3s} min={0.001} step={0.05} onChange={(value) => replace({ ...selected, capacityM3s: value })} />
+            <NumberField label="收水半径 m" value={selected.intakeRadiusM} min={0.1} onChange={(value) => replace({ ...selected, intakeRadiusM: value })} />
+            <NumberField label="满负荷水深 m" value={selected.fullCapacityDepthM} min={0.01} step={0.05} onChange={(value) => replace({ ...selected, fullCapacityDepthM: value })} />
+            <NumberField label="堵塞率" value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
           </>}
           {selected.type === 'breach' && <>
             <label><span>所属堤防</span><select value={selected.leveeId} onChange={(event) => replace({ ...selected, leveeId: event.target.value })}>{features.filter((item) => item.type === 'levee').map((levee) => <option key={levee.id} value={levee.id}>{levee.name}</option>)}</select></label>

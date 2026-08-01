@@ -99,6 +99,15 @@ export interface BridgeFeature extends HydraulicFeatureBase {
   invertElevationsM?: [number, number]
 }
 
+export interface DrainageOutletFeature extends HydraulicFeatureBase {
+  type: 'drainageOutlet'
+  geometry: { type: 'Point'; coordinates: Position }
+  capacityM3s: number
+  intakeRadiusM: number
+  fullCapacityDepthM: number
+  blockage: number
+}
+
 export interface BreachFeature extends HydraulicFeatureBase {
   type: 'breach'
   leveeId: string
@@ -108,7 +117,9 @@ export interface BreachFeature extends HydraulicFeatureBase {
 }
 
 export type HydraulicFeature = LeveeFeature | SimpleChannelFeature
-  | EngineeringChannelFeature | CulvertFeature | BridgeFeature | BreachFeature
+  | EngineeringChannelFeature | CulvertFeature | BridgeFeature
+  | DrainageOutletFeature | BreachFeature
+
 
 export interface ScenarioPayload {
   demProductId: string

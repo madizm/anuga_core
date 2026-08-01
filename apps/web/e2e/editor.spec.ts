@@ -84,7 +84,7 @@ test('user locks a local domain before selecting inlet cells', async ({ page }) 
   expect(errors).toEqual([])
 })
 
-test('user draws a levee, reviews its profile and previews the conforming mesh', async ({ page }) => {
+test('user draws a levee and drainage outlet before previewing the mesh', async ({ page }) => {
   await page.goto('/')
   await drawLocalRectangle(page)
   await page.getByRole('button', { name: /地形与工程/ }).click()
@@ -105,6 +105,16 @@ test('user draws a levee, reviews its profile and previews the conforming mesh',
   await page.getByText('堤防 1', { exact: true }).click()
   await expect(page.getByRole('img', { name: '堤防地面与堤顶纵断面' })).toBeVisible()
   await expect(page.getByText(/纵断面 · \d+ m/)).toBeVisible({ timeout: 20_000 })
+
+  await page.getByRole('button', { name: '排水口' }).click()
+  await canvas.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } })
+  await expect(page.getByText('排水口 1', { exact: true })).toBeVisible()
+  await expect(page.locator('.model-map')).toHaveAttribute(
+    'data-hydraulic-source-count',
+    '2',
+  )
+  await page.getByText('排水口 1', { exact: true }).click()
+  await expect(page.getByLabel('最大排水能力 m³/s')).toHaveValue('0.5')
 
   const previewResponse = page.waitForResponse((response) => (
     response.url().includes('/hydraulic-mesh-preview')
@@ -127,9 +137,13 @@ test('user draws a levee, reviews its profile and previews the conforming mesh',
   ))
   await page.getByRole('button', { name: '保存场景' }).click()
   const request = (await savedResponse).request().postDataJSON()
-  expect(request.hydraulicFeatures).toHaveLength(1)
+  expect(request.hydraulicFeatures).toHaveLength(2)
   expect(request.hydraulicFeatures[0]).toMatchObject({
     type: 'levee', crestMode: 'relative', heightAboveGroundM: 2,
+  })
+  expect(request.hydraulicFeatures[1]).toMatchObject({
+    type: 'drainageOutlet', capacityM3s: 0.5,
+    fullCapacityDepthM: 0.3, blockage: 0,
   })
 })
 

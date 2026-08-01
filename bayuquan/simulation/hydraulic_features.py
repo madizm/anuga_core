@@ -361,6 +361,39 @@ class BridgeSpec:
 
 
 @dataclass(frozen=True)
+class DrainageOutletSpec:
+    id: str
+    name: str
+    coordinate: Coordinate
+    capacity_m3s: float
+    intake_radius_m: float
+    full_capacity_depth_m: float
+    blockage: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DrainageOutletSpec":
+        feature_id, name = _id(data, "drainageOutlet")
+        field = f"drainageOutlet {feature_id}"
+        point = _geometry(data, Point, field)
+        blockage = _nonnegative(data, "blockage", f"{field}.blockage")
+        if blockage >= 1:
+            raise ScenarioValidationError(
+                f"{field}.blockage must be less than 1")
+        return cls(
+            feature_id,
+            name,
+            (float(point.x), float(point.y)),
+            _positive(data, "capacityM3s", f"{field}.capacityM3s"),
+            _positive(data, "intakeRadiusM", f"{field}.intakeRadiusM"),
+            _positive(
+                data, "fullCapacityDepthM",
+                f"{field}.fullCapacityDepthM",
+            ),
+            blockage,
+        )
+
+
+@dataclass(frozen=True)
 class BreachSpec:
     id: str
     name: str
@@ -391,7 +424,7 @@ class BreachSpec:
 
 HydraulicFeatureSpec = (
     LeveeSpec | SimpleChannelSpec | EngineeringChannelSpec
-    | CulvertSpec | BridgeSpec | BreachSpec
+    | CulvertSpec | BridgeSpec | DrainageOutletSpec | BreachSpec
 )
 
 
@@ -402,6 +435,7 @@ class HydraulicFeaturesSpec:
     engineering_channels: tuple[EngineeringChannelSpec, ...]
     culverts: tuple[CulvertSpec, ...]
     bridges: tuple[BridgeSpec, ...]
+    drainage_outlets: tuple[DrainageOutletSpec, ...]
     breaches: tuple[BreachSpec, ...]
 
     @property
@@ -412,6 +446,7 @@ class HydraulicFeaturesSpec:
             *self.engineering_channels,
             *self.culverts,
             *self.bridges,
+            *self.drainage_outlets,
             *self.breaches,
         )
 
@@ -435,6 +470,7 @@ class HydraulicFeaturesSpec:
             "engineeringChannel": [],
             "culvert": [],
             "bridge": [],
+            "drainageOutlet": [],
             "breach": [],
         }
         parsers = {
@@ -443,6 +479,7 @@ class HydraulicFeaturesSpec:
             "engineeringChannel": EngineeringChannelSpec.from_dict,
             "culvert": CulvertSpec.from_dict,
             "bridge": BridgeSpec.from_dict,
+            "drainageOutlet": DrainageOutletSpec.from_dict,
             "breach": BreachSpec.from_dict,
         }
         for index, item in enumerate(data):
@@ -465,6 +502,7 @@ class HydraulicFeaturesSpec:
             tuple(grouped["engineeringChannel"]),
             tuple(grouped["culvert"]),
             tuple(grouped["bridge"]),
+            tuple(grouped["drainageOutlet"]),
             tuple(grouped["breach"]),
         )
         ids = [feature.id for feature in features.all]
