@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { HydraulicFeature, HydraulicMeshPreview, LeveeFeature } from '../api/types'
 import { api } from '../api/client'
 import type { HydraulicDrawMode } from './hydraulicFeatures'
+import { ParameterHelp } from './ParameterHelp'
 
 interface Props {
   areaReady: boolean
@@ -14,6 +15,47 @@ interface Props {
   onChange: (features: HydraulicFeature[]) => void
   onMeshPreview: (preview: HydraulicMeshPreview | null) => void
 }
+
+const FEATURE_DESCRIPTION: Record<HydraulicFeature['type'], string> = {
+  levee: '沿绘制线建立零宽度阻水墙；水位超过堤顶后允许越流，不改变底层 DEM。',
+  simpleChannel: '在绘制范围内统一修改河床高程和糙率，适合概念方案，不代表实测河道断面。',
+  engineeringChannel: '沿中心线插值梯形断面并覆盖糙率、约束河岸网格；仅下切原地形，不回填低洼区域。',
+  culvert: '在两个端点间按水头差守恒输水，考虑断面、糙率、损失和堵塞；允许反向过流，不会将水排出计算域。',
+  bridge: '以梯形堰孔连接两端，模拟桥孔或闸孔限流及上游壅水，不显式表达桥墩和桥面。',
+  drainageOutlet: '将收水范围内的积水排出计算域；排水能力随水深增加，不考虑尾水顶托和反向过流。',
+  breach: '在关联堤防上按指定宽度降低堤顶；缺口从模拟开始即存在，不会随时间扩宽或下切。',
+}
+
+const HELP = {
+  crestMode: '选择相对地面加高、统一绝对高程或逐节点高程。',
+  heightAboveGround: '每个堤防节点相对于采样地面的加高量。',
+  crestElevation: '整条堤防或缺口采用的绝对高程，单位为米。',
+  crestProfile: '与绘制线节点一一对应，节点之间沿线插值。',
+  qFactor: 'RiverWall 越流能力系数；越大时，同一水头差下越流量越大，通常以 1 为基准。',
+  elevationMode: '相对降低按原始 DEM 下切；绝对高程将范围内河床设为指定值。',
+  depth: '相对于原始 DEM 降低的垂直距离。',
+  channelElevation: '河道范围内采用的统一绝对高程。',
+  manning: '糙率越大，水流阻力越强，流速通常越低、上游水位可能越高。',
+  triangleArea: '允许的最大三角形面积；越小越精细，但计算量越大。',
+  bankHeight: '从河底到断面边界的最大垂直高度，同时影响河道编辑范围宽度。',
+  chainage: '断面沿中心线距起点的里程；首断面必须为 0，末断面应接近终点。',
+  sectionBed: '当前断面的绝对河底高程，断面之间沿中心线线性插值。',
+  bottomWidth: '梯形断面的水平底部有效宽度。',
+  sideSlope: '水平与垂直之比；2 表示水平 2 m、垂直升高 1 m，0 表示垂直边墙。',
+  culvertShape: '箱涵使用矩形宽高，圆管使用直径计算过流能力。',
+  culvertWidth: '单孔箱涵的内部净宽。',
+  culvertHeight: '单孔箱涵的内部净高。',
+  diameter: '单根圆管的内部直径。',
+  barrels: '相同断面的并联涵洞数量，用于增加总过流能力。',
+  blockage: '过流或排水能力的堵塞比例；0 表示无堵塞，0.5 表示堵塞 50%，必须小于 1。',
+  losses: '进口、出口和收缩扩散等局部损失的无量纲合计；越大时流量越小。',
+  openingHeight: '从孔底到孔顶的有效开口高度。',
+  capacity: '无堵塞且达到满负荷水深时的最大排水流量。',
+  intakeRadius: '以排水口为中心参与取水的地表范围，应覆盖实际收水区域。',
+  fullCapacityDepth: '水深不足时按比例排水；达到该水深后使用最大有效能力。',
+  levee: '缺口必须依附于一条参与计算的堤防。',
+  breachWidth: '以点击位置为中心，沿堤防线降低堤顶的总长度。',
+} as const
 
 const TYPE_LABEL: Record<HydraulicFeature['type'], string> = {
   levee: '堤防',
@@ -147,41 +189,43 @@ export function HydraulicFeaturePanel({
               )))
             } else patch({ enabled })
           }} /></label>
+          <p className="hydraulic-editor-note">{FEATURE_DESCRIPTION[selected.type]}</p>
           {selected.type === 'levee' && <LeveeEditor feature={selected} areaMean={areaMeanElevationM} demProductId={demProductId} areaHash={areaHash} onChange={replace} />}
           {selected.type === 'simpleChannel' && <>
-            <label><span>河床模式</span><select value={selected.elevationMode} onChange={(event) => replace({ ...selected, elevationMode: event.target.value as 'lowerBy' | 'absolute', depthM: 2, elevationM: areaMeanElevationM - 2 })}><option value="lowerBy">相对降低</option><option value="absolute">绝对高程</option></select></label>
-            <NumberField label={selected.elevationMode === 'lowerBy' ? '下切深度 m' : '河床高程 m'} value={selected.elevationMode === 'lowerBy' ? selected.depthM ?? 2 : selected.elevationM ?? areaMeanElevationM - 2} min={selected.elevationMode === 'lowerBy' ? 0.01 : undefined} onChange={(value) => replace(selected.elevationMode === 'lowerBy' ? { ...selected, depthM: value } : { ...selected, elevationM: value })} />
-            <NumberField label="Manning n" value={selected.manningN} min={0.001} step={0.001} onChange={(value) => replace({ ...selected, manningN: value })} />
-            <NumberField label="最大三角面积 m²" value={selected.maxTriangleAreaM2} min={1} onChange={(value) => replace({ ...selected, maxTriangleAreaM2: value })} />
+            <label><FieldCaption label="河床模式" help={HELP.elevationMode} /><select value={selected.elevationMode} onChange={(event) => replace({ ...selected, elevationMode: event.target.value as 'lowerBy' | 'absolute', depthM: 2, elevationM: areaMeanElevationM - 2 })}><option value="lowerBy">相对降低</option><option value="absolute">绝对高程</option></select></label>
+            <NumberField label={selected.elevationMode === 'lowerBy' ? '下切深度 m' : '河床高程 m'} help={selected.elevationMode === 'lowerBy' ? HELP.depth : HELP.channelElevation} value={selected.elevationMode === 'lowerBy' ? selected.depthM ?? 2 : selected.elevationM ?? areaMeanElevationM - 2} min={selected.elevationMode === 'lowerBy' ? 0.01 : undefined} onChange={(value) => replace(selected.elevationMode === 'lowerBy' ? { ...selected, depthM: value } : { ...selected, elevationM: value })} />
+            <NumberField label="Manning n" help={HELP.manning} value={selected.manningN} min={0.001} step={0.001} onChange={(value) => replace({ ...selected, manningN: value })} />
+            <NumberField label="最大三角面积 m²" help={HELP.triangleArea} value={selected.maxTriangleAreaM2} min={1} onChange={(value) => replace({ ...selected, maxTriangleAreaM2: value })} />
           </>}
           {selected.type === 'engineeringChannel' && <EngineeringChannelEditor feature={selected} onChange={replace} />}
           {selected.type === 'culvert' && <>
-            <label><span>断面</span><select value={selected.shape} onChange={(event) => replace({ ...selected, shape: event.target.value as 'box' | 'pipe', widthM: 2, heightM: 2, diameterM: 2 })}><option value="box">箱涵</option><option value="pipe">圆管</option></select></label>
-            {selected.shape === 'box' ? <><NumberField label="宽度 m" value={selected.widthM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, widthM: value })} /><NumberField label="高度 m" value={selected.heightM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, heightM: value })} /></> : <NumberField label="直径 m" value={selected.diameterM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, diameterM: value })} />}
-            <NumberField label="并联孔数" value={selected.barrels} min={1} step={1} onChange={(value) => replace({ ...selected, barrels: Math.round(value) })} />
-            <NumberField label="堵塞率" value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
-            <NumberField label="局部损失系数" value={selected.losses} min={0} step={0.1} onChange={(value) => replace({ ...selected, losses: value })} />
-            <NumberField label="Manning n" value={selected.manningN} min={0.001} step={0.001} onChange={(value) => replace({ ...selected, manningN: value })} />
+            <label><FieldCaption label="断面" help={HELP.culvertShape} /><select value={selected.shape} onChange={(event) => replace({ ...selected, shape: event.target.value as 'box' | 'pipe', widthM: 2, heightM: 2, diameterM: 2 })}><option value="box">箱涵</option><option value="pipe">圆管</option></select></label>
+            {selected.shape === 'box' ? <><NumberField label="宽度 m" help={HELP.culvertWidth} value={selected.widthM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, widthM: value })} /><NumberField label="高度 m" help={HELP.culvertHeight} value={selected.heightM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, heightM: value })} /></> : <NumberField label="直径 m" help={HELP.diameter} value={selected.diameterM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, diameterM: value })} />}
+            <NumberField label="并联孔数" help={HELP.barrels} value={selected.barrels} min={1} step={1} onChange={(value) => replace({ ...selected, barrels: Math.round(value) })} />
+            <NumberField label="堵塞率" help={HELP.blockage} value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
+            <NumberField label="局部损失系数" help={HELP.losses} value={selected.losses} min={0} step={0.1} onChange={(value) => replace({ ...selected, losses: value })} />
+            <NumberField label="Manning n" help={HELP.manning} value={selected.manningN} min={0.001} step={0.001} onChange={(value) => replace({ ...selected, manningN: value })} />
           </>}
           {selected.type === 'bridge' && <>
-            <NumberField label="底宽 m" value={selected.widthM} min={0.1} onChange={(value) => replace({ ...selected, widthM: value })} />
-            <NumberField label="净高 m" value={selected.heightM} min={0.1} onChange={(value) => replace({ ...selected, heightM: value })} />
-            <NumberField label="左边坡" value={selected.leftSideSlope} min={0} step={0.1} onChange={(value) => replace({ ...selected, leftSideSlope: value })} />
-            <NumberField label="右边坡" value={selected.rightSideSlope} min={0} step={0.1} onChange={(value) => replace({ ...selected, rightSideSlope: value })} />
-            <NumberField label="堵塞率" value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
-            <NumberField label="损失系数" value={selected.losses} min={0} step={0.1} onChange={(value) => replace({ ...selected, losses: value })} />
+            <NumberField label="底宽 m" help={HELP.bottomWidth} value={selected.widthM} min={0.1} onChange={(value) => replace({ ...selected, widthM: value })} />
+            <NumberField label="净高 m" help={HELP.openingHeight} value={selected.heightM} min={0.1} onChange={(value) => replace({ ...selected, heightM: value })} />
+            <NumberField label="左边坡" help={HELP.sideSlope} value={selected.leftSideSlope} min={0} step={0.1} onChange={(value) => replace({ ...selected, leftSideSlope: value })} />
+            <NumberField label="右边坡" help={HELP.sideSlope} value={selected.rightSideSlope} min={0} step={0.1} onChange={(value) => replace({ ...selected, rightSideSlope: value })} />
+            <NumberField label="堵塞率" help={HELP.blockage} value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
+            <NumberField label="损失系数" help={HELP.losses} value={selected.losses} min={0} step={0.1} onChange={(value) => replace({ ...selected, losses: value })} />
+            <NumberField label="Manning n" help={HELP.manning} value={selected.manningN} min={0.001} step={0.001} onChange={(value) => replace({ ...selected, manningN: value })} />
           </>}
           {selected.type === 'drainageOutlet' && <>
-            <p className="hydraulic-editor-note">水量排出计算域；排水能力随局部积水深度增加，不考虑下游尾水顶托。</p>
-            <NumberField label="最大排水能力 m³/s" value={selected.capacityM3s} min={0.001} step={0.05} onChange={(value) => replace({ ...selected, capacityM3s: value })} />
-            <NumberField label="收水半径 m" value={selected.intakeRadiusM} min={0.1} onChange={(value) => replace({ ...selected, intakeRadiusM: value })} />
-            <NumberField label="满负荷水深 m" value={selected.fullCapacityDepthM} min={0.01} step={0.05} onChange={(value) => replace({ ...selected, fullCapacityDepthM: value })} />
-            <NumberField label="堵塞率" value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
+            <NumberField label="最大排水能力 m³/s" help={HELP.capacity} value={selected.capacityM3s} min={0.001} step={0.05} onChange={(value) => replace({ ...selected, capacityM3s: value })} />
+            <NumberField label="收水半径 m" help={HELP.intakeRadius} value={selected.intakeRadiusM} min={0.1} onChange={(value) => replace({ ...selected, intakeRadiusM: value })} />
+            <NumberField label="满负荷水深 m" help={HELP.fullCapacityDepth} value={selected.fullCapacityDepthM} min={0.01} step={0.05} onChange={(value) => replace({ ...selected, fullCapacityDepthM: value })} />
+            <NumberField label="堵塞率" help={HELP.blockage} value={selected.blockage} min={0} max={0.99} step={0.05} onChange={(value) => replace({ ...selected, blockage: value })} />
+            <div className="drainage-formula"><span>有效流量</span><code>Qmax × (1 - 堵塞率) × min(水深 / 满负荷水深, 1)</code></div>
           </>}
           {selected.type === 'breach' && <>
-            <label><span>所属堤防</span><select value={selected.leveeId} onChange={(event) => replace({ ...selected, leveeId: event.target.value })}>{features.filter((item) => item.type === 'levee').map((levee) => <option key={levee.id} value={levee.id}>{levee.name}</option>)}</select></label>
-            <NumberField label="缺口宽度 m" value={selected.widthM} min={0.1} onChange={(value) => replace({ ...selected, widthM: value })} />
-            <NumberField label="缺口高程 m" value={selected.crestElevationM} onChange={(value) => replace({ ...selected, crestElevationM: value })} />
+            <label><FieldCaption label="所属堤防" help={HELP.levee} /><select value={selected.leveeId} onChange={(event) => replace({ ...selected, leveeId: event.target.value })}>{features.filter((item) => item.type === 'levee').map((levee) => <option key={levee.id} value={levee.id}>{levee.name}</option>)}</select></label>
+            <NumberField label="缺口宽度 m" help={HELP.breachWidth} value={selected.widthM} min={0.1} onChange={(value) => replace({ ...selected, widthM: value })} />
+            <NumberField label="缺口高程 m" help={HELP.crestElevation} value={selected.crestElevationM} onChange={(value) => replace({ ...selected, crestElevationM: value })} />
           </>}
         </div>}
       </div>}
@@ -220,14 +264,14 @@ function LeveeEditor({ feature, areaMean, demProductId, areaHash, onChange }: {
       <span>纵断面 · {profile ? `${profile.lengthM.toFixed(0)} m` : profileError ?? '采样中…'}</span>
       {profile && <ProfileChart profile={profile} feature={feature} />}
     </div>
-    <label><span>堤顶模式</span><select value={feature.crestMode} onChange={(event) => setMode(event.target.value as LeveeFeature['crestMode'])}><option value="relative">高出地面</option><option value="absolute">统一高程</option><option value="profile">逐节点高程</option></select></label>
-    {feature.crestMode === 'relative' && <NumberField label="加高值 m" value={feature.heightAboveGroundM ?? 2} min={0.01} onChange={(value) => onChange({ ...feature, heightAboveGroundM: value })} />}
-    {feature.crestMode === 'absolute' && <NumberField label="堤顶高程 m" value={feature.crestElevationM ?? areaMean + 2} onChange={(value) => onChange({ ...feature, crestElevationM: value })} />}
+    <label><FieldCaption label="堤顶模式" help={HELP.crestMode} /><select value={feature.crestMode} onChange={(event) => setMode(event.target.value as LeveeFeature['crestMode'])}><option value="relative">高出地面</option><option value="absolute">统一高程</option><option value="profile">逐节点高程</option></select></label>
+    {feature.crestMode === 'relative' && <NumberField label="加高值 m" help={HELP.heightAboveGround} value={feature.heightAboveGroundM ?? 2} min={0.01} onChange={(value) => onChange({ ...feature, heightAboveGroundM: value })} />}
+    {feature.crestMode === 'absolute' && <NumberField label="堤顶高程 m" help={HELP.crestElevation} value={feature.crestElevationM ?? areaMean + 2} onChange={(value) => onChange({ ...feature, crestElevationM: value })} />}
     {feature.crestMode === 'profile' && <div className="levee-profile-editor">
       <span>节点堤顶高程</span>
-      {(feature.crestElevationsM ?? []).map((value, index) => <NumberField key={index} label={`P${index + 1}`} value={value} onChange={(next) => onChange({ ...feature, crestElevationsM: feature.crestElevationsM?.map((item, itemIndex) => itemIndex === index ? next : item) })} />)}
+      {(feature.crestElevationsM ?? []).map((value, index) => <NumberField key={index} label={`P${index + 1}`} help={HELP.crestProfile} value={value} onChange={(next) => onChange({ ...feature, crestElevationsM: feature.crestElevationsM?.map((item, itemIndex) => itemIndex === index ? next : item) })} />)}
     </div>}
-    <NumberField label="堰流系数 Q" value={feature.qFactor} min={0.01} step={0.05} onChange={(value) => onChange({ ...feature, qFactor: value })} />
+    <NumberField label="堰流系数 Q" help={HELP.qFactor} value={feature.qFactor} min={0.01} step={0.05} onChange={(value) => onChange({ ...feature, qFactor: value })} />
   </>
 }
 
@@ -265,14 +309,14 @@ function ProfileChart({ profile, feature }: {
 function EngineeringChannelEditor({ feature, onChange }: { feature: Extract<HydraulicFeature, { type: 'engineeringChannel' }>; onChange: (feature: HydraulicFeature) => void }) {
   const updateSection = (index: number, key: 'distanceM' | 'bedElevationM' | 'bottomWidthM' | 'sideSlope', value: number) => onChange({ ...feature, crossSections: feature.crossSections.map((section, itemIndex) => itemIndex === index ? { ...section, [key]: value } : section) })
   return <>
-    <NumberField label="岸高 m" value={feature.bankHeightM} min={0.1} onChange={(value) => onChange({ ...feature, bankHeightM: value })} />
-    <NumberField label="Manning n" value={feature.manningN} min={0.001} step={0.001} onChange={(value) => onChange({ ...feature, manningN: value })} />
-    <NumberField label="最大三角面积 m²" value={feature.maxTriangleAreaM2} min={1} onChange={(value) => onChange({ ...feature, maxTriangleAreaM2: value })} />
+    <NumberField label="岸高 m" help={HELP.bankHeight} value={feature.bankHeightM} min={0.1} onChange={(value) => onChange({ ...feature, bankHeightM: value })} />
+    <NumberField label="Manning n" help={HELP.manning} value={feature.manningN} min={0.001} step={0.001} onChange={(value) => onChange({ ...feature, manningN: value })} />
+    <NumberField label="最大三角面积 m²" help={HELP.triangleArea} value={feature.maxTriangleAreaM2} min={1} onChange={(value) => onChange({ ...feature, maxTriangleAreaM2: value })} />
     <div className="cross-section-table"><span>断面参数</span>{feature.crossSections.map((section, index) => <div key={index}>
-      <NumberField label="桩号" value={section.distanceM} min={0} onChange={(value) => updateSection(index, 'distanceM', value)} />
-      <NumberField label="河底" value={section.bedElevationM} onChange={(value) => updateSection(index, 'bedElevationM', value)} />
-      <NumberField label="底宽" value={section.bottomWidthM} min={0.1} onChange={(value) => updateSection(index, 'bottomWidthM', value)} />
-      <NumberField label="边坡" value={section.sideSlope} min={0} step={0.1} onChange={(value) => updateSection(index, 'sideSlope', value)} />
+      <NumberField label="桩号" help={HELP.chainage} value={section.distanceM} min={0} onChange={(value) => updateSection(index, 'distanceM', value)} />
+      <NumberField label="河底" help={HELP.sectionBed} value={section.bedElevationM} onChange={(value) => updateSection(index, 'bedElevationM', value)} />
+      <NumberField label="底宽" help={HELP.bottomWidth} value={section.bottomWidthM} min={0.1} onChange={(value) => updateSection(index, 'bottomWidthM', value)} />
+      <NumberField label="边坡" help={HELP.sideSlope} value={section.sideSlope} min={0} step={0.1} onChange={(value) => updateSection(index, 'sideSlope', value)} />
       {feature.crossSections.length > 2 && <button onClick={() => onChange({ ...feature, crossSections: feature.crossSections.filter((_, itemIndex) => itemIndex !== index) })}>×</button>}
     </div>)}<button onClick={() => {
       const last = feature.crossSections.at(-1)!
@@ -289,6 +333,13 @@ function DrawButton({ label, mode, active, disabled, onClick }: { label: string;
   return <button className={active === mode ? 'active' : ''} disabled={disabled} onClick={() => onClick(mode)}>{label}</button>
 }
 
-function NumberField({ label, value, min, max, step = 0.1, onChange }: { label: string; value: number; min?: number; max?: number; step?: number; onChange: (value: number) => void }) {
-  return <label><span>{label}</span><input type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></label>
+function FieldCaption({ label, help }: { label: string; help?: string }) {
+  return <span className="hydraulic-field-caption">
+    <span>{label}</span>
+    {help && <ParameterHelp label={label} text={help} />}
+  </span>
+}
+
+function NumberField({ label, help, value, min, max, step = 0.1, onChange }: { label: string; help?: string; value: number; min?: number; max?: number; step?: number; onChange: (value: number) => void }) {
+  return <label><FieldCaption label={label} help={help} /><input aria-label={label} type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></label>
 }
