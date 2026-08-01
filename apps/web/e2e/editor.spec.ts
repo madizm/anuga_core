@@ -97,6 +97,10 @@ test('user draws a levee, reviews its profile and previews the conforming mesh',
   await canvas.dblclick({ position: { x: box.width * 0.53, y: box.height * 0.48 } })
 
   await expect(page.getByText('堤防 1', { exact: true })).toBeVisible()
+  await expect(page.locator('.model-map')).toHaveAttribute(
+    'data-hydraulic-source-count',
+    '1',
+  )
   await expect(page.locator('.selection-readout strong').first()).toHaveText('0')
   await page.getByText('堤防 1', { exact: true }).click()
   await expect(page.getByRole('img', { name: '堤防地面与堤顶纵断面' })).toBeVisible()

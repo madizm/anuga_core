@@ -5,6 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FrictionScenario, HydraulicFeature } from '../api/types'
 import { useInletStore } from '../inlets/inletStore'
 import { useLayerStore } from './mapStore'
+import { raiseMapLayers, syncWhenMapSourceReady } from './mapLayers'
 import { BASE_MAP_ATTRIBUTION, BASE_MAP_TILE_URL } from './baseMap'
 import { TerrainControl } from './TerrainControl'
 import {
@@ -49,6 +50,13 @@ const FEATURE_DRAFT_SOURCE = 'hydraulic-feature-draft'
 const FEATURE_DRAFT_LINE = 'hydraulic-feature-draft-line'
 const MESH_PREVIEW_SOURCE = 'hydraulic-mesh-preview'
 const MESH_PREVIEW_LINE = 'hydraulic-mesh-preview-line'
+
+function raiseHydraulicLayers(map: Map) {
+  raiseMapLayers(map, [
+    FEATURE_FILL, FEATURE_LINE, FEATURE_POINT,
+    FEATURE_DRAFT_LINE, MESH_PREVIEW_LINE,
+  ])
+}
 
 const MANNING_RANGES: Record<FrictionScenario, [number, number]> = {
   low: [0.03, 0.1],
@@ -235,9 +243,8 @@ export function ModelMap({
     if (!map) return
     const update = () => {
       const source = map.getSource(FEATURE_SOURCE) as GeoJSONSource | undefined
-      source?.setData({
-        type: 'FeatureCollection',
-        features: hydraulicFeatures.filter((feature) => feature.enabled).map((feature) => ({
+      const features: FeatureCollection['features'] = hydraulicFeatures
+        .filter((feature) => feature.enabled).map((feature) => ({
           type: 'Feature',
           properties: {
             id: feature.id,
@@ -247,12 +254,17 @@ export function ModelMap({
                 : feature.type === 'breach' ? '#ff3b5c' : '#c880ff',
           },
           geometry: feature.geometry,
-        })),
-      })
+        }))
+      source?.setData({ type: 'FeatureCollection', features })
+      if (source && container.current) {
+        container.current.dataset.hydraulicSourceCount = String(features.length)
+      }
     }
-    if (map.isStyleLoaded()) update()
-    else map.once('load', update)
-    return () => { map.off('load', update) }
+    const sync = () => {
+      update()
+      raiseHydraulicLayers(map)
+    }
+    return syncWhenMapSourceReady(map, FEATURE_SOURCE, sync)
   }, [hydraulicFeatures])
 
   useEffect(() => {
@@ -265,9 +277,7 @@ export function ModelMap({
       })
       if (map.getLayer(MESH_PREVIEW_LINE)) map.moveLayer(MESH_PREVIEW_LINE)
     }
-    if (map.isStyleLoaded()) update()
-    else map.once('load', update)
-    return () => { map.off('load', update) }
+    return syncWhenMapSourceReady(map, MESH_PREVIEW_SOURCE, update)
   }, [hydraulicMeshPreview])
 
   useEffect(() => {
@@ -449,6 +459,7 @@ export function ModelMap({
         : map.getLayer(BUILDING_LAYER)
           ? BUILDING_LAYER
           : map.getLayer(GRID_FILL) ? GRID_FILL : undefined)
+      raiseHydraulicLayers(map)
       setDemReady(true)
     }
     if (map.isStyleLoaded()) install()
@@ -565,6 +576,7 @@ export function ModelMap({
           'line-opacity': ['interpolate', ['linear'], ['zoom'], 13, 0.25, 16, 0.75],
         },
       })
+      raiseHydraulicLayers(map)
       setGridReady(true)
       const bounds = new maplibregl.LngLatBounds()
       for (const feature of grid.features) {
@@ -754,6 +766,7 @@ export function ModelMap({
         aria-label="鲅鱼圈模型地图"
         data-dem-ready={demReady}
         data-grid-ready={gridReady}
+        data-hydraulic-source-count="0"
       />
       <TerrainControl
         scope="model"
