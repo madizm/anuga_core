@@ -12,6 +12,12 @@ const VISUAL_SECONDS_PER_SECOND = 180
 const TRAIL_TAU_SECONDS = 0.45
 const PARTICLE_MIN_AGE_SECONDS = 1.4
 const PARTICLE_AGE_SPREAD_SECONDS = 3.2
+// Particle count tracks the wet area's on-screen size, not its cell count:
+// a fixed count saturates small basins with overlapping trails (the whole
+// water body turns white), while the same count looks sparse when zoomed in.
+const PARTICLE_DENSITY_PX = 700
+const PARTICLE_MIN_COUNT = 80
+const PARTICLE_MAX_COUNT = 700
 
 /**
  * Advects particles through the frame velocity field and lets their paths
@@ -68,7 +74,7 @@ export class FlowParticleLayer {
       return
     }
     this.canvas.dataset.flowMode = 'animated'
-    const count = Math.min(900, Math.max(160, this.wetCells.length * 2))
+    const count = this.desiredCount()
     if (keepTrails) {
       // Keep the surviving particles and the fading trails: the new field
       // takes them over from their current positions, which preserves the
@@ -271,13 +277,40 @@ export class FlowParticleLayer {
     if (this.reducedMotion.matches) this.drawStaticArrows()
   }
 
+  private desiredCount() {
+    if (!this.field || this.wetCells.length === 0) return 0
+    const [west, south, east, north] = this.field.bounds
+    const topLeft = this.map.project([west, north])
+    const bottomRight = this.map.project([east, south])
+    const cellAreaPx = Math.abs(
+      (bottomRight.x - topLeft.x) * (bottomRight.y - topLeft.y),
+    ) / (this.field.width * this.field.height)
+    if (!Number.isFinite(cellAreaPx) || cellAreaPx <= 0) {
+      return Math.min(900, Math.max(160, this.wetCells.length * 2))
+    }
+    const wetPixels = this.wetCells.length * cellAreaPx
+    return Math.round(Math.min(
+      PARTICLE_MAX_COUNT,
+      Math.max(PARTICLE_MIN_COUNT, wetPixels / PARTICLE_DENSITY_PX),
+    ))
+  }
+
   private readonly handleMove = () => {
     if (this.canvas.dataset.flowMode === 'static') {
       this.drawStaticArrows()
+      return
+    }
+    // Trail pixels are anchored to the previous view; keeping them while
+    // the map pans or zooms would smear stale streamlines across the map.
+    this.clearCanvas()
+    // Zooming changes the wet area's screen size; trim or top up the
+    // particle population so trail density stays roughly constant.
+    const target = this.desiredCount()
+    if (target === 0 || this.particles.length === 0) return
+    if (this.particles.length > target) {
+      this.particles.length = target
     } else {
-      // Trail pixels are anchored to the previous view; keeping them while
-      // the map pans or zooms would smear stale streamlines across the map.
-      this.clearCanvas()
+      while (this.particles.length < target) this.particles.push(this.spawn())
     }
   }
 
