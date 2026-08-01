@@ -14,6 +14,7 @@ function makeField(overrides: Partial<FlowField> = {}): FlowField {
     bounds: [122.1, 40.1, 122.2, 40.2],
     vectors: new Float32Array([Number.NaN, Number.NaN, 3, 4]),
     depths: new Float32Array([Number.NaN, 0.5]),
+    texels: null,
     ...overrides,
   }
 }

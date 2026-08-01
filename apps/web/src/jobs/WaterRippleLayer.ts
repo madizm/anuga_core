@@ -1,5 +1,5 @@
 import type { Map } from 'maplibre-gl'
-import type { FlowField } from '../api/types'
+import type { FlowField, ResultQuantity } from '../api/types'
 import { waterRippleParams } from './waterRippleParams'
 
 const CROSSFADE_MS = 220
@@ -96,6 +96,8 @@ uniform float u_full_depth;
 uniform float u_colorize;
 uniform float u_shadow;
 uniform float u_water_alpha;
+uniform float u_format;
+uniform float u_quantity;
 
 vec4 sampleField(sampler2D tex, vec2 uv) {
   vec2 g = uv * u_grid_size - 0.5;
@@ -152,12 +154,47 @@ vec3 depthRamp(float t) {
   return mix(c2, c3, (t - 0.67) / 0.33);
 }
 
+// Matches the stage legend (viridis approximation).
+vec3 stageRamp(float t) {
+  vec3 c0 = vec3(0.267, 0.005, 0.329);
+  vec3 c1 = vec3(0.192, 0.408, 0.557);
+  vec3 c2 = vec3(0.208, 0.718, 0.475);
+  vec3 c3 = vec3(0.992, 0.906, 0.145);
+  if (t < 0.34) return mix(c0, c1, t / 0.34);
+  if (t < 0.67) return mix(c1, c2, (t - 0.34) / 0.33);
+  return mix(c2, c3, (t - 0.67) / 0.33);
+}
+
+// Matches the speed legend (ColorBrewer YlOrRd).
+vec3 speedRamp(float t) {
+  vec3 c0 = vec3(1.0, 1.0, 0.8);
+  vec3 c1 = vec3(0.996, 0.698, 0.298);
+  vec3 c2 = vec3(0.941, 0.231, 0.125);
+  vec3 c3 = vec3(0.502, 0.0, 0.149);
+  if (t < 0.34) return mix(c0, c1, t / 0.34);
+  if (t < 0.67) return mix(c1, c2, (t - 0.34) / 0.33);
+  return mix(c2, c3, (t - 0.67) / 0.33);
+}
+
 void main() {
   vec4 field = sampleField(u_field_current, v_uv);
   if (u_fade < 1.0) {
     field = mix(sampleField(u_field_previous, v_uv), field, u_fade);
   }
-  float alpha = field.a * smoothstep(0.0, u_feather, field.b);
+  // v3 fields carry (u, v, depth, stage) with dry cells marked by the exact
+  // sentinel depth -1; legacy fields carry (u, v, depth, wetFlag).
+  float depth = field.b;
+  float wet;
+  float stage;
+  if (u_format > 0.5) {
+    wet = step(0.0, depth);
+    depth = max(depth, 0.0);
+    stage = field.a;
+  } else {
+    wet = field.a;
+    stage = 0.0;
+  }
+  float alpha = wet * smoothstep(0.0, u_feather, depth);
   if (alpha < 0.004) discard;
 
   vec2 velocity = field.rg;
@@ -172,7 +209,7 @@ void main() {
   float dx = waveHeight(q + vec2(eps, 0.0)) - waveHeight(q - vec2(eps, 0.0));
   float dy = waveHeight(q + vec2(0.0, eps)) - waveHeight(q - vec2(0.0, eps));
 
-  float depthFactor = clamp(field.b / u_full_depth, 0.0, 1.0);
+  float depthFactor = clamp(depth / u_full_depth, 0.0, 1.0);
   float speedFactor = clamp(speed / 1.5, 0.15, 1.0);
   float amp = u_amplitude * depthFactor * speedFactor * 0.6;
   vec3 normal = normalize(vec3(-dx * amp, -dy * amp, 1.0));
@@ -189,11 +226,17 @@ void main() {
   light = max(light, 0.0);
 
   if (u_colorize > 0.5) {
-    // Full water-surface rendering: depth ramp aligned with the Blues
-    // legend, ripple relief from two-tone shading (shadows carry the
+    // Full water-surface rendering: legend-aligned ramps for the selected
+    // quantity, ripple relief from two-tone shading (shadows carry the
     // shallow end where additive highlights would vanish on pale blue).
-    float t = clamp((field.b - 0.01) / (3.0 - 0.01), 0.0, 1.0);
-    vec3 base = depthRamp(t);
+    vec3 base;
+    if (u_quantity < 0.5) {
+      base = depthRamp(clamp((depth - 0.01) / (3.0 - 0.01), 0.0, 1.0));
+    } else if (u_quantity < 1.5) {
+      base = stageRamp(clamp(stage / 30.0, 0.0, 1.0));
+    } else {
+      base = speedRamp(clamp(speed / 3.0, 0.0, 1.0));
+    }
     float shade = clamp((u_sun.z - diffuse) / max(u_sun.z, 0.001), 0.0, 1.0);
     vec3 color = base * (1.0 - u_shadow * shade) + vec3(light);
     float a = alpha * u_water_alpha;
@@ -218,8 +261,14 @@ const UNIFORM_NAMES = [
   'u_field_current', 'u_field_previous', 'u_fade', 'u_grid_size',
   'u_cell_meters', 'u_time', 'u_sun', 'u_specular', 'u_sheen', 'u_sparkle',
   'u_amplitude', 'u_wave_length', 'u_advect', 'u_feather', 'u_full_depth',
-  'u_colorize', 'u_shadow', 'u_water_alpha',
+  'u_colorize', 'u_shadow', 'u_water_alpha', 'u_format', 'u_quantity',
 ]
+
+const QUANTITY_CODES: Record<ResultQuantity, number> = {
+  depth: 0,
+  stage: 1,
+  speed: 2,
+}
 
 /**
  * Additive water-surface shimmer on its own overlay canvas (the same pattern
@@ -242,6 +291,7 @@ export class WaterRippleLayer {
   private animationFrame: number | null = null
   private rendered = false
   private colorize = false
+  private quantity: ResultQuantity = 'depth'
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 
   constructor(private readonly map: Map) {
@@ -303,15 +353,31 @@ export class WaterRippleLayer {
     if (this.colorize === colorize) return
     this.colorize = colorize
     this.canvas.classList.toggle('colorize', colorize)
-    if (colorize) this.map.getContainer().dataset.waterColorize = '1'
-    else delete this.map.getContainer().dataset.waterColorize
+    this.updateDataset()
     if (this.reducedMotion.matches) this.draw()
+  }
+
+  /** Selects which quantity the colorize ramp encodes. */
+  setQuantity(quantity: ResultQuantity) {
+    if (this.quantity === quantity) return
+    this.quantity = quantity
+    this.updateDataset()
+    if (this.reducedMotion.matches) this.draw()
+  }
+
+  private updateDataset() {
+    const container = this.map.getContainer()
+    if (this.colorize) container.dataset.waterColorize = '1'
+    else delete container.dataset.waterColorize
+    if (this.colorize) container.dataset.waterQuantity = this.quantity
+    else delete container.dataset.waterQuantity
   }
 
   destroy() {
     this.stop()
     delete this.map.getContainer().dataset.waterRipple
     delete this.map.getContainer().dataset.waterColorize
+    delete this.map.getContainer().dataset.waterQuantity
     this.canvas.removeEventListener('webglcontextlost', this.handleContextLost)
     this.canvas.removeEventListener('webglcontextrestored', this.handleContextRestored)
     this.map.off('resize', this.resize)
@@ -376,10 +442,19 @@ export class WaterRippleLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA32F, field.width, field.height, 0,
-      gl.RGBA, gl.FLOAT, packFieldPixels(field),
-    )
+    if (field.texels) {
+      // v3 payload uploads verbatim — the server already laid out fp16
+      // (u, v, depth, stage) texels in RGBA order.
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA16F, field.width, field.height, 0,
+        gl.RGBA, gl.HALF_FLOAT, field.texels,
+      )
+    } else {
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA32F, field.width, field.height, 0,
+        gl.RGBA, gl.FLOAT, packFieldPixels(field),
+      )
+    }
     if (resources.current && keepPrevious) {
       if (resources.previous) gl.deleteTexture(resources.previous)
       resources.previous = resources.current
@@ -400,10 +475,17 @@ export class WaterRippleLayer {
     resources.previous = null
   }
 
+  private frameSkip = 0
+
   private readonly animate = () => {
     this.animationFrame = null
     if (!this.field) return
-    this.draw()
+    // Slow-moving shimmer reads identically at 30 fps, and the time uniform
+    // is wall-clock driven so the animation speed is unchanged. Skipping
+    // every other repaint halves the fullscreen shader cost, which matters
+    // when the GPU is also busy rendering pitched 3D terrain.
+    this.frameSkip = (this.frameSkip + 1) % 2
+    if (this.frameSkip === 0) this.draw()
     this.animationFrame = requestAnimationFrame(this.animate)
   }
 
@@ -465,6 +547,12 @@ export class WaterRippleLayer {
     gl.uniform1f(uniforms.u_colorize, this.colorize ? 1 : 0)
     gl.uniform1f(uniforms.u_shadow, params.shadowStrength)
     gl.uniform1f(uniforms.u_water_alpha, params.waterAlpha)
+    gl.uniform1f(uniforms.u_format, field.texels ? 1 : 0)
+    // Stage needs the v3 alpha channel; legacy fields fall back to depth.
+    const quantity = this.quantity === 'stage' && !field.texels
+      ? 'depth'
+      : this.quantity
+    gl.uniform1f(uniforms.u_quantity, QUANTITY_CODES[quantity])
 
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, resources.current)

@@ -19,7 +19,9 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
   const [following, setFollowing] = useState(true)
   const [playing, setPlaying] = useState(false)
   const [triple, setTriple] = useState(false)
-  const [flowEnabled, setFlowEnabled] = useState(false)
+  // The water surface is the primary result view and starts enabled; the
+  // raster tiles are the auxiliary fallback when it is toggled off.
+  const [flowEnabled, setFlowEnabled] = useState(true)
   const [point, setPoint] = useState<FramePointValue | null>(null)
   const [displayedFrameIndex, setDisplayedFrameIndex] = useState<number | null>(null)
   const demProducts = useQuery({
@@ -53,13 +55,16 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
     if (following && frames.length) setFramePosition(frames.length - 1)
   }, [following, frames.length])
 
+  // With the water view on, gate playback on the frame's field arriving
+  // rather than on the raster tiles (which are not fetched in that mode).
+  const frameReady = requested == null
+    ? false
+    : flowEnabled
+      ? flow.isError || flow.data?.frameIndex === requested.frameIndex
+      : displayedFrameIndex === requested.frameIndex
+
   useEffect(() => {
-    if (
-      !playing
-      || frames.length < 2
-      || !requested
-      || displayedFrameIndex !== requested.frameIndex
-    ) return
+    if (!playing || frames.length < 2 || !requested || !frameReady) return
     const timer = window.setTimeout(() => {
       setFramePosition((position) => {
         if (position < frames.length - 1) return position + 1
@@ -68,7 +73,7 @@ export function ResultWorkspace({ jobId, onClose }: { jobId: string; onClose: ()
       })
     }, 700)
     return () => window.clearTimeout(timer)
-  }, [displayedFrameIndex, frames.length, playing, requested])
+  }, [frameReady, frames.length, playing, requested])
 
   const pointMutation = useMutation({
     mutationFn: ({ longitude, latitude }: { longitude: number; latitude: number }) =>

@@ -301,10 +301,14 @@ test('local-domain COG frames stream into the live playback console', async ({ p
   await expect(page.locator('.result-map-canvas')).toHaveCount(3)
   await expect(page.locator('.terrain-control')).toHaveCount(1)
   await expect(page.getByText('流速 SPEED')).toBeVisible()
-  await page.getByRole('button', { name: /动态水面/ }).click()
+  // The water surface is on by default and renders on all three panes.
   await expect(page.locator('.flow-particle-canvas[data-flow-frame="2"]')).toHaveCount(3)
   await expect(page.getByText('DYNAMIC FLOW')).toHaveCount(3)
   await expect(page.getByText('水面效果为二维投影')).toBeVisible()
+  // Toggling it off falls back to the raster tile views.
+  await page.getByRole('button', { name: /动态水面/ }).click()
+  await expect(page.locator('.flow-particle-canvas[data-flow-frame]')).toHaveCount(0)
+  await expect(page.getByText('DYNAMIC FLOW')).toHaveCount(0)
   await page.goto('about:blank')
 })
 
@@ -323,19 +327,21 @@ function flowPayload() {
   return buffer
 }
 
-function flowPayloadV2() {
-  const buffer = Buffer.alloc(44 + 3 * 4)
+function flowPayloadV3() {
+  const buffer = Buffer.alloc(44 + 4 * 2)
   buffer.write('BQFV', 0, 'ascii')
-  buffer.writeUInt16LE(2, 4)
+  buffer.writeUInt16LE(3, 4)
   buffer.writeUInt16LE(1, 6)
   buffer.writeUInt16LE(1, 8)
   buffer.writeDoubleLE(122.12, 12)
   buffer.writeDoubleLE(40.23, 20)
   buffer.writeDoubleLE(122.14, 28)
   buffer.writeDoubleLE(40.25, 36)
-  buffer.writeFloatLE(0.3, 44)
-  buffer.writeFloatLE(1, 48)
-  buffer.writeFloatLE(0.5, 52)
+  // fp16 texels (u, v, depth, stage): 1.0, 0.5, 0.3, 6.0.
+  buffer.writeUInt16LE(0x3c00, 44)
+  buffer.writeUInt16LE(0x3800, 46)
+  buffer.writeUInt16LE(0x3555, 48)
+  buffer.writeUInt16LE(0x4600, 50)
   return buffer
 }
 
@@ -393,7 +399,7 @@ test('dynamic water toggle mounts the ripple layer without errors', async ({ pag
   }))
   await page.route(`**/api/jobs/${jobId}/frames/0/flow`, (route) => route.fulfill({
     contentType: 'application/vnd.bayuquan.flow-field',
-    body: flowPayloadV2(),
+    body: flowPayloadV3(),
   }))
   await page.route(`**/api/jobs/${jobId}/frames/0/tiles/**`, (route) => route.fulfill({
     contentType: 'image/png',
@@ -401,7 +407,7 @@ test('dynamic water toggle mounts the ripple layer without errors', async ({ pag
   }))
   await page.goto(`/?job=${jobId}`)
   await expect(page.getByText('已完成')).toBeVisible()
-  await page.getByRole('button', { name: /动态水面/ }).click()
+  // The water surface is the primary view and starts enabled.
   await expect(page.locator('.result-map-canvas')).toHaveAttribute(
     'data-water-ripple',
     'active',
@@ -411,6 +417,10 @@ test('dynamic water toggle mounts the ripple layer without errors', async ({ pag
   await expect(page.locator('.result-map-canvas')).toHaveAttribute(
     'data-water-colorize',
     '1',
+  )
+  await expect(page.locator('.result-map-canvas')).toHaveAttribute(
+    'data-water-quantity',
+    'depth',
   )
   await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
     'data-flow-mode',
@@ -435,6 +445,10 @@ test('dynamic water toggle mounts the ripple layer without errors', async ({ pag
   )
   await expect(page.locator('.result-map-canvas')).not.toHaveAttribute(
     'data-water-colorize',
+    /.+/,
+  )
+  await expect(page.locator('.result-map-canvas')).not.toHaveAttribute(
+    'data-water-quantity',
     /.+/,
   )
   // Tile decode failures come from the mocked raster responses and external
@@ -502,8 +516,8 @@ test('job deep link fits result tiles to its simulation area', async ({ page }) 
 
   await page.goto(`/?job=${jobId}`)
   await expect(page.getByText('已完成')).toBeVisible()
-  await expect.poll(() => requestedTiles.length).toBeGreaterThan(0)
-  await page.getByRole('button', { name: /动态水面/ }).click()
+  // Water-primary: particles flow from the binary field without any PNG
+  // tile traffic.
   await expect(page.locator('.flow-particle-canvas')).toBeVisible()
   await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
     'data-flow-frame',
@@ -526,12 +540,13 @@ test('job deep link fits result tiles to its simulation area', async ({ page }) 
     },
   )).toBeGreaterThan(10)
   await expect(page.getByText('DYNAMIC FLOW')).toBeVisible()
+  await page.waitForTimeout(600)
+  expect(requestedTiles).toEqual([])
+  // Toggling the water view off falls back to the raster tiles.
   await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.getByText('DYNAMIC FLOW')).toBeHidden()
-  await expect(page.locator('.flow-particle-canvas')).not.toHaveAttribute(
-    'data-flow-frame',
-    /.+/,
-  )
+  await expect(page.locator('.flow-particle-canvas[data-flow-frame]')).toHaveCount(0)
+  await expect.poll(() => requestedTiles.length).toBeGreaterThan(0)
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(

@@ -236,10 +236,19 @@ export interface FlowField {
   width: number
   height: number
   bounds: [number, number, number, number]
-  /** Interleaved (u, v) velocity components, NaN outside wet cells. */
+  /**
+   * Interleaved (u, v) velocity components for CPU consumers (particles).
+   * NaN outside wet cells for v1/v2 fields; 0 for dry cells in v3.
+   */
   vectors: Float32Array
-  /** Per-cell water depth in metres (BQFV v2+); null for legacy v1 fields. */
+  /** Per-cell water depth in metres (BQFV v2 only); null otherwise. */
   depths: Float32Array | null
+  /**
+   * v3 texture-ready fp16 RGBA texels (u, v, depth, stage) — upload
+   * verbatim as RGBA16F/HALF_FLOAT. Dry cells carry the depth sentinel -1.
+   * Null for legacy v1/v2 fields.
+   */
+  texels: Uint16Array | null
 }
 
 export interface FramePointValue {

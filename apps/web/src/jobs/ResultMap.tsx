@@ -200,27 +200,36 @@ export function ResultMap({
   useEffect(() => {
     maps.current.forEach((map, index) => {
       const displayedQuantity = triple ? QUANTITIES[index] : quantity
-      // When the water surface renders depth itself (colorize mode), the
-      // blocky depth raster fades out; it comes back when the toggle is off.
-      const rasterOpacity = flowEnabled && displayedQuantity === 'depth' ? 0 : 0.84
+      if (flowEnabled) {
+        // Water-primary mode: the shader renders the frame from the binary
+        // field and no PNG tiles are fetched at all, which keeps live
+        // playback from hammering the tile renderer. Report the frame so
+        // playback stats stay live; advancing is gated on the field query.
+        displayedFrames.current[index] = frame.frameIndex
+        if (displayedFrames.current.every((value) => value === frame.frameIndex)) {
+          onFrameDisplayedRef.current?.(frame.frameIndex)
+        }
+        return
+      }
       installBufferedFrame(map, buffers.current[index], frame, displayedQuantity, (frameIndex) => {
         displayedFrames.current[index] = frameIndex
         if (displayedFrames.current.every((value) => value === frameIndex)) {
           onFrameDisplayedRef.current?.(frameIndex)
         }
-      }, rasterOpacity)
+      })
     })
   }, [frame, flowEnabled, quantity, triple])
 
   useEffect(() => {
     maps.current.forEach((map, index) => {
       const displayedQuantity = triple ? QUANTITIES[index] : quantity
-      const colorize = flowEnabled && displayedQuantity === 'depth'
       const activeLayer = `result-layer-${buffers.current[index]?.active ?? 0}`
       if (map.getLayer(activeLayer)) {
-        map.setPaintProperty(activeLayer, 'raster-opacity', colorize ? 0 : 0.84)
+        map.setPaintProperty(activeLayer, 'raster-opacity', flowEnabled ? 0 : 0.84)
       }
-      rippleLayers.current[index]?.setColorize(colorize)
+      const ripple = rippleLayers.current[index]
+      ripple?.setColorize(flowEnabled)
+      ripple?.setQuantity(displayedQuantity)
     })
   }, [bounds, flowEnabled, quantity, triple])
 
