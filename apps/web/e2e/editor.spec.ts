@@ -115,6 +115,10 @@ test('user draws a levee and drainage outlet before previewing the mesh', async 
   )
   await page.getByText('排水口 1', { exact: true }).click()
   await expect(page.getByLabel('最大排水能力 m³/s')).toHaveValue('0.5')
+  const panelBounds = await page.locator('.hydraulic-panel-body').boundingBox()
+  const railBounds = await page.locator('.scenario-rail').boundingBox()
+  if (!panelBounds || !railBounds) throw new Error('panel layout has no bounds')
+  expect(panelBounds.y + panelBounds.height).toBeLessThanOrEqual(railBounds.y)
 
   const previewResponse = page.waitForResponse((response) => (
     response.url().includes('/hydraulic-mesh-preview')

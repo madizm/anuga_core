@@ -523,12 +523,16 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .rain-job strong { color: #83eaf5 !important; font-size: 10px !important; }
 
 /* Hydraulic feature workbench */
-.hydraulic-panel { position: absolute; left: 18px; top: 132px; z-index: 14; width: 350px; color: #dcecf1; }
-.hydraulic-panel-trigger { width: 190px; height: 42px; border: 1px solid #1f5968; background: rgba(5, 22, 28, .94); color: #b8d1d8; display: flex; align-items: center; gap: 10px; padding: 0 13px; text-transform: uppercase; }
+.hydraulic-panel { position: absolute; left: 18px; top: 132px; z-index: 14; width: min(350px, calc(100% - 36px)); color: #dcecf1; }
+.hydraulic-panel.open { bottom: 12px; display: flex; flex-direction: column; align-items: stretch; }
+.hydraulic-panel-trigger { flex: 0 0 42px; width: 190px; height: 42px; border: 1px solid #1f5968; background: rgba(5, 22, 28, .94); color: #b8d1d8; display: flex; align-items: center; gap: 10px; padding: 0 13px; text-transform: uppercase; }
 .hydraulic-panel-trigger span { color: #ffb020; font-size: 20px; }
 .hydraulic-panel-trigger strong { flex: 1; text-align: left; font-size: 13px; }
 .hydraulic-panel-trigger em { color: #00e5ff; font: 700 11px var(--mono); }
-.hydraulic-panel-body { margin-top: 6px; max-height: calc(100vh - 300px); overflow: auto; border: 1px solid #1f5968; background: rgba(4, 17, 22, .97); box-shadow: 0 18px 50px rgba(0, 0, 0, .45); }
+.hydraulic-panel-body { width: 100%; min-height: 0; flex: 1 1 auto; margin-top: 6px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: #376773 #07171d; border: 1px solid #1f5968; background: rgba(4, 17, 22, .97); box-shadow: 0 18px 50px rgba(0, 0, 0, .45); }
+.hydraulic-panel-body::-webkit-scrollbar { width: 8px; }
+.hydraulic-panel-body::-webkit-scrollbar-track { background: #07171d; }
+.hydraulic-panel-body::-webkit-scrollbar-thumb { border: 2px solid #07171d; background: #376773; }
 .hydraulic-panel-body > header { position: sticky; top: 0; z-index: 2; background: #071b22; border-bottom: 1px solid #17434f; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
 .hydraulic-panel-body h2 { margin: 3px 0 0; font-size: 18px; }
 .hydraulic-gate, .draw-hint { margin: 12px; padding: 10px 12px; border-left: 2px solid #ffb020; background: #10252b; color: #9fb7be; font-size: 12px; }
@@ -561,12 +565,14 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .hydraulic-editor .switch-row input { justify-self: end; width: 18px; }
 .levee-profile-editor, .cross-section-table { border: 1px solid #1d4550; padding: 9px; display: grid; gap: 7px; }
 .levee-profile-editor > span, .cross-section-table > span { color: #ffb020; font: 700 10px var(--mono); }
-.cross-section-table > div { position: relative; border-top: 1px solid #183943; padding-top: 8px; display: grid; gap: 5px; }
-.cross-section-table > div > button { position: absolute; right: 0; top: 4px; border: 0; background: none; color: #ff687d; }
+.cross-section-table > div { border-top: 1px solid #183943; padding-top: 8px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) 20px; align-items: end; gap: 6px; }
+.cross-section-table > div > label { min-width: 0; display: grid; grid-template-columns: 1fr; align-items: start; gap: 3px; font-size: 9px; }
+.cross-section-table > div > label input { width: 100%; padding: 6px 5px; }
+.cross-section-table > div > button { align-self: end; width: 20px; height: 29px; padding: 0; border: 0; background: none; color: #ff687d; }
 .cross-section-table > button { border: 1px dashed #2b6675; background: transparent; color: #6fcddd; padding: 6px; }
 
 @media (max-width: 1050px) {
-  .hydraulic-panel { width: min(350px, calc(100vw - 36px)); top: 178px; }
+  .hydraulic-panel { width: min(350px, calc(100% - 36px)); top: 178px; }
 }
 .levee-profile { border: 1px solid #244954; background: #06161b; padding: 8px; }
 .levee-profile > span { display: block; margin-bottom: 6px; color: #72939c; font: 700 10px var(--mono); }
