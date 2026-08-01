@@ -93,6 +93,9 @@ uniform vec2 u_wave_length;
 uniform float u_advect;
 uniform float u_feather;
 uniform float u_full_depth;
+uniform float u_colorize;
+uniform float u_shadow;
+uniform float u_water_alpha;
 
 vec4 sampleField(sampler2D tex, vec2 uv) {
   vec2 g = uv * u_grid_size - 0.5;
@@ -137,6 +140,18 @@ float waveHeight(vec2 q) {
   return vnoise(q / u_wave_length.x) + vnoise(q / u_wave_length.y) * 0.45;
 }
 
+// Matches the depth legend (ColorBrewer Blues), with the shallow end nudged
+// from #f7fbff toward a touch of blue so ripple shading stays visible.
+vec3 depthRamp(float t) {
+  vec3 c0 = vec3(0.886, 0.933, 0.973);
+  vec3 c1 = vec3(0.620, 0.792, 0.882);
+  vec3 c2 = vec3(0.259, 0.573, 0.776);
+  vec3 c3 = vec3(0.031, 0.318, 0.612);
+  if (t < 0.34) return mix(c0, c1, t / 0.34);
+  if (t < 0.67) return mix(c1, c2, (t - 0.34) / 0.33);
+  return mix(c2, c3, (t - 0.67) / 0.33);
+}
+
 void main() {
   vec4 field = sampleField(u_field_current, v_uv);
   if (u_fade < 1.0) {
@@ -171,8 +186,22 @@ void main() {
     float sparkle = vnoise(q * 2.7 + vec2(u_time * 3.0, -u_time * 2.2));
     light += u_sparkle * smoothstep(0.72, 0.95, sparkle) * clamp(speed / 2.0, 0.0, 1.0);
   }
+  light = max(light, 0.0);
 
-  gl_FragColor = vec4(vec3(max(light, 0.0) * alpha), 1.0);
+  if (u_colorize > 0.5) {
+    // Full water-surface rendering: depth ramp aligned with the Blues
+    // legend, ripple relief from two-tone shading (shadows carry the
+    // shallow end where additive highlights would vanish on pale blue).
+    float t = clamp((field.b - 0.01) / (3.0 - 0.01), 0.0, 1.0);
+    vec3 base = depthRamp(t);
+    float shade = clamp((u_sun.z - diffuse) / max(u_sun.z, 0.001), 0.0, 1.0);
+    vec3 color = base * (1.0 - u_shadow * shade) + vec3(light);
+    float a = alpha * u_water_alpha;
+    gl_FragColor = vec4(color * a, a);
+    return;
+  }
+
+  gl_FragColor = vec4(vec3(light * alpha), 1.0);
 }
 `
 
@@ -189,6 +218,7 @@ const UNIFORM_NAMES = [
   'u_field_current', 'u_field_previous', 'u_fade', 'u_grid_size',
   'u_cell_meters', 'u_time', 'u_sun', 'u_specular', 'u_sheen', 'u_sparkle',
   'u_amplitude', 'u_wave_length', 'u_advect', 'u_feather', 'u_full_depth',
+  'u_colorize', 'u_shadow', 'u_water_alpha',
 ]
 
 /**
@@ -211,6 +241,7 @@ export class WaterRippleLayer {
   private readonly startedAt = performance.now()
   private animationFrame: number | null = null
   private rendered = false
+  private colorize = false
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 
   constructor(private readonly map: Map) {
@@ -263,9 +294,24 @@ export class WaterRippleLayer {
     }
   }
 
+  /**
+   * Switches between full water-surface rendering (depth ramp, normal
+   * blending — used when the depth raster is hidden) and the additive
+   * highlight veil used on top of the stage/speed rasters.
+   */
+  setColorize(colorize: boolean) {
+    if (this.colorize === colorize) return
+    this.colorize = colorize
+    this.canvas.classList.toggle('colorize', colorize)
+    if (colorize) this.map.getContainer().dataset.waterColorize = '1'
+    else delete this.map.getContainer().dataset.waterColorize
+    if (this.reducedMotion.matches) this.draw()
+  }
+
   destroy() {
     this.stop()
     delete this.map.getContainer().dataset.waterRipple
+    delete this.map.getContainer().dataset.waterColorize
     this.canvas.removeEventListener('webglcontextlost', this.handleContextLost)
     this.canvas.removeEventListener('webglcontextrestored', this.handleContextRestored)
     this.map.off('resize', this.resize)
@@ -416,6 +462,9 @@ export class WaterRippleLayer {
     gl.uniform1f(uniforms.u_advect, params.advectScale)
     gl.uniform1f(uniforms.u_feather, Math.max(params.featherDepthM, 0.001))
     gl.uniform1f(uniforms.u_full_depth, Math.max(params.fullAmplitudeDepthM, 0.01))
+    gl.uniform1f(uniforms.u_colorize, this.colorize ? 1 : 0)
+    gl.uniform1f(uniforms.u_shadow, params.shadowStrength)
+    gl.uniform1f(uniforms.u_water_alpha, params.waterAlpha)
 
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, resources.current)

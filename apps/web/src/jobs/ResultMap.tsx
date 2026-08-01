@@ -63,7 +63,7 @@ export function ResultMap({
   const maps = useRef<Map[]>([])
   const buffers = useRef<BufferState[]>([])
   const flowLayers = useRef<FlowParticleLayer[]>([])
-  const rippleLayers = useRef<WaterRippleLayer[]>([])
+  const rippleLayers = useRef<(WaterRippleLayer | null)[]>([])
   const rippleField = useRef<FlowField | null>(null)
   const flowState = useRef<{ field: FlowField | null; frameIndex: number | null }>({
     field: null,
@@ -107,11 +107,14 @@ export function ResultMap({
     }
     createRippleLayers()
     installWaterRippleTuningPanel()
+    if (import.meta.env.DEV) {
+      (window as unknown as { __resultMaps: Map[] }).__resultMaps = maps.current
+    }
     displayedFrames.current = quantities.map(() => -1)
     return () => {
       for (const layer of flowLayers.current) layer.destroy()
       flowLayers.current = []
-      for (const layer of rippleLayers.current) layer.destroy()
+      for (const layer of rippleLayers.current) layer?.destroy()
       rippleLayers.current = []
       for (const map of maps.current) map.remove()
       maps.current = []
@@ -197,14 +200,29 @@ export function ResultMap({
   useEffect(() => {
     maps.current.forEach((map, index) => {
       const displayedQuantity = triple ? QUANTITIES[index] : quantity
+      // When the water surface renders depth itself (colorize mode), the
+      // blocky depth raster fades out; it comes back when the toggle is off.
+      const rasterOpacity = flowEnabled && displayedQuantity === 'depth' ? 0 : 0.84
       installBufferedFrame(map, buffers.current[index], frame, displayedQuantity, (frameIndex) => {
         displayedFrames.current[index] = frameIndex
         if (displayedFrames.current.every((value) => value === frameIndex)) {
           onFrameDisplayedRef.current?.(frameIndex)
         }
-      })
+      }, rasterOpacity)
     })
-  }, [frame, quantity, triple])
+  }, [frame, flowEnabled, quantity, triple])
+
+  useEffect(() => {
+    maps.current.forEach((map, index) => {
+      const displayedQuantity = triple ? QUANTITIES[index] : quantity
+      const colorize = flowEnabled && displayedQuantity === 'depth'
+      const activeLayer = `result-layer-${buffers.current[index]?.active ?? 0}`
+      if (map.getLayer(activeLayer)) {
+        map.setPaintProperty(activeLayer, 'raster-opacity', colorize ? 0 : 0.84)
+      }
+      rippleLayers.current[index]?.setColorize(colorize)
+    })
+  }, [bounds, flowEnabled, quantity, triple])
 
   useEffect(() => {
     flowState.current = {
@@ -217,7 +235,7 @@ export function ResultMap({
       layer.setField(flowState.current.field, flowState.current.frameIndex)
     }
     for (const layer of rippleLayers.current) {
-      layer.setField(rippleField.current)
+      layer?.setField(rippleField.current)
     }
   }, [flowEnabled, flowField, flowFrameIndex, triple])
 
@@ -233,13 +251,14 @@ export function ResultMap({
 
   const createRippleLayers = () => {
     setWaterError(null)
-    const layers: WaterRippleLayer[] = []
+    const layers: (WaterRippleLayer | null)[] = []
     for (const map of maps.current) {
       try {
         const layer = new WaterRippleLayer(map)
         layer.setField(rippleField.current)
         layers.push(layer)
       } catch (error) {
+        layers.push(null)
         setWaterError((error as Error).message || '水波效果初始化失败')
       }
     }
@@ -247,7 +266,7 @@ export function ResultMap({
   }
 
   const retryWater = () => {
-    for (const layer of rippleLayers.current) layer.destroy()
+    for (const layer of rippleLayers.current) layer?.destroy()
     rippleLayers.current = []
     createRippleLayers()
   }

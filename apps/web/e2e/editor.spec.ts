@@ -407,6 +407,11 @@ test('dynamic water toggle mounts the ripple layer without errors', async ({ pag
     'active',
     { timeout: 10_000 },
   )
+  // Single-mode depth view: the water surface takes over depth rendering.
+  await expect(page.locator('.result-map-canvas')).toHaveAttribute(
+    'data-water-colorize',
+    '1',
+  )
   await expect(page.locator('.flow-particle-canvas')).toHaveAttribute(
     'data-flow-mode',
     'animated',
@@ -426,6 +431,10 @@ test('dynamic water toggle mounts the ripple layer without errors', async ({ pag
   await page.getByRole('button', { name: /动态水面/ }).click()
   await expect(page.locator('.result-map-canvas')).not.toHaveAttribute(
     'data-water-ripple',
+    /.+/,
+  )
+  await expect(page.locator('.result-map-canvas')).not.toHaveAttribute(
+    'data-water-colorize',
     /.+/,
   )
   // Tile decode failures come from the mocked raster responses and external

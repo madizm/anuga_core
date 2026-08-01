@@ -25,6 +25,10 @@ export interface WaterRippleParams {
   featherDepthM: number
   /** Depth at which ripples reach full amplitude, metres. */
   fullAmplitudeDepthM: number
+  /** How dark ripple troughs get in colorize mode, 0-1. */
+  shadowStrength: number
+  /** Water body opacity in colorize mode, 0-1. */
+  waterAlpha: number
 }
 
 export const waterRippleParams: WaterRippleParams = {
@@ -39,6 +43,8 @@ export const waterRippleParams: WaterRippleParams = {
   sunElevation: 50,
   featherDepthM: 0.05,
   fullAmplitudeDepthM: 0.5,
+  shadowStrength: 0.35,
+  waterAlpha: 0.92,
 }
 
 interface SliderSpec {
@@ -61,6 +67,8 @@ const SLIDERS: SliderSpec[] = [
   { key: 'sunElevation', label: '太阳高度°', min: 5, max: 85, step: 1 },
   { key: 'featherDepthM', label: '边界羽化(m)', min: 0.005, max: 0.2, step: 0.005 },
   { key: 'fullAmplitudeDepthM', label: '满幅水深(m)', min: 0.1, max: 2, step: 0.05 },
+  { key: 'shadowStrength', label: '波纹阴影', min: 0, max: 0.8, step: 0.02 },
+  { key: 'waterAlpha', label: '水体不透明', min: 0.5, max: 1, step: 0.01 },
 ]
 
 const PANEL_OPEN_KEY = 'waterRippleTuningOpen'

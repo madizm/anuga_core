@@ -5,6 +5,7 @@ interface BufferedFrameRequest {
   url: string
   frameIndex: number
   onDisplayed?: (frameIndex: number) => void
+  opacity?: number
 }
 
 export interface BufferState {
@@ -31,12 +32,13 @@ export function installBufferedFrame(
   frame: SimulationFrame,
   quantity: ResultQuantity,
   onDisplayed?: (frameIndex: number) => void,
+  opacity = 0.84,
 ) {
   const tileUrl = frame.tilejson[quantity].replace(
     `/tilejson/${quantity}`,
     `/tiles/${quantity}/{z}/{x}/{y}.png`,
   )
-  const request = { url: tileUrl, frameIndex: frame.frameIndex, onDisplayed }
+  const request = { url: tileUrl, frameIndex: frame.frameIndex, onDisplayed, opacity }
   if (state.urls[state.active] === tileUrl) {
     state.pending = null
     onDisplayed?.(frame.frameIndex)
@@ -96,7 +98,7 @@ function startPendingFrame(map: Map, state: BufferState) {
   const reveal = () => {
     if (!map.isSourceLoaded(sourceId)) return
     map.off('sourcedata', reveal)
-    map.setPaintProperty(layerId, 'raster-opacity', 0.84)
+    map.setPaintProperty(layerId, 'raster-opacity', request.opacity ?? 0.84)
     const previousLayer = `result-layer-${state.active}`
     if (map.getLayer(previousLayer)) {
       map.setPaintProperty(previousLayer, 'raster-opacity', 0)
