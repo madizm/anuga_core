@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { LineString, Point, Polygon } from 'geojson'
 import type { SimulationArea } from '../api/types'
-import { createHydraulicFeature, lineLengthM } from './hydraulicFeatures'
+import {
+  createHydraulicFeature, engineeringChannelSectionOverlay, lineLengthM,
+} from './hydraulicFeatures'
 
 const area: SimulationArea = {
   id: 'a', areaHash: 'a', demProductId: 'dem', datasetVersion: 'v1',
@@ -71,6 +73,19 @@ describe('hydraulic feature defaults', () => {
     expect(lineLengthM(line.coordinates as [number, number][])).toBeCloseTo(85, -1)
   })
 
+  it('locates channel sections along the centerline for the map overlay', () => {
+    const feature = createHydraulicFeature('engineeringChannel', line, area, [])
+    if (feature.type !== 'engineeringChannel') throw new Error('unexpected feature')
+
+    const overlay = engineeringChannelSectionOverlay(feature, 1)
+    const points = overlay.features.filter((item) => item.geometry.type === 'Point')
+
+    expect(points).toHaveLength(2)
+    expect(points[0].geometry).toMatchObject({ coordinates: line.coordinates[0] })
+    expect(points[1].properties?.active).toBe(true)
+    expect(overlay.features.filter((item) => item.geometry.type === 'LineString'))
+      .toHaveLength(2)
+  })
   it('requires a levee before creating a breach', () => {
     expect(() => createHydraulicFeature(
       'breach', { type: 'Point', coordinates: [122.18, 40.3] }, area, [],

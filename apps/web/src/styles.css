@@ -137,6 +137,10 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .right-panel.area-unavailable .inlet-tabs,
 .right-panel.area-unavailable .inlet-editor { opacity: .25; pointer-events: none; }
 .map-shell { position: relative; }
+.cross-section-map-chip { position: absolute; right: 14px; top: 70px; z-index: 8; display: grid; gap: 2px; min-width: 126px; padding: 8px 10px; border: 1px solid #8d741c; border-left: 3px solid #ffcc33; background: rgba(5, 22, 28, .92); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); pointer-events: none; }
+.cross-section-map-chip span { color: #789ba4; font: 700 9px var(--mono); letter-spacing: .08em; }
+.cross-section-map-chip strong { color: #ffda57; font: 700 14px var(--mono); }
+.cross-section-map-chip small { color: #8eabb3; font-size: 9px; }
 .map-coordinate-chip { position: absolute; z-index: 3; right: 12px; top: 145px; padding: 7px 9px; border-left: 2px solid var(--cyan); background: rgba(6, 16, 21, .88); color: #9eb2b7; font: 600 10px var(--display); letter-spacing: .1em; }
 
 .terrain-control { position: absolute; z-index: 9; top: 12px; right: 12px; font-family: var(--body); }
@@ -571,9 +575,18 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .hydraulic-editor label { display: grid; grid-template-columns: 1fr 145px; align-items: center; gap: 8px; color: #8eabb3; font-size: 11px; }
 .hydraulic-editor input, .hydraulic-editor select { min-width: 0; border: 1px solid #264b56; background: #07191f; color: #deedf0; padding: 7px 8px; }
 .hydraulic-editor .switch-row input { justify-self: end; width: 18px; }
+.channel-chainage-guide { border: 1px solid #1f5360; background: linear-gradient(90deg, rgba(0, 168, 255, .11), rgba(0, 168, 255, .02)); padding: 9px 10px; }
+.channel-chainage-guide > div { display: flex; align-items: baseline; justify-content: space-between; }
+.channel-chainage-guide span { color: #799da6; font: 700 9px var(--mono); letter-spacing: .06em; }
+.channel-chainage-guide strong { color: #70e9ff; font: 700 16px var(--mono); }
+.channel-chainage-guide p { margin: 5px 0 0; color: #86a6ae; font-size: 10px; line-height: 1.5; }
+.channel-chainage-guide b { color: #ffcc33; }
 .levee-profile-editor, .cross-section-table { border: 1px solid #1d4550; padding: 9px; display: grid; gap: 7px; }
 .levee-profile-editor > span, .cross-section-table > span { color: #ffb020; font: 700 10px var(--mono); }
 .cross-section-table > div { border-top: 1px solid #183943; padding-top: 8px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) 20px; align-items: end; gap: 6px; }
+.cross-section-table > .cross-section-row:hover, .cross-section-table > .cross-section-row:focus-within { border-color: #2c7182; background: rgba(0, 168, 255, .05); }
+.cross-section-row > em { grid-column: 1 / -1; color: #62b7c7; font: 700 9px var(--mono); }
+.chainage-error { margin: 0; padding: 6px 8px; border-left: 2px solid #ff536d; background: rgba(255, 83, 109, .08); color: #ff8a9b; font-size: 9px; line-height: 1.5; }
 .cross-section-table > div > label { min-width: 0; display: grid; grid-template-columns: 1fr; align-items: start; gap: 3px; font-size: 9px; }
 .cross-section-table .hydraulic-field-caption { gap: 3px; white-space: nowrap; }
 .cross-section-table .parameter-help-trigger { width: 13px; height: 13px; font-size: 8px; line-height: 11px; }

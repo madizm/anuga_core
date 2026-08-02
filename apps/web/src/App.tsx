@@ -18,7 +18,9 @@ import { ResultWorkspace } from './jobs/ResultWorkspace'
 import { JobHistory } from './jobs/JobHistory'
 import { ScenarioHistory } from './scenarios/ScenarioHistory'
 import { isFourNeighbourConnected, useInletStore } from './inlets/inletStore'
-import { HydraulicFeaturePanel } from './hydraulics/HydraulicFeaturePanel'
+import {
+  HydraulicFeaturePanel, type CrossSectionSelection,
+} from './hydraulics/HydraulicFeaturePanel'
 import { createHydraulicFeature, type HydraulicDrawMode } from './hydraulics/hydraulicFeatures'
 import { LayerPanel } from './map/LayerPanel'
 import { ModelMap } from './map/ModelMap'
@@ -35,6 +37,7 @@ export default function App() {
   const [hydraulicFeatures, setHydraulicFeatures] = useState<HydraulicFeature[]>([])
   const [featureDrawMode, setFeatureDrawMode] = useState<HydraulicDrawMode | null>(null)
   const [hydraulicMeshPreview, setHydraulicMeshPreview] = useState<HydraulicMeshPreview | null>(null)
+  const [crossSectionSelection, setCrossSectionSelection] = useState<CrossSectionSelection | null>(null)
   useEffect(() => setHydraulicMeshPreview(null), [hydraulicFeatures])
   const [demProductId, setDemProductId] = useState('')
   const [saved, setSaved] = useState<SavedScenario | null>(null)
@@ -312,6 +315,7 @@ export default function App() {
               onAreaDrawn={handleAreaDrawn}
               hydraulicFeatures={hydraulicFeatures}
               hydraulicMeshPreview={hydraulicMeshPreview}
+              crossSectionSelection={crossSectionSelection}
               featureDrawMode={featureDrawMode}
               onFeatureDrawn={handleFeatureDrawn}
             />
@@ -339,6 +343,7 @@ export default function App() {
               setHydraulicMeshPreview(null)
             }}
             onMeshPreview={setHydraulicMeshPreview}
+            onCrossSectionSelectionChange={setCrossSectionSelection}
           />
           {area && grid.isLoading && <div className="loading-grid"><span />正在装载局部 {demProduct?.cellSizeM ?? '—'} m 网格</div>}
         </section>

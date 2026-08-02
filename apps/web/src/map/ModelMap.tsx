@@ -2,7 +2,10 @@ import type { FeatureCollection, LineString, Point, Polygon } from 'geojson'
 import { useEffect, useRef, useState } from 'react'
 import maplibregl, { type GeoJSONSource, type Map, type MapMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import type { FrictionScenario, HydraulicFeature } from '../api/types'
+import type {
+  EngineeringChannelFeature, FrictionScenario, HydraulicFeature,
+} from '../api/types'
+import { engineeringChannelSectionOverlay } from '../hydraulics/hydraulicFeatures'
 import { useInletStore } from '../inlets/inletStore'
 import { useLayerStore } from './mapStore'
 import { raiseMapLayers, syncWhenMapSourceReady } from './mapLayers'
@@ -35,6 +38,7 @@ interface ModelMapProps {
   onAreaDrawn?: (geometry: Polygon) => void
   hydraulicFeatures?: HydraulicFeature[]
   hydraulicMeshPreview?: FeatureCollection | null
+  crossSectionSelection?: { featureId: string; sectionIndex: number } | null
   featureDrawMode?: 'levee' | 'simpleChannel' | 'engineeringChannel'
     | 'culvert' | 'bridge' | 'drainageOutlet' | 'breach' | null
   onFeatureDrawn?: (geometry: LineString | Polygon | Point) => void
@@ -52,6 +56,9 @@ const FEATURE_LINE = 'hydraulic-features-line'
 const FEATURE_POINT = 'hydraulic-features-point'
 const FEATURE_DRAFT_SOURCE = 'hydraulic-feature-draft'
 const FEATURE_DRAFT_LINE = 'hydraulic-feature-draft-line'
+const CHANNEL_SECTION_SOURCE = 'engineering-channel-sections'
+const CHANNEL_SECTION_LINE = 'engineering-channel-sections-line'
+const CHANNEL_SECTION_POINT = 'engineering-channel-sections-point'
 const MESH_PREVIEW_SOURCE = 'hydraulic-mesh-preview'
 const MESH_PREVIEW_LINE = 'hydraulic-mesh-preview-line'
 
@@ -59,6 +66,7 @@ function raiseHydraulicLayers(map: Map) {
   raiseMapLayers(map, [
     FEATURE_FILL, FEATURE_LINE, FEATURE_POINT,
     FEATURE_DRAFT_LINE, MESH_PREVIEW_LINE,
+    CHANNEL_SECTION_LINE, CHANNEL_SECTION_POINT,
   ])
 }
 
@@ -78,6 +86,7 @@ export function ModelMap({
   onAreaDrawn,
   hydraulicFeatures = [],
   hydraulicMeshPreview = null,
+  crossSectionSelection = null,
   featureDrawMode = null,
   onFeatureDrawn,
 }: ModelMapProps) {
@@ -222,6 +231,33 @@ export function ModelMap({
           'line-dasharray': [1, 1],
         },
       })
+      map.addSource(CHANNEL_SECTION_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: CHANNEL_SECTION_LINE,
+        type: 'line',
+        source: CHANNEL_SECTION_SOURCE,
+        filter: ['==', ['get', 'kind'], 'section-line'],
+        paint: {
+          'line-color': ['case', ['get', 'active'], '#ffcc33', '#64d9ff'],
+          'line-width': ['case', ['get', 'active'], 5, 2],
+          'line-opacity': ['case', ['get', 'active'], 1, 0.65],
+        },
+      })
+      map.addLayer({
+        id: CHANNEL_SECTION_POINT,
+        type: 'circle',
+        source: CHANNEL_SECTION_SOURCE,
+        filter: ['==', ['get', 'kind'], 'section-point'],
+        paint: {
+          'circle-color': ['case', ['get', 'active'], '#ffcc33', '#64d9ff'],
+          'circle-radius': ['case', ['get', 'active'], 6, 3.5],
+          'circle-stroke-color': '#06171d',
+          'circle-stroke-width': 2,
+        },
+      })
       map.addSource(MESH_PREVIEW_SOURCE, {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
@@ -271,6 +307,29 @@ export function ModelMap({
     }
     return syncWhenMapSourceReady(map, FEATURE_SOURCE, sync)
   }, [hydraulicFeatures])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const update = () => {
+      const source = map.getSource(CHANNEL_SECTION_SOURCE) as GeoJSONSource | undefined
+      const channel = hydraulicFeatures.find((feature): feature is EngineeringChannelFeature => (
+        feature.type === 'engineeringChannel'
+        && feature.id === crossSectionSelection?.featureId
+      ))
+      const overlay = channel && crossSectionSelection
+        ? engineeringChannelSectionOverlay(channel, crossSectionSelection.sectionIndex)
+        : { type: 'FeatureCollection' as const, features: [] }
+      source?.setData(overlay)
+      if (container.current) {
+        container.current.dataset.crossSectionCount = String(overlay.features.length / 2)
+        container.current.dataset.activeCrossSection = crossSectionSelection
+          ? String(crossSectionSelection.sectionIndex) : ''
+      }
+      raiseHydraulicLayers(map)
+    }
+    return syncWhenMapSourceReady(map, CHANNEL_SECTION_SOURCE, update)
+  }, [crossSectionSelection, hydraulicFeatures])
 
   useEffect(() => {
     const map = mapRef.current
@@ -535,9 +594,7 @@ export function ModelMap({
       ])
       if (bounds) map.fitBounds(bounds, { padding: 54, duration: 900 })
     }
-    if (map.isStyleLoaded()) install()
-    else map.once('load', install)
-    return () => { map.off('load', install) }
+    return syncWhenMapSourceReady(map, 'base-map', install)
   }, [grid])
 
   useEffect(() => {
@@ -667,6 +724,12 @@ export function ModelMap({
     setTerrainRetry((value) => value + 1)
   }
 
+  const selectedChannel = hydraulicFeatures.find((feature): feature is EngineeringChannelFeature => (
+    feature.type === 'engineeringChannel'
+    && feature.id === crossSectionSelection?.featureId
+  ))
+  const selectedSection = crossSectionSelection
+    ? selectedChannel?.crossSections[crossSectionSelection.sectionIndex] : undefined
   const [manningMinimum, manningMaximum] = MANNING_RANGES[frictionScenario]
 
   return (
@@ -678,6 +741,8 @@ export function ModelMap({
         data-dem-ready={demReady}
         data-grid-ready={gridReady}
         data-hydraulic-source-count="0"
+        data-cross-section-count="0"
+        data-active-cross-section=""
       />
       <TerrainControl
         scope="model"
@@ -686,6 +751,11 @@ export function ModelMap({
         onRetry={retryTerrain}
       />
       {box && <div className="selection-box" style={box} />}
+      {selectedSection && crossSectionSelection && <div className="cross-section-map-chip" role="status">
+        <span>ACTIVE CROSS SECTION</span>
+        <strong>桩号 {selectedSection.distanceM.toFixed(1)} m</strong>
+        <small>断面 {crossSectionSelection.sectionIndex + 1} / {selectedChannel?.crossSections.length}</small>
+      </div>}
       <div className="map-coordinate-chip">EPSG 32651 · {cellSizeM ?? '—'} M GRID</div>
       {((demSurfaceVisible && demReady) || (buildingsVisible && gridReady) || (manningVisible && gridReady)) && (
         <div className="map-legends">

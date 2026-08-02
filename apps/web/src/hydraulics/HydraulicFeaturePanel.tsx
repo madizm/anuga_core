@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { HydraulicFeature, HydraulicMeshPreview, LeveeFeature } from '../api/types'
 import { api } from '../api/client'
-import type { HydraulicDrawMode } from './hydraulicFeatures'
+import { lineLengthM, type HydraulicDrawMode } from './hydraulicFeatures'
 import { ParameterHelp } from './ParameterHelp'
+
+export interface CrossSectionSelection {
+  featureId: string
+  sectionIndex: number
+}
 
 interface Props {
   areaReady: boolean
@@ -13,6 +18,7 @@ interface Props {
   drawMode: HydraulicDrawMode | null
   onDrawModeChange: (mode: HydraulicDrawMode | null) => void
   onChange: (features: HydraulicFeature[]) => void
+  onCrossSectionSelectionChange: (selection: CrossSectionSelection | null) => void
   onMeshPreview: (preview: HydraulicMeshPreview | null) => void
 }
 
@@ -77,6 +83,7 @@ export function HydraulicFeaturePanel({
   onDrawModeChange,
   onChange,
   onMeshPreview,
+  onCrossSectionSelectionChange,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -103,7 +110,7 @@ export function HydraulicFeaturePanel({
       {open && <div className="hydraulic-panel-body">
         <header>
           <div><span className="eyebrow">HYDRAULIC FEATURES</span><h2>河道与结构物</h2></div>
-          <button className="icon-button" onClick={() => { setOpen(false); onDrawModeChange(null) }}>×</button>
+          <button className="icon-button" onClick={() => { setOpen(false); onDrawModeChange(null); onCrossSectionSelectionChange(null) }}>×</button>
         </header>
         {!areaReady && <p className="hydraulic-gate">请先锁定局部计算域，再绘制水力要素。</p>}
         <div className="hydraulic-tool-groups">
@@ -153,12 +160,18 @@ export function HydraulicFeaturePanel({
             ? '依次点击上、下游端点'
             : drawMode === 'drainageOutlet' ? '点击设置单点排水口'
               : drawMode === 'breach' ? '点击堤防线上的缺口中心'
-                : '逐点绘制中心线，双击完成'}</p>}
+                : drawMode === 'engineeringChannel'
+                  ? '建议从上游向下游逐点绘制中心线，双击完成；默认生成首、末断面'
+                  : '逐点绘制中心线，双击完成'}</p>}
         <div className="hydraulic-feature-list">
           {features.map((feature) => <button
             key={feature.id}
             className={selected?.id === feature.id ? 'active' : ''}
-            onClick={() => setSelectedId(feature.id)}
+            onClick={() => {
+              setSelectedId(feature.id)
+              onCrossSectionSelectionChange(feature.type === 'engineeringChannel'
+                ? { featureId: feature.id, sectionIndex: 0 } : null)
+            }}
           >
             <i data-type={feature.type} />
             <span><strong>{feature.name}</strong><small>{TYPE_LABEL[feature.type]}</small></span>
@@ -176,6 +189,7 @@ export function HydraulicFeaturePanel({
                   && feature.leveeId === selected.id)
               )))
               setSelectedId(null)
+              onCrossSectionSelectionChange(null)
             }}>删除</button>
           </div>
           <label><span>名称</span><input value={selected.name} onChange={(event) => patch({ name: event.target.value })} /></label>
@@ -197,7 +211,13 @@ export function HydraulicFeaturePanel({
             <NumberField label="Manning n" help={HELP.manning} value={selected.manningN} min={0.001} step={0.001} onChange={(value) => replace({ ...selected, manningN: value })} />
             <NumberField label="最大三角面积 m²" help={HELP.triangleArea} value={selected.maxTriangleAreaM2} min={1} onChange={(value) => replace({ ...selected, maxTriangleAreaM2: value })} />
           </>}
-          {selected.type === 'engineeringChannel' && <EngineeringChannelEditor feature={selected} onChange={replace} />}
+          {selected.type === 'engineeringChannel' && <EngineeringChannelEditor
+            feature={selected}
+            onChange={replace}
+            onActiveSectionChange={(sectionIndex) => onCrossSectionSelectionChange({
+              featureId: selected.id, sectionIndex,
+            })}
+          />}
           {selected.type === 'culvert' && <>
             <label><FieldCaption label="断面" help={HELP.culvertShape} /><select value={selected.shape} onChange={(event) => replace({ ...selected, shape: event.target.value as 'box' | 'pipe', widthM: 2, heightM: 2, diameterM: 2 })}><option value="box">箱涵</option><option value="pipe">圆管</option></select></label>
             {selected.shape === 'box' ? <><NumberField label="宽度 m" help={HELP.culvertWidth} value={selected.widthM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, widthM: value })} /><NumberField label="高度 m" help={HELP.culvertHeight} value={selected.heightM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, heightM: value })} /></> : <NumberField label="直径 m" help={HELP.diameter} value={selected.diameterM ?? 2} min={0.1} onChange={(value) => replace({ ...selected, diameterM: value })} />}
@@ -306,22 +326,64 @@ function ProfileChart({ profile, feature }: {
   </svg>
 }
 
-function EngineeringChannelEditor({ feature, onChange }: { feature: Extract<HydraulicFeature, { type: 'engineeringChannel' }>; onChange: (feature: HydraulicFeature) => void }) {
+function EngineeringChannelEditor({ feature, onChange, onActiveSectionChange }: {
+  feature: Extract<HydraulicFeature, { type: 'engineeringChannel' }>
+  onChange: (feature: HydraulicFeature) => void
+  onActiveSectionChange: (sectionIndex: number) => void
+}) {
   const updateSection = (index: number, key: 'distanceM' | 'bedElevationM' | 'bottomWidthM' | 'sideSlope', value: number) => onChange({ ...feature, crossSections: feature.crossSections.map((section, itemIndex) => itemIndex === index ? { ...section, [key]: value } : section) })
+  const totalLengthM = lineLengthM(feature.geometry.coordinates)
+  const sectionError = feature.crossSections.some((section, index) => (
+    (index === 0 && section.distanceM !== 0)
+    || section.distanceM < 0
+    || section.distanceM > totalLengthM
+    || (index === feature.crossSections.length - 1
+      && section.distanceM < totalLengthM * 0.95)
+    || (index > 0 && section.distanceM <= feature.crossSections[index - 1].distanceM)
+  ))
   return <>
     <NumberField label="岸高 m" help={HELP.bankHeight} value={feature.bankHeightM} min={0.1} onChange={(value) => onChange({ ...feature, bankHeightM: value })} />
     <NumberField label="Manning n" help={HELP.manning} value={feature.manningN} min={0.001} step={0.001} onChange={(value) => onChange({ ...feature, manningN: value })} />
     <NumberField label="最大三角面积 m²" help={HELP.triangleArea} value={feature.maxTriangleAreaM2} min={1} onChange={(value) => onChange({ ...feature, maxTriangleAreaM2: value })} />
-    <div className="cross-section-table"><span>断面参数</span>{feature.crossSections.map((section, index) => <div key={index}>
-      <NumberField label="桩号" help={HELP.chainage} value={section.distanceM} min={0} onChange={(value) => updateSection(index, 'distanceM', value)} />
+    <div className="channel-chainage-guide">
+      <div><span>中心线总长</span><strong>{totalLengthM.toFixed(1)} m</strong></div>
+      <p><b>0 m</b> 为绘制起点，桩号沿中心线递增；建议按上游到下游方向绘制。</p>
+    </div>
+    <div className="cross-section-table"><span>断面参数</span>{feature.crossSections.map((section, index) => <div
+      key={index}
+      className="cross-section-row"
+      onFocus={() => onActiveSectionChange(index)}
+      onMouseEnter={() => onActiveSectionChange(index)}
+    >
+      <em>{index === 0 ? '起点' : index === feature.crossSections.length - 1 ? '终点' : `#${index + 1}`}</em>
+      <NumberField label="桩号" help={HELP.chainage} value={section.distanceM} min={0} max={totalLengthM} onChange={(value) => updateSection(index, 'distanceM', value)} />
       <NumberField label="河底" help={HELP.sectionBed} value={section.bedElevationM} onChange={(value) => updateSection(index, 'bedElevationM', value)} />
       <NumberField label="底宽" help={HELP.bottomWidth} value={section.bottomWidthM} min={0.1} onChange={(value) => updateSection(index, 'bottomWidthM', value)} />
       <NumberField label="边坡" help={HELP.sideSlope} value={section.sideSlope} min={0} step={0.1} onChange={(value) => updateSection(index, 'sideSlope', value)} />
-      {feature.crossSections.length > 2 && <button onClick={() => onChange({ ...feature, crossSections: feature.crossSections.filter((_, itemIndex) => itemIndex !== index) })}>×</button>}
-    </div>)}<button onClick={() => {
-      const last = feature.crossSections.at(-1)!
-      onChange({ ...feature, crossSections: [...feature.crossSections.slice(0, -1), { ...last, distanceM: Math.max(0, last.distanceM - 1) }, last] })
-    }}>＋增加断面</button></div>
+      {index > 0 && index < feature.crossSections.length - 1 && <button aria-label={`删除断面 ${index + 1}`} onClick={() => onChange({ ...feature, crossSections: feature.crossSections.filter((_, itemIndex) => itemIndex !== index) })}>×</button>}
+    </div>)}{sectionError && <p className="chainage-error">桩号必须从 0 开始递增且不超过总长，末断面应位于终点附近。</p>}<button onClick={() => {
+      let gapIndex = 0
+      for (let index = 1; index < feature.crossSections.length; index += 1) {
+        const gap = feature.crossSections[index].distanceM
+          - feature.crossSections[index - 1].distanceM
+        const largestGap = feature.crossSections[gapIndex + 1].distanceM
+          - feature.crossSections[gapIndex].distanceM
+        if (gap > largestGap) gapIndex = index - 1
+      }
+      const before = feature.crossSections[gapIndex]
+      const after = feature.crossSections[gapIndex + 1]
+      const inserted = {
+        distanceM: (before.distanceM + after.distanceM) / 2,
+        bedElevationM: (before.bedElevationM + after.bedElevationM) / 2,
+        bottomWidthM: (before.bottomWidthM + after.bottomWidthM) / 2,
+        sideSlope: (before.sideSlope + after.sideSlope) / 2,
+      }
+      onChange({ ...feature, crossSections: [
+        ...feature.crossSections.slice(0, gapIndex + 1), inserted,
+        ...feature.crossSections.slice(gapIndex + 1),
+      ] })
+      onActiveSectionChange(gapIndex + 1)
+    }}>＋在最大间距处增加断面</button></div>
   </>
 }
 

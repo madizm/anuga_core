@@ -1,5 +1,7 @@
-import type { LineString, Point, Polygon } from 'geojson'
-import type { HydraulicFeature, Position, SimulationArea } from '../api/types'
+import type { FeatureCollection, LineString, Point, Polygon } from 'geojson'
+import type {
+  EngineeringChannelFeature, HydraulicFeature, Position, SimulationArea,
+} from '../api/types'
 
 let fallbackIdSequence = 0
 
@@ -158,6 +160,72 @@ function polygonGeometry(geometry: Polygon) {
       [Number(coordinate[0]), Number(coordinate[1])] as Position
     ))),
   }
+}
+
+export function engineeringChannelSectionOverlay(
+  channel: EngineeringChannelFeature,
+  activeIndex: number,
+): FeatureCollection {
+  const coordinates = channel.geometry.coordinates
+  const features: FeatureCollection['features'] = []
+  channel.crossSections.forEach((section, index) => {
+    const location = pointAndDirectionAtDistance(coordinates, section.distanceM)
+    if (!location) return
+    const active = index === activeIndex
+    const halfWidthM = section.bottomWidthM / 2
+      + section.sideSlope * channel.bankHeightM
+    const latitudeRadians = location.point[1] * Math.PI / 180
+    const metersPerLongitudeDegree = 111_320 * Math.cos(latitudeRadians)
+    const metersPerLatitudeDegree = 110_540
+    const east = (location.next[0] - location.previous[0]) * metersPerLongitudeDegree
+    const north = (location.next[1] - location.previous[1]) * metersPerLatitudeDegree
+    const magnitude = Math.hypot(east, north) || 1
+    const perpendicularEast = -north / magnitude * halfWidthM
+    const perpendicularNorth = east / magnitude * halfWidthM
+    const offset = (sign: number): Position => [
+      location.point[0] + sign * perpendicularEast / metersPerLongitudeDegree,
+      location.point[1] + sign * perpendicularNorth / metersPerLatitudeDegree,
+    ]
+    features.push({
+      type: 'Feature',
+      properties: { active, index, distanceM: section.distanceM, kind: 'section-line' },
+      geometry: { type: 'LineString', coordinates: [offset(-1), offset(1)] },
+    }, {
+      type: 'Feature',
+      properties: { active, index, distanceM: section.distanceM, kind: 'section-point' },
+      geometry: { type: 'Point', coordinates: location.point },
+    })
+  })
+  return { type: 'FeatureCollection', features }
+}
+
+function pointAndDirectionAtDistance(
+  coordinates: Position[],
+  requestedDistanceM: number,
+): { point: Position; previous: Position; next: Position } | null {
+  if (coordinates.length < 2) return null
+  const totalLength = lineLengthM(coordinates)
+  const distanceM = Math.min(Math.max(0, requestedDistanceM), totalLength)
+  let traversed = 0
+  for (let index = 1; index < coordinates.length; index += 1) {
+    const previous = coordinates[index - 1]
+    const next = coordinates[index]
+    const segmentLength = haversineM(previous, next)
+    if (traversed + segmentLength >= distanceM || index === coordinates.length - 1) {
+      const fraction = segmentLength === 0 ? 0
+        : Math.min(1, Math.max(0, (distanceM - traversed) / segmentLength))
+      return {
+        point: [
+          previous[0] + (next[0] - previous[0]) * fraction,
+          previous[1] + (next[1] - previous[1]) * fraction,
+        ],
+        previous,
+        next,
+      }
+    }
+    traversed += segmentLength
+  }
+  return null
 }
 
 function haversineM(first: Position, second: Position): number {

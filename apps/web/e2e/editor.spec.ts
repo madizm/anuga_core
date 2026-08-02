@@ -23,6 +23,7 @@ async function drawLocalRectangle(page: import('@playwright/test').Page) {
   await expect(page.locator('.model-map')).toHaveAttribute(
     'data-grid-ready',
     'true',
+    { timeout: 20_000 },
   )
 }
 
@@ -166,6 +167,37 @@ test('user draws a levee and drainage outlet before previewing the mesh', async 
   })
 })
 
+test('user confirms channel chainage and section positions on the map', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text())
+  })
+  await page.goto('/')
+  await drawLocalRectangle(page)
+  await page.getByRole('button', { name: /地形与工程/ }).click()
+  await page.getByRole('button', { name: '断面河道' }).click()
+  await expect(page.getByText(/建议从上游向下游逐点绘制中心线/)).toBeVisible()
+
+  const canvas = page.locator('.maplibregl-canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('map canvas has no bounds')
+  await canvas.click({ position: { x: box.width * 0.46, y: box.height * 0.5 } })
+  await canvas.dblclick({ position: { x: box.width * 0.54, y: box.height * 0.5 } })
+
+  await page.getByText('断面河道 1', { exact: true }).click()
+  await expect(page.getByText('中心线总长')).toBeVisible()
+  await expect(page.getByText(/0 m.*绘制起点/)).toBeVisible()
+  await expect(page.locator('.model-map')).toHaveAttribute('data-cross-section-count', '2')
+  await expect(page.locator('.cross-section-map-chip')).toContainText('桩号 0.0 m')
+
+  await page.locator('.cross-section-row').nth(1).hover()
+  await expect(page.locator('.model-map')).toHaveAttribute('data-active-cross-section', '1')
+  await page.getByRole('button', { name: '＋在最大间距处增加断面' }).click()
+  await expect(page.locator('.cross-section-row')).toHaveCount(3)
+  await expect(page.locator('.model-map')).toHaveAttribute('data-cross-section-count', '3')
+  expect(errors).toEqual([])
+})
 test('editor keeps inlet controls gated until an area is locked', async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 844 })
   await page.goto('/')
