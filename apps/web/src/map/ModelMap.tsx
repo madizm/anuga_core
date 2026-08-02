@@ -1,6 +1,6 @@
 import type { FeatureCollection, LineString, Point, Polygon } from 'geojson'
 import { useEffect, useRef, useState } from 'react'
-import maplibregl, { type GeoJSONSource, type Map, type MapMouseEvent, type PointLike } from 'maplibre-gl'
+import maplibregl, { type GeoJSONSource, type Map, type MapMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FrictionScenario, HydraulicFeature } from '../api/types'
 import { useInletStore } from '../inlets/inletStore'
@@ -17,9 +17,16 @@ import {
   terrainSourceFromEvent,
 } from './terrain'
 import { useTerrainStore } from './terrainStore'
+import { SimulationGridLayer } from './SimulationGridLayer'
+import {
+  cellAtLngLat,
+  cellBounds,
+  cellsInScreenBox,
+  type SimulationGrid,
+} from './simulationGrid'
 
 interface ModelMapProps {
-  grid?: FeatureCollection
+  grid?: SimulationGrid
   demTilejsonUrl?: string
   terrainTilejsonUrl?: string
   cellSizeM?: number
@@ -35,11 +42,7 @@ interface ModelMapProps {
 
 const DEM_SOURCE = 'model-dem'
 const DEM_LAYER = 'model-dem-raster'
-const BUILDING_LAYER = 'model-buildings'
-const MANNING_LAYER = 'model-manning'
-const GRID_SOURCE = 'model-grid'
-const GRID_FILL = 'model-grid-fill'
-const GRID_LINE = 'model-grid-line'
+const GRID_LAYER = 'model-grid'
 const AREA_SOURCE = 'simulation-area-draft'
 const AREA_FILL = 'simulation-area-draft-fill'
 const AREA_LINE = 'simulation-area-draft-line'
@@ -80,7 +83,7 @@ export function ModelMap({
 }: ModelMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
-  const previousStates = useRef(new globalThis.Map<string, string>())
+  const gridLayerRef = useRef<SimulationGridLayer | null>(null)
   const brushVisited = useRef(new Set<string>())
   const boxStart = useRef<MapMouseEvent['point'] | null>(null)
   const areaStart = useRef<MapMouseEvent['lngLat'] | null>(null)
@@ -456,11 +459,7 @@ export function ModelMap({
           'raster-brightness-max': 0.78,
           'raster-fade-duration': 180,
         },
-      }, map.getLayer(MANNING_LAYER)
-        ? MANNING_LAYER
-        : map.getLayer(BUILDING_LAYER)
-          ? BUILDING_LAYER
-          : map.getLayer(GRID_FILL) ? GRID_FILL : undefined)
+      }, map.getLayer(GRID_LAYER) ? GRID_LAYER : undefined)
       raiseHydraulicLayers(map)
       setDemReady(true)
     }
@@ -512,190 +511,101 @@ export function ModelMap({
     if (!map || !terrainReady) return
     setTerrainCamera(map, effectiveTerrain, terrainCamera.current)
   }, [effectiveTerrain, terrainReady])
-
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !grid) return
+    if (!map) return
+    if (!grid) {
+      gridLayerRef.current?.setGrid(null)
+      setGridReady(false)
+      return
+    }
     const install = () => {
-      if (map.getSource(GRID_SOURCE)) return
-      map.addSource(GRID_SOURCE, { type: 'geojson', data: grid, promoteId: 'cell_id' })
-      const [manningMinimum, manningMaximum] = MANNING_RANGES[frictionScenario]
-      map.addLayer({
-        id: MANNING_LAYER,
-        type: 'fill',
-        source: GRID_SOURCE,
-        layout: { visibility: manningVisible ? 'visible' : 'none' },
-        paint: {
-          'fill-color': [
-            'interpolate', ['linear'], ['get', `manning_${frictionScenario}`],
-            manningMinimum, '#24758a',
-            (manningMinimum + manningMaximum) / 2, '#d4b64f',
-            manningMaximum, '#e5533d',
-          ],
-          'fill-opacity': 0.76,
-        },
-      })
-      map.addLayer({
-        id: BUILDING_LAYER,
-        type: 'fill',
-        source: GRID_SOURCE,
-        filter: ['>', ['get', 'building_fraction'], 0],
-        layout: { visibility: buildingsVisible ? 'visible' : 'none' },
-        paint: {
-          'fill-color': [
-            'interpolate', ['linear'], ['get', 'building_fraction'],
-            0, '#ffe17a',
-            0.25, '#ffc247',
-            0.5, '#ff8a3d',
-            1, '#e94735',
-          ],
-          'fill-opacity': [
-            'interpolate', ['linear'], ['get', 'building_fraction'],
-            0, 0,
-            0.1, 0.28,
-            0.5, 0.68,
-            1, 0.9,
-          ],
-        },
-      })
-      map.addLayer({
-        id: GRID_FILL,
-        type: 'fill',
-        source: GRID_SOURCE,
-        paint: {
-          'fill-color': ['case', ['boolean', ['feature-state', 'selected'], false], ['feature-state', 'color'], '#13242b'],
-          'fill-opacity': ['case', ['boolean', ['feature-state', 'selected'], false], 0.7, 0.08],
-        },
-      })
-      map.addLayer({
-        id: GRID_LINE,
-        type: 'line',
-        source: GRID_SOURCE,
-        minzoom: 13,
-        paint: {
-          'line-color': ['case', ['boolean', ['feature-state', 'selected'], false], '#e7fdff', '#4b6c76'],
-          'line-width': ['case', ['boolean', ['feature-state', 'selected'], false], 1.4, 0.45],
-          'line-opacity': ['interpolate', ['linear'], ['zoom'], 13, 0.25, 16, 0.75],
-        },
-      })
-      raiseHydraulicLayers(map)
+      let layer = gridLayerRef.current
+      if (!layer) {
+        layer = new SimulationGridLayer(map)
+        gridLayerRef.current = layer
+        map.addLayer(layer)
+        raiseHydraulicLayers(map)
+      }
+      layer.setGrid(grid)
       setGridReady(true)
-      const bounds = new maplibregl.LngLatBounds()
-      for (const feature of grid.features) {
-        const geometry = feature.geometry
-        if (geometry.type !== 'Polygon') continue
-        for (const coordinate of geometry.coordinates[0]) bounds.extend(coordinate as [number, number])
-      }
-      if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 54, duration: 900 })
+      const bounds = cellBounds(grid, [
+        `r${String(grid.rowStart).padStart(4, '0')}-c${String(grid.columnStart).padStart(4, '0')}`,
+        `r${String(grid.rowStop - 1).padStart(4, '0')}-c${String(grid.columnStop - 1).padStart(4, '0')}`,
+      ])
+      if (bounds) map.fitBounds(bounds, { padding: 54, duration: 900 })
     }
-    if (map.getSource('base-map')) install()
-    else map.once('styledata', install)
-  }, [grid, buildingsVisible, frictionScenario, manningVisible])
-
-  useEffect(() => {
-    const source = mapRef.current?.getSource(GRID_SOURCE) as (
-      GeoJSONSource | undefined
-    )
-    source?.setData(grid ?? { type: 'FeatureCollection', features: [] })
+    if (map.isStyleLoaded()) install()
+    else map.once('load', install)
+    return () => { map.off('load', install) }
   }, [grid])
 
   useEffect(() => {
-    const locate = (event: Event) => {
-      const cellIds = new Set((event as CustomEvent<string[]>).detail)
-      if (!grid || cellIds.size === 0 || !mapRef.current) return
-      const bounds = new maplibregl.LngLatBounds()
-      for (const feature of grid.features) {
-        if (!cellIds.has(String(feature.properties?.cell_id))) continue
-        if (feature.geometry.type !== 'Polygon') continue
-        for (const point of feature.geometry.coordinates[0]) {
-          bounds.extend(point as [number, number])
-        }
-      }
-      if (!bounds.isEmpty()) {
-        mapRef.current.fitBounds(bounds, { padding: 110, maxZoom: 17 })
-      }
-    }
-    window.addEventListener('locate-inlet', locate)
-    return () => window.removeEventListener('locate-inlet', locate)
-  }, [grid])
-
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map?.getSource(GRID_SOURCE)) return
-    const next = new globalThis.Map<string, string>()
-    for (const inlet of inlets) {
-      for (const cellId of inlet.cellIds) next.set(cellId, inlet.displayColor)
-    }
-    for (const [cellId] of previousStates.current) {
-      if (!next.has(cellId)) map.setFeatureState({ source: GRID_SOURCE, id: cellId }, { selected: false })
-    }
-    for (const [cellId, color] of next) {
-      if (previousStates.current.get(cellId) !== color) {
-        map.setFeatureState({ source: GRID_SOURCE, id: cellId }, { selected: true, color })
-      }
-    }
-    previousStates.current = next
-  }, [inlets])
-
+    const layer = gridLayerRef.current
+    layer?.setFriction(frictionScenario)
+    layer?.setVisibility({
+      grid: gridVisible, buildings: buildingsVisible, manning: manningVisible,
+    })
+  }, [buildingsVisible, frictionScenario, gridVisible, manningVisible])
   useEffect(() => {
     const map = mapRef.current
     if (!map?.getLayer('base-map')) return
     map.setLayoutProperty('base-map', 'visibility', baseVisible ? 'visible' : 'none')
     if (map.getLayer(DEM_LAYER)) {
       map.setLayoutProperty(
-        DEM_LAYER,
-        'visibility',
-        demSurfaceVisible ? 'visible' : 'none',
+        DEM_LAYER, 'visibility', demSurfaceVisible ? 'visible' : 'none',
       )
     }
-    if (map.getLayer(BUILDING_LAYER)) {
-      map.setLayoutProperty(BUILDING_LAYER, 'visibility', buildingsVisible ? 'visible' : 'none')
-    }
-    if (map.getLayer(MANNING_LAYER)) {
-      map.setLayoutProperty(MANNING_LAYER, 'visibility', manningVisible ? 'visible' : 'none')
-    }
-    if (map.getLayer(GRID_FILL)) {
-      const visibility = gridVisible ? 'visible' : 'none'
-      map.setLayoutProperty(GRID_FILL, 'visibility', visibility)
-      map.setLayoutProperty(GRID_LINE, 'visibility', visibility)
-    }
-  }, [baseVisible, buildingsVisible, demSurfaceVisible, gridVisible, grid, manningVisible])
+  }, [baseVisible, demSurfaceVisible])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map?.getLayer(MANNING_LAYER)) return
-    const [minimum, maximum] = MANNING_RANGES[frictionScenario]
-    map.setPaintProperty(MANNING_LAYER, 'fill-color', [
-      'interpolate', ['linear'], ['get', `manning_${frictionScenario}`],
-      minimum, '#24758a',
-      (minimum + maximum) / 2, '#d4b64f',
-      maximum, '#e5533d',
-    ])
-  }, [frictionScenario])
+    const layer = gridLayerRef.current
+    if (!map || !layer) return
+    layer.setTerrainEnabled(effectiveTerrain)
+    const refresh = () => layer.refreshTerrain()
+    if (effectiveTerrain) map.once('idle', refresh)
+    return () => { map.off('idle', refresh) }
+  }, [effectiveTerrain, grid, terrainExaggeration])
+
+  useEffect(() => {
+    const locate = (event: Event) => {
+      if (!grid || !mapRef.current) return
+      const bounds = cellBounds(grid, (event as CustomEvent<string[]>).detail)
+      if (bounds) mapRef.current.fitBounds(bounds, { padding: 110, maxZoom: 17 })
+    }
+    window.addEventListener('locate-inlet', locate)
+    return () => window.removeEventListener('locate-inlet', locate)
+  }, [grid])
+
+  useEffect(() => {
+    const next = new globalThis.Map<string, string>()
+    for (const inlet of inlets) {
+      for (const id of inlet.cellIds) next.set(id, inlet.displayColor)
+    }
+    gridLayerRef.current?.setSelections(next)
+  }, [inlets, grid])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || areaDrawMode || featureDrawMode) return
-    const featureAt = (point: PointLike) => {
-      if (!map.getLayer(GRID_FILL)) return undefined
-      return map.queryRenderedFeatures(point, { layers: [GRID_FILL] })[0]
-    }
+    if (!map || !grid || areaDrawMode || featureDrawMode) return
+    const cellAt = (event: MapMouseEvent) => gridVisible
+      ? cellAtLngLat(grid, event.lngLat.lng, event.lngLat.lat)
+      : null
     const operation = (event: MouseEvent) => (event.altKey ? 'remove' : event.shiftKey ? 'add' : 'toggle')
     const onClick = (event: MapMouseEvent & { originalEvent: MouseEvent }) => {
       if (selectionMode !== 'click' || !activeId) return
-      const feature = featureAt(event.point)
-      const cellId = feature?.properties?.cell_id
-      if (cellId) selectCells([cellId], operation(event.originalEvent))
+      const id = cellAt(event)
+      if (id) selectCells([id], operation(event.originalEvent))
     }
     const onMouseDown = (event: MapMouseEvent & { originalEvent: MouseEvent }) => {
       if (!activeId) return
       if (selectionMode === 'brush') {
         brushVisited.current.clear()
-        const feature = featureAt(event.point)
-        const cellId = feature?.properties?.cell_id
-        if (cellId) {
-          brushVisited.current.add(cellId)
-          selectCells([cellId], event.originalEvent.altKey ? 'remove' : 'add')
+        const id = cellAt(event)
+        if (id) {
+          brushVisited.current.add(id)
+          selectCells([id], event.originalEvent.altKey ? 'remove' : 'add')
         }
       }
       if (selectionMode === 'box') {
@@ -706,11 +616,10 @@ export function ModelMap({
     }
     const onMouseMove = (event: MapMouseEvent & { originalEvent: MouseEvent }) => {
       if (selectionMode === 'brush' && event.originalEvent.buttons === 1) {
-        const feature = featureAt(event.point)
-        const cellId = feature?.properties?.cell_id
-        if (cellId && !brushVisited.current.has(cellId)) {
-          brushVisited.current.add(cellId)
-          selectCells([cellId], event.originalEvent.altKey ? 'remove' : 'add')
+        const id = cellAt(event)
+        if (id && !brushVisited.current.has(id)) {
+          brushVisited.current.add(id)
+          selectCells([id], event.originalEvent.altKey ? 'remove' : 'add')
         }
       }
       if (selectionMode === 'box' && boxStart.current) {
@@ -726,10 +635,10 @@ export function ModelMap({
     const onMouseUp = (event: MapMouseEvent & { originalEvent: MouseEvent }) => {
       if (selectionMode !== 'box' || !boxStart.current) return
       const start = boxStart.current
-      const boxGeometry: [PointLike, PointLike] = [start, event.point]
-      const features = map.queryRenderedFeatures(boxGeometry, { layers: [GRID_FILL] })
-      const cellIds = [...new Set(features.map((feature) => feature.properties?.cell_id).filter(Boolean))]
-      selectCells(cellIds, event.originalEvent.altKey ? 'remove' : 'add')
+      selectCells(
+        cellsInScreenBox(map, grid, start, event.point),
+        event.originalEvent.altKey ? 'remove' : 'add',
+      )
       boxStart.current = null
       setBox(null)
       map.dragPan.enable()
@@ -744,7 +653,7 @@ export function ModelMap({
       map.off('mousemove', onMouseMove)
       map.off('mouseup', onMouseUp)
     }
-  }, [activeId, areaDrawMode, featureDrawMode, selectionMode, selectCells])
+  }, [activeId, areaDrawMode, featureDrawMode, grid, gridVisible, selectionMode, selectCells])
 
   const retryTerrain = () => {
     const map = mapRef.current

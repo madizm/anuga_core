@@ -1,5 +1,6 @@
 import type { LineString, Polygon } from 'geojson'
-import type { FeatureCollection } from 'geojson'
+import { parseSimulationGrid } from '../map/simulationGrid'
+import type { SimulationGrid } from '../map/simulationGrid'
 import type {
   DemProductCatalog,
   ElevationProfile,
@@ -41,6 +42,16 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     )
   }
   return body as T
+}
+
+async function simulationAreaGrid(
+  productId: string, areaHash: string,
+): Promise<SimulationGrid> {
+  const response = await fetch(
+    `/api/dem-products/${productId}/simulation-areas/${areaHash}/grid`,
+  )
+  if (!response.ok) throw new Error(`无法加载局部计算网格 (${response.status})`)
+  return parseSimulationGrid(await response.arrayBuffer())
 }
 
 async function flowField(jobId: string, frameIndex: number): Promise<FlowField> {
@@ -140,8 +151,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ geometry }),
     }),
-  simulationAreaGrid: (productId: string, areaHash: string) =>
-    request<FeatureCollection>(`/api/dem-products/${productId}/simulation-areas/${areaHash}/grid`),
+  simulationAreaGrid,
   simulationArea: (productId: string, areaHash: string) =>
     request<SimulationArea>(`/api/dem-products/${productId}/simulation-areas/${areaHash}`),
   elevationProfile: (productId: string, areaHash: string, geometry: LineString) =>

@@ -222,15 +222,19 @@ def create_app(
     )
     def simulation_area_grid(
         product_id: str, area_hash: str
-    ) -> JSONResponse:
+    ) -> Response:
         catalog = catalog_or_404(product_id)
         try:
-            grid = catalog.grid(area_hash)
+            grid = catalog.grid_binary(area_hash)
         except KeyError as error:
             raise HTTPException(
                 status_code=404, detail="simulation area not found"
             ) from error
-        return JSONResponse(grid)
+        return Response(
+            grid,
+            media_type="application/vnd.bayuquan.simulation-grid",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     @app.post(
         "/api/dem-products/{product_id}/simulation-areas/"

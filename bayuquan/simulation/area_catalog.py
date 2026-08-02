@@ -1,10 +1,11 @@
-"""Persistent cache for resolved local simulation areas."""
+"""Persistent compact storage for resolved local simulation areas."""
 
 from __future__ import annotations
 
 import json
 import os
 import shutil
+import struct
 import tempfile
 from pathlib import Path
 from typing import Mapping
@@ -71,14 +72,26 @@ class SimulationAreaCatalog:
 
     def area(self, area_hash: str) -> SimulationArea:
         metadata = self._read_json(area_hash, "area.json")
+        arrays = self._grid_arrays(area_hash)
+        cell_indices = tuple(
+            int(index) for index in arrays["cell_indices"]
+        )
+        ncols = metadata["demColumns"]
+        if len(cell_indices) != metadata["cellCount"]:
+            raise KeyError(f"corrupt simulation area: {area_hash}")
+        cell_rows = tuple(index // ncols for index in cell_indices)
+        cell_columns = tuple(index % ncols for index in cell_indices)
         area = SimulationArea(
             area_hash=metadata["areaHash"],
             dataset_version=metadata["datasetVersion"],
             crs=metadata["crs"],
-            cell_ids=tuple(metadata["cellIds"]),
-            cell_indices=tuple(metadata["cellIndices"]),
-            cell_rows=tuple(metadata["cellRows"]),
-            cell_columns=tuple(metadata["cellColumns"]),
+            cell_ids=tuple(
+                f"r{row:04d}-c{column:04d}"
+                for row, column in zip(cell_rows, cell_columns)
+            ),
+            cell_indices=cell_indices,
+            cell_rows=cell_rows,
+            cell_columns=cell_columns,
             nrows=metadata["demRows"],
             ncols=metadata["demColumns"],
             transform=tuple(metadata["transform"]),
@@ -96,8 +109,48 @@ class SimulationAreaCatalog:
             raise KeyError(f"stale simulation area: {area_hash}")
         return metadata
 
-    def grid(self, area_hash: str) -> dict:
-        return self._read_json(area_hash, "grid.geojson")
+    def grid_binary(self, area_hash: str) -> bytes:
+        """Return the compact BQSG v1 browser payload for an area grid."""
+        area = self.area(area_hash)
+        arrays = self._grid_arrays(area_hash)
+        row_start, row_stop, column_start, column_stop = area.window
+        a, _, c, _, e, f = area.transform
+        projected_corners = (
+            (c + column_start * a, f + row_start * e),
+            (c + column_stop * a, f + row_start * e),
+            (c + column_start * a, f + row_stop * e),
+            (c + column_stop * a, f + row_stop * e),
+        )
+        to_wgs84 = Transformer.from_crs(
+            area.crs, "OGC:CRS84", always_xy=True
+        )
+        corners = tuple(
+            coordinate
+            for point in projected_corners
+            for coordinate in to_wgs84.transform(*point)
+        )
+        header = struct.pack(
+            "<4sHH7I8d",
+            b"BQSG", 1, 100, area.cell_count, area.nrows, area.ncols,
+            row_start, row_stop, column_start, column_stop, *corners,
+        )
+        planes = (
+            np.asarray(arrays["cell_indices"], dtype="<u4"),
+            np.asarray(arrays["elevation_m"], dtype="<f4"),
+            np.asarray(arrays["building_fraction"], dtype="<f4"),
+            np.asarray(arrays["building_density_class"], dtype="<f4"),
+            np.asarray(arrays["manning_low"], dtype="<f4"),
+            np.asarray(arrays["manning_middle"], dtype="<f4"),
+            np.asarray(arrays["manning_high"], dtype="<f4"),
+        )
+        return header + b"".join(plane.tobytes() for plane in planes)
+
+    def _grid_arrays(self, area_hash: str) -> dict[str, np.ndarray]:
+        path = self.cache_directory / area_hash / "grid.npz"
+        if not path.is_file():
+            raise KeyError(f"unknown simulation area: {area_hash}")
+        with np.load(path, allow_pickle=False) as data:
+            return {name: data[name].copy() for name in data.files}
 
     def mesh_path(self, area_hash: str) -> Path:
         path = self.cache_directory / area_hash / "mesh.npz"
@@ -124,6 +177,32 @@ class SimulationAreaCatalog:
             mesh_sha256=area.area_hash,
         )
 
+    def cell_values(
+        self, area_hash: str, cell_ids: list[str], field: str
+    ) -> list[float]:
+        """Read one compact grid field for validated cell IDs."""
+        mapping = self.mapping(area_hash)
+        indices = np.asarray([
+            mapping.parse_cell_id(cell_id)[2] for cell_id in cell_ids
+        ], dtype=np.uint32)
+        return self._values_for_indices(area_hash, indices, (field,))[field]
+
+    def _values_for_indices(
+        self,
+        area_hash: str,
+        selected_indices: np.ndarray,
+        fields: tuple[str, ...],
+    ) -> dict[str, list[float]]:
+        arrays = self._grid_arrays(area_hash)
+        missing = set(fields).difference(arrays)
+        if missing:
+            raise KeyError(f"unknown grid field: {sorted(missing)[0]}")
+        positions = np.searchsorted(arrays["cell_indices"], selected_indices)
+        return {
+            field: [float(value) for value in arrays[field][positions]]
+            for field in fields
+        }
+
     def resolve_selection(
         self,
         area_hash: str,
@@ -132,14 +211,18 @@ class SimulationAreaCatalog:
     ) -> dict:
         mapping = self.mapping(area_hash)
         selection = mapping.resolve(cell_ids)
-        properties = {
-            feature["properties"]["cell_id"]: feature["properties"]
-            for feature in self.grid(area_hash)["features"]
-        }
-        selected = [properties[cell_id] for cell_id in selection.cell_ids]
-        elevations = _property_values(selected, "elevation_m")
-        buildings = _property_values(selected, "building_fraction")
-        manning = _property_values(selected, f"manning_{friction_scenario}")
+        indices = np.asarray([
+            mapping.parse_cell_id(cell_id)[2]
+            for cell_id in selection.cell_ids
+        ], dtype=np.uint32)
+        manning_field = f"manning_{friction_scenario}"
+        values = self._values_for_indices(
+            area_hash, indices,
+            ("elevation_m", "building_fraction", manning_field),
+        )
+        elevations = _finite_values(np.asarray(values["elevation_m"]))
+        buildings = _finite_values(np.asarray(values["building_fraction"]))
+        manning = _finite_values(np.asarray(values[manning_field]))
         result = {
             "cellIds": list(selection.cell_ids),
             "cellCount": len(selection.cell_ids),
@@ -175,10 +258,6 @@ class SimulationAreaCatalog:
                 "areaHash": area.area_hash,
                 "datasetVersion": area.dataset_version,
                 "crs": area.crs,
-                "cellIds": area.cell_ids,
-                "cellIndices": area.cell_indices,
-                "cellRows": area.cell_rows,
-                "cellColumns": area.cell_columns,
                 "cellCount": area.cell_count,
                 "areaM2": area.area_m2,
                 "demRows": area.nrows,
@@ -192,9 +271,9 @@ class SimulationAreaCatalog:
                 "boundaryCondition": "transmissive",
             }
             _write_json(temporary / "area.json", metadata)
-            _write_json(
-                temporary / "grid.geojson",
-                _grid_geojson(area, self.dem_path, self.model_inputs_path),
+            np.savez_compressed(
+                temporary / "grid.npz",
+                **_grid_arrays(area, self.dem_path, self.model_inputs_path),
             )
 
             mesh = build_local_mesh(area)
@@ -226,56 +305,22 @@ class SimulationAreaCatalog:
             raise
 
 
-def _grid_geojson(
+def _grid_arrays(
     area: SimulationArea,
     dem_path: Path | str,
     model_inputs_path: Path | str | None = None,
-) -> dict:
-    a, _, c, _, e, f = area.transform
-    to_wgs84 = Transformer.from_crs(
-        area.crs, "OGC:CRS84", always_xy=True
-    )
-    properties_by_cell = _model_input_properties(
-        area, dem_path, model_inputs_path
-    )
-    features = []
-    for cell_id, row, column in zip(
-        area.cell_ids, area.cell_rows, area.cell_columns
-    ):
-        xmin = c + column * a
-        xmax = xmin + a
-        ymax = f + row * e
-        ymin = ymax + e
-        ring = [
-            to_wgs84.transform(xmin, ymin),
-            to_wgs84.transform(xmax, ymin),
-            to_wgs84.transform(xmax, ymax),
-            to_wgs84.transform(xmin, ymax),
-            to_wgs84.transform(xmin, ymin),
-        ]
-        features.append({
-            "type": "Feature",
-            "id": cell_id,
-            "properties": {
-                "cell_id": cell_id,
-                "row": row,
-                "column": column,
-                "selectable": True,
-                **properties_by_cell.get(cell_id, {}),
-            },
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[list(point) for point in ring]],
-            },
-        })
-    return {"type": "FeatureCollection", "features": features}
+) -> dict[str, np.ndarray]:
+    return {
+        "cell_indices": np.asarray(area.cell_indices, dtype=np.uint32),
+        **_model_input_arrays(area, dem_path, model_inputs_path),
+    }
 
 
-def _model_input_properties(
+def _model_input_arrays(
     area: SimulationArea,
     dem_path: Path | str,
     path: Path | str | None,
-) -> dict[str, dict]:
+) -> dict[str, np.ndarray]:
     row_start, row_stop, column_start, column_stop = area.window
     window = rasterio.windows.Window(
         column_start,
@@ -308,26 +353,36 @@ def _model_input_properties(
             if dataset.descriptions != expected:
                 raise ValueError("model inputs have unexpected bands")
             values = dataset.read(window=window)
-    result = {}
-    for cell_id, row, column in zip(
-        area.cell_ids, area.cell_rows, area.cell_columns
-    ):
+    result = {
+        "elevation_m": np.empty(area.cell_count, dtype=np.float32),
+        **{
+            name: np.full(area.cell_count, np.nan, dtype=np.float32)
+            for name in (
+                "building_fraction",
+                "building_density_class",
+                "manning_low",
+                "manning_middle",
+                "manning_high",
+            )
+        },
+    }
+    for index, (row, column) in enumerate(zip(
+        area.cell_rows, area.cell_columns
+    )):
         local_row = row - row_start
         local_column = column - column_start
-        result[cell_id] = {
-            "elevation_m": float(elevations[local_row, local_column])
-        }
+        result["elevation_m"][index] = elevations[
+            local_row, local_column
+        ]
         if values is not None:
             cell_values = values[:, local_row, local_column]
-            result[cell_id].update({
-                name: float(value)
-                for name, value in zip(expected, cell_values)
-            })
+            for name, value in zip(expected, cell_values):
+                result[name][index] = value
     return result
 
 
-def _property_values(rows: list[dict], name: str) -> list[float]:
-    return [float(row[name]) for row in rows if name in row]
+def _finite_values(values: np.ndarray) -> list[float]:
+    return [float(value) for value in values[np.isfinite(values)]]
 
 
 def _summary(

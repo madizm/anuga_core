@@ -159,31 +159,16 @@ class FakeAreaCatalog:
             "manning": {"minimum": 0.04, "maximum": 0.04},
         }
 
-    def grid(self, area_hash):
+    def grid_binary(self, area_hash):
         if area_hash != "b" * 64:
             raise KeyError(area_hash)
-        return {
-            "type": "FeatureCollection",
-            "features": [{
-                "type": "Feature",
-                "properties": {
-                    "cell_id": "r0010-c0020",
-                    "elevation_m": 3,
-                    "building_fraction": 0,
-                    "manning_middle": 0.04,
-                },
-                "geometry": None,
-            }] + [{
-                "type": "Feature",
-                "properties": {
-                    "cell_id": f"r{row:04d}-c{column:04d}",
-                    "elevation_m": 5,
-                    "building_fraction": 0.1,
-                    "manning_middle": 0.05,
-                },
-                "geometry": None,
-            } for row in range(2) for column in range(3)],
-        }
+        return b"BQSG-test-grid"
+
+    def cell_values(self, area_hash, cell_ids, field):
+        if area_hash != "b" * 64:
+            raise KeyError(area_hash)
+        assert field == "elevation_m"
+        return [3.0 if cell == "r0010-c0020" else 5.0 for cell in cell_ids]
 
 
 def settings(database_url: str) -> Settings:
@@ -299,9 +284,11 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
     assert grid.status_code == 200
     assert selection.status_code == 200
     assert selection.json()["triangleCount"] == 2
-    assert grid.json()["features"][0]["properties"]["cell_id"] == (
-        "r0010-c0020"
+    assert grid.content == b"BQSG-test-grid"
+    assert grid.headers["content-type"].startswith(
+        "application/vnd.bayuquan.simulation-grid"
     )
+    assert "immutable" in grid.headers["cache-control"]
     assert missing.status_code == 404
 
 

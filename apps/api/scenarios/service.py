@@ -51,13 +51,6 @@ def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
     except (KeyError, ScenarioValidationError) as error:
         errors.append({"code": "INVALID_SCENARIO", "message": str(error)})
 
-    cell_properties = {}
-    if area is not None:
-        cell_properties = {
-            feature["properties"]["cell_id"]: feature["properties"]
-            for feature in catalog.grid(area_hash)["features"]
-        }
-
     enabled = [item for item in payload.get("inlets", [])
                if item.get("enabled", True)]
     if len(enabled) > MAX_INLETS:
@@ -74,11 +67,12 @@ def validate_scenario(payload: dict, catalog: SimulationAreaCatalog) -> dict:
             })
         level = inlet.get("initialWaterLevelM")
         if level is not None:
-            elevations = [
-                float(cell_properties[cell]["elevation_m"])
-                for cell in inlet.get("cellIds", [])
-                if cell in cell_properties
-            ]
+            try:
+                elevations = catalog.cell_values(
+                    area_hash, inlet.get("cellIds", []), "elevation_m"
+                ) if area is not None else []
+            except (KeyError, ValueError):
+                elevations = []
             excessive_level = (
                 elevations
                 and level - min(elevations) > INITIAL_LEVEL_WARNING_M

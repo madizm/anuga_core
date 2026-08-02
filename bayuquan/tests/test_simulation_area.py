@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 import numpy as np
 import pytest
 import rasterio
@@ -269,17 +270,31 @@ def test_area_catalog_caches_resolved_grid_and_mesh_by_hash(tmp_path):
     second = catalog.resolve(
         polygon(100, 290, 160, 320), geometry_crs="EPSG:32651"
     )
-    grid = catalog.grid(first.area_hash)
+    grid = catalog.grid_binary(first.area_hash)
 
     assert second.area_hash == first.area_hash
     assert first.cell_count == 2
-    assert [feature["properties"]["cell_id"] for feature in grid["features"]] == [
-        "r0000-c0000",
-        "r0000-c0001",
-    ]
-    assert grid["features"][0]["properties"]["building_fraction"] == 0.25
-    assert grid["features"][0]["properties"]["manning_middle"] == pytest.approx(
-        0.08)
+    header = struct.unpack("<4sHH7I8d", grid[:100])
+    assert header[:10] == (
+        b"BQSG", 1, 100, 2, 1, 2, 0, 1, 0, 2,
+    )
+    to_wgs84 = Transformer.from_crs(
+        "EPSG:32651", "OGC:CRS84", always_xy=True
+    )
+    expected_corners = tuple(
+        value
+        for point in ((100, 320), (160, 320), (100, 290), (160, 290))
+        for value in to_wgs84.transform(*point)
+    )
+    assert header[10:] == pytest.approx(expected_corners)
+    assert len(grid) == 100 + first.cell_count * 7 * 4
+    with np.load(
+        tmp_path / "areas" / first.area_hash / "grid.npz",
+        allow_pickle=False,
+    ) as stored_grid:
+        np.testing.assert_array_equal(stored_grid["cell_indices"], [0, 1])
+        assert stored_grid["building_fraction"][0] == pytest.approx(0.25)
+        assert stored_grid["manning_middle"][0] == pytest.approx(0.08)
     stats = catalog.resolve_selection(
         first.area_hash,
         ["r0000-c0000", "r0000-c0001"],
@@ -291,6 +306,7 @@ def test_area_catalog_caches_resolved_grid_and_mesh_by_hash(tmp_path):
         "maximum": 0.08,
     })
     assert (tmp_path / "areas" / first.area_hash / "area.json").is_file()
+    assert not (tmp_path / "areas" / first.area_hash / "grid.geojson").exists()
     with np.load(
         tmp_path / "areas" / first.area_hash / "mesh.npz",
         allow_pickle=False,

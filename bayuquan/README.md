@@ -172,9 +172,12 @@ uv run --with pytest pytest -q bayuquan/tests
 
 `bayuquan.simulation.area.SimulationAreaResolver` converts one WGS84 rectangle
 or simple polygon into a four-neighbour-connected mask of valid full-DEM cells.
-`SimulationAreaCatalog` caches the canonical area metadata, local GeoJSON grid,
-and deterministic ANUGA mesh under the configured shared simulation-area cache.
+`SimulationAreaCatalog` caches compact canonical metadata, typed NumPy grid
+planes (`grid.npz`), and the deterministic ANUGA mesh under the configured
+shared simulation-area store. The grid API publishes immutable BQSG binary
+payloads; the browser renders and picks regular cells directly without
+expanding every cell into GeoJSON polygons.
 
-Each selected 30×30 m cell is split along the southwest–northeast diagonal into
-two 450 m² triangles. A flat-water ANUGA regression verifies transmissive-boundary
-volume conservation on the generated mesh.
+Each selected cell is split along the southwest–northeast diagonal into two
+equal-area triangles. A flat-water ANUGA regression verifies
+transmissive-boundary volume conservation on the generated mesh.

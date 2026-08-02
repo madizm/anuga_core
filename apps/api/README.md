@@ -93,7 +93,11 @@ valid DEM cells by centre point, rejects any extent/NoData violation and
 holes/disconnected masks, and enforces the selected product's cell limit. It
 then caches a deterministic two-triangle-per-cell mesh by area hash. The 30 m
 product allows 25,000 cells; the default 10 m product allows 125,000 cells.
-Load only that area's grid from the returned `gridUrl`.
+Load only that area's grid from the returned `gridUrl`. The response is the
+immutable BQSG v1 binary format: a 100-byte little-endian header containing
+dimensions, window and four WGS84 grid corners, followed by seven typed planes
+(`cell_index`, elevation, building fields and three Manning fields). Canonical
+server-side values are stored in compressed `grid.npz`, not per-cell GeoJSON.
 
 Scenario and Job snapshots retain both the product ID and immutable area hash. The worker loads the
 cached local mesh, assigns DEM/Manning values from the versioned full-domain
