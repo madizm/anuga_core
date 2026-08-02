@@ -99,13 +99,13 @@ export function ResultMap({
       return map
     })
     buffers.current = quantities.map(createBufferState)
+    createRippleLayers()
     flowLayers.current = maps.current.map((map) => new FlowParticleLayer(map))
     // Maps may be recreated after flow was enabled (e.g. asynchronously
     // loaded bounds arrive): restore the latest field on the fresh layers.
     for (const layer of flowLayers.current) {
       layer.setField(flowState.current.field, flowState.current.frameIndex)
     }
-    createRippleLayers()
     installWaterRippleTuningPanel()
     if (import.meta.env.DEV) {
       (window as unknown as { __resultMaps: Map[] }).__resultMaps = maps.current
@@ -187,6 +187,7 @@ export function ResultMap({
   useEffect(() => {
     const exaggeration = effectiveTerrain ? terrainExaggeration : 0
     rippleLayers.current.forEach((layer) => layer?.setTerrainExaggeration(exaggeration))
+    flowLayers.current.forEach((layer) => layer.setTerrainExaggeration(exaggeration))
   }, [bounds, effectiveTerrain, terrainExaggeration, terrainRetry, triple])
 
   useEffect(() => {
@@ -303,7 +304,6 @@ export function ResultMap({
       <TerrainControl
         scope="result"
         error={terrainError}
-        flowIsTwoDimensional={flowEnabled && Boolean(flowField)}
         waterError={waterError}
         onRetry={retryTerrain}
         onWaterRetry={retryWater}

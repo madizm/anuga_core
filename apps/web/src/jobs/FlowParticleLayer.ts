@@ -1,104 +1,430 @@
-import type { Map } from 'maplibre-gl'
+import {
+  MercatorCoordinate,
+  type CustomLayerInterface,
+  type CustomRenderMethodInput,
+  type Map,
+} from 'maplibre-gl'
 import type { FlowField } from '../api/types'
 
-interface Particle {
+interface TrailPoint {
   longitude: number
   latitude: number
+  altitude: number
+}
+
+interface Particle extends TrailPoint {
   ageSeconds: number
+  trail: TrailPoint[]
+}
+
+interface ParticleSample {
+  velocity: [number, number]
+  depth: number
+  stage: number | null
+}
+
+interface ParticleResources {
+  program: WebGLProgram
+  buffer: WebGLBuffer
+  attributes: {
+    start: number
+    end: number
+    t: number
+    side: number
+    alpha: number
+    width: number
+  }
+  uniforms: {
+    matrix: WebGLUniformLocation | null
+    viewport: WebGLUniformLocation | null
+  }
 }
 
 const MIN_SPEED_MPS = 0.03
 const VISUAL_SECONDS_PER_SECOND = 180
-const TRAIL_TAU_SECONDS = 0.45
 const PARTICLE_MIN_AGE_SECONDS = 1.4
 const PARTICLE_AGE_SPREAD_SECONDS = 3.2
-// Particle count tracks the wet area's on-screen size, not its cell count:
-// a fixed count saturates small basins with overlapping trails (the whole
-// water body turns white), while the same count looks sparse when zoomed in.
 const PARTICLE_DENSITY_PX = 700
 const PARTICLE_MIN_COUNT = 80
 const PARTICLE_MAX_COUNT = 700
+const MAX_TRAIL_POINTS = 12
+const WATER_SURFACE_OFFSET_M = 0.08
+const VERTEX_FLOATS = 10
+const REPAINT_MS = 33
+let nextLayerId = 0
+
+const VERTEX_SHADER = `
+attribute vec3 a_start;
+attribute vec3 a_end;
+attribute float a_t;
+attribute float a_side;
+attribute float a_alpha;
+attribute float a_width;
+uniform mat4 u_matrix;
+uniform vec2 u_viewport;
+varying float v_alpha;
+void main() {
+  vec4 start_clip = u_matrix * vec4(a_start, 1.0);
+  vec4 end_clip = u_matrix * vec4(a_end, 1.0);
+  vec2 start_ndc = start_clip.xy / start_clip.w;
+  vec2 end_ndc = end_clip.xy / end_clip.w;
+  vec2 screen_direction = (end_ndc - start_ndc) * u_viewport;
+  float direction_length = length(screen_direction);
+  vec2 normal = direction_length > 0.001
+    ? vec2(-screen_direction.y, screen_direction.x) / direction_length
+    : vec2(0.0, 1.0);
+  gl_Position = mix(start_clip, end_clip, a_t);
+  gl_Position.xy += normal * a_side * a_width * 2.0 / u_viewport * gl_Position.w;
+  v_alpha = a_alpha;
+}
+`
+
+const FRAGMENT_SHADER = `
+precision mediump float;
+varying float v_alpha;
+void main() {
+  float alpha = clamp(v_alpha, 0.0, 1.0);
+  vec3 color = vec3(0.325, 0.906, 1.0);
+  gl_FragColor = vec4(color * alpha, alpha);
+}
+`
+
+/** Bilinearly sample velocity and water-surface values at a map position. */
+export function sampleParticleField(
+  field: FlowField,
+  longitude: number,
+  latitude: number,
+): ParticleSample | null {
+  const [west, south, east, north] = field.bounds
+  const gridX = (longitude - west) / (east - west) * field.width - 0.5
+  const gridY = (north - latitude) / (north - south) * field.height - 0.5
+  const column = Math.floor(gridX)
+  const row = Math.floor(gridY)
+  const fractionX = gridX - column
+  const fractionY = gridY - row
+  let u = 0
+  let v = 0
+  let depth = 0
+  let stage = 0
+  let stageWeight = 0
+  let weightSum = 0
+  for (let corner = 0; corner < 4; corner += 1) {
+    const x = column + (corner & 1)
+    const y = row + (corner >> 1)
+    if (x < 0 || x >= field.width || y < 0 || y >= field.height) continue
+    const weight = (corner & 1 ? fractionX : 1 - fractionX)
+      * (corner >> 1 ? fractionY : 1 - fractionY)
+    if (weight <= 0) continue
+    const cell = y * field.width + x
+    const cellU = field.vectors[cell * 2]
+    const cellV = field.vectors[cell * 2 + 1]
+    if (!Number.isFinite(cellU) || !Number.isFinite(cellV)) continue
+    let cellDepth = field.depths?.[cell] ?? 0
+    let cellStage: number | null = null
+    if (field.texels) {
+      cellDepth = decodeFloat16(field.texels[cell * 4 + 2])
+      cellStage = decodeFloat16(field.texels[cell * 4 + 3])
+      if (cellDepth < 0 || !Number.isFinite(cellStage)) continue
+    } else if (field.depths && !Number.isFinite(cellDepth)) {
+      continue
+    }
+    u += cellU * weight
+    v += cellV * weight
+    depth += cellDepth * weight
+    if (cellStage != null) {
+      stage += cellStage * weight
+      stageWeight += weight
+    }
+    weightSum += weight
+  }
+  if (weightSum === 0) return null
+  u /= weightSum
+  v /= weightSum
+  if (Math.hypot(u, v) < MIN_SPEED_MPS) return null
+  return {
+    velocity: [u, v],
+    depth: depth / weightSum,
+    stage: stageWeight > 0 ? stage / stageWeight : null,
+  }
+}
+
+/** Position a particle on the same exaggerated water surface as the ripple mesh. */
+export function particleSurfaceAltitude(
+  sample: Pick<ParticleSample, 'depth' | 'stage'>,
+  terrainElevation: number | null,
+  terrainExaggeration: number,
+) {
+  if (sample.stage != null) {
+    const ground = sample.stage - sample.depth
+    return (terrainExaggeration > 0
+      ? ground * terrainExaggeration + sample.depth
+      : sample.stage) + WATER_SURFACE_OFFSET_M
+  }
+  return (terrainElevation ?? 0) + sample.depth + WATER_SURFACE_OFFSET_M
+}
 
 /**
- * Advects particles through the frame velocity field and lets their paths
- * accumulate into fading trails, so the overlay reads as continuous flowing
- * water instead of isolated dots. Trails and surviving particles carry over
- * when the simulation advances to the next frame: old streamlines fade out
- * while the live particles are taken over by the new field.
+ * Three-dimensional flow particles rendered inside MapLibre's WebGL pipeline.
+ * Geographic trail endpoints are transformed with the authoritative custom-
+ * layer matrix and share terrain's depth buffer, so camera pitch and altitude
+ * cannot detach them from the water surface.
  */
-export class FlowParticleLayer {
-  private readonly canvas = document.createElement('canvas')
-  private readonly context: CanvasRenderingContext2D
+export class FlowParticleLayer implements CustomLayerInterface {
+  readonly id = `flow-particles-${nextLayerId++}`
+  readonly type = 'custom' as const
+  readonly renderingMode = '3d' as const
+  private gl: WebGL2RenderingContext | null = null
+  private resources: ParticleResources | null = null
   private particles: Particle[] = []
   private field: FlowField | null = null
   private wetCells: number[] = []
-  private animationFrame: number | null = null
   private lastFrameTime = 0
+  private terrainExaggeration = 0
+  private frameIndex: number | null = null
+  private repaintTimer: ReturnType<typeof setTimeout> | null = null
+  private added = false
+  private destroyed = false
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 
   constructor(private readonly map: Map) {
-    const context = this.canvas.getContext('2d')
-    if (!context) throw new Error('flow canvas is unavailable')
-    this.context = context
-    this.canvas.className = 'flow-particle-canvas'
-    this.canvas.setAttribute('aria-hidden', 'true')
-    this.map.getContainer().appendChild(this.canvas)
-    this.map.on('resize', this.resize)
-    this.map.on('move', this.handleMove)
     this.reducedMotion.addEventListener('change', this.motionPreferenceChanged)
-    this.resize()
+    this.map.on('moveend', this.handleMoveEnd)
+    if (map.isStyleLoaded()) this.addToMap()
+    else map.once('load', this.addToMap)
+  }
+
+  private readonly addToMap = () => {
+    if (this.destroyed || this.added || this.map.getLayer(this.id)) return
+    this.map.addLayer(this)
+    this.added = true
+  }
+
+  onAdd(_map: Map, context: WebGLRenderingContext | WebGL2RenderingContext) {
+    if (!(context instanceof WebGL2RenderingContext)) {
+      throw new Error('三维流向粒子需要 WebGL2')
+    }
+    this.gl = context
+    const vertex = compileShader(context, context.VERTEX_SHADER, VERTEX_SHADER)
+    const fragment = compileShader(context, context.FRAGMENT_SHADER, FRAGMENT_SHADER)
+    const program = mustCreate(context.createProgram(), '粒子 shader 程序')
+    context.attachShader(program, vertex)
+    context.attachShader(program, fragment)
+    context.linkProgram(program)
+    context.deleteShader(vertex)
+    context.deleteShader(fragment)
+    if (!context.getProgramParameter(program, context.LINK_STATUS)) {
+      const log = context.getProgramInfoLog(program)
+      context.deleteProgram(program)
+      throw new Error(`流向粒子 shader 链接失败: ${log ?? '未知错误'}`)
+    }
+    this.resources = {
+      program,
+      buffer: mustCreate(context.createBuffer(), '粒子顶点缓冲'),
+      attributes: {
+        start: context.getAttribLocation(program, 'a_start'),
+        end: context.getAttribLocation(program, 'a_end'),
+        t: context.getAttribLocation(program, 'a_t'),
+        side: context.getAttribLocation(program, 'a_side'),
+        alpha: context.getAttribLocation(program, 'a_alpha'),
+        width: context.getAttribLocation(program, 'a_width'),
+      },
+      uniforms: {
+        matrix: context.getUniformLocation(program, 'u_matrix'),
+        viewport: context.getUniformLocation(program, 'u_viewport'),
+      },
+    }
+  }
+
+  onRemove() {
+    this.releaseGL()
+    this.gl = null
+    this.added = false
   }
 
   setField(field: FlowField | null, frameIndex: number | null) {
-    this.stop()
     const keepTrails = field != null
       && this.field != null
       && field.width === this.field.width
       && field.height === this.field.height
       && this.particles.length > 0
-      && this.canvas.dataset.flowMode === 'animated'
+      && !this.reducedMotion.matches
     this.field = field
-    this.screenProjection = null
+    this.frameIndex = frameIndex
     this.wetCells = field ? this.findWetCells(field) : []
-    if (frameIndex == null) this.canvas.removeAttribute('data-flow-frame')
-    else this.canvas.dataset.flowFrame = String(frameIndex)
+    const container = this.map.getContainer()
+    if (frameIndex == null) delete container.dataset.flowFrame
+    else container.dataset.flowFrame = String(frameIndex)
     if (!field || this.wetCells.length === 0) {
       this.particles = []
-      this.canvas.removeAttribute('data-flow-mode')
-      this.clearCanvas()
+      delete container.dataset.flowMode
+      this.cancelRepaint()
+      this.map.triggerRepaint()
       return
     }
     if (this.reducedMotion.matches) {
-      this.particles = []
-      this.canvas.dataset.flowMode = 'static'
-      this.drawStaticArrows()
-      return
-    }
-    this.canvas.dataset.flowMode = 'animated'
-    const count = this.desiredCount()
-    if (keepTrails) {
-      // Keep the surviving particles and the fading trails: the new field
-      // takes them over from their current positions, which preserves the
-      // impression of continuous water while the simulation advances.
-      this.particles = this.particles.slice(0, count)
-      while (this.particles.length < count) this.particles.push(this.spawn())
+      container.dataset.flowMode = 'static'
+      this.buildStaticParticles()
     } else {
-      this.clearCanvas()
-      this.particles = []
-      for (let index = 0; index < count; index += 1) {
-        this.particles.push(this.spawn(index % this.wetCells.length))
+      container.dataset.flowMode = 'animated'
+      const count = this.desiredCount()
+      if (keepTrails) {
+        this.particles.length = Math.min(this.particles.length, count)
+        while (this.particles.length < count) this.particles.push(this.spawn())
+      } else {
+        this.particles = []
+        for (let index = 0; index < count; index += 1) {
+          this.particles.push(this.spawn(index % this.wetCells.length))
+        }
       }
+      this.lastFrameTime = performance.now()
     }
-    this.lastFrameTime = performance.now()
-    this.animationFrame = requestAnimationFrame(this.animate)
+    this.map.triggerRepaint()
+  }
+
+  setTerrainExaggeration(exaggeration: number) {
+    const next = Math.max(0, exaggeration)
+    if (next === this.terrainExaggeration) return
+    this.terrainExaggeration = next
+    // Existing trails were built at the old vertical scale. Dropping them is
+    // preferable to showing a brief vertical jump when the user changes it.
+    for (const particle of this.particles) {
+      const sample = this.field
+        ? sampleParticleField(this.field, particle.longitude, particle.latitude)
+        : null
+      if (!sample) continue
+      particle.altitude = this.altitudeAt(particle.longitude, particle.latitude, sample)
+      particle.trail = [{
+        longitude: particle.longitude,
+        latitude: particle.latitude,
+        altitude: particle.altitude,
+      }]
+    }
+    this.map.triggerRepaint()
   }
 
   destroy() {
-    this.stop()
-    this.map.off('resize', this.resize)
-    this.map.off('move', this.handleMove)
+    this.destroyed = true
+    this.cancelRepaint()
+    this.map.off('load', this.addToMap)
+    this.map.off('moveend', this.handleMoveEnd)
     this.reducedMotion.removeEventListener('change', this.motionPreferenceChanged)
-    this.canvas.remove()
+    if (this.map.getLayer(this.id)) this.map.removeLayer(this.id)
+    else this.releaseGL()
+    delete this.map.getContainer().dataset.flowMode
+    delete this.map.getContainer().dataset.flowFrame
+  }
+
+  render(
+    context: WebGLRenderingContext | WebGL2RenderingContext,
+    options: CustomRenderMethodInput,
+  ) {
+    const resources = this.resources
+    const field = this.field
+    if (!resources || !field || this.particles.length === 0) return
+    const now = performance.now()
+    if (!this.reducedMotion.matches) {
+      const elapsed = Math.min(Math.max((now - this.lastFrameTime) / 1000, 0), 0.08)
+      this.lastFrameTime = now
+      this.advance(elapsed)
+    }
+    const vertices = this.buildTrailVertices()
+    if (vertices.length === 0) {
+      this.scheduleRepaint()
+      return
+    }
+    const gl = context as WebGL2RenderingContext
+    gl.useProgram(resources.program)
+    gl.uniformMatrix4fv(
+      resources.uniforms.matrix,
+      false,
+      options.defaultProjectionData.mainMatrix,
+    )
+    gl.uniform2f(resources.uniforms.viewport, gl.drawingBufferWidth, gl.drawingBufferHeight)
+    gl.bindBuffer(gl.ARRAY_BUFFER, resources.buffer)
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW)
+    const stride = VERTEX_FLOATS * 4
+    enableAttribute(gl, resources.attributes.start, 3, stride, 0)
+    enableAttribute(gl, resources.attributes.end, 3, stride, 12)
+    enableAttribute(gl, resources.attributes.t, 1, stride, 24)
+    enableAttribute(gl, resources.attributes.side, 1, stride, 28)
+    enableAttribute(gl, resources.attributes.alpha, 1, stride, 32)
+    enableAttribute(gl, resources.attributes.width, 1, stride, 36)
+    gl.enable(gl.BLEND)
+    // Match the former Canvas `lighter` composition so cyan trails remain
+    // legible over the pale depth ramp.
+    gl.blendFunc(gl.ONE, gl.ONE)
+    gl.disable(gl.CULL_FACE)
+    gl.depthMask(false)
+    gl.drawArrays(gl.TRIANGLES, 0, vertices.length / VERTEX_FLOATS)
+    this.scheduleRepaint()
+  }
+
+  private advance(elapsed: number) {
+    if (!this.field || elapsed <= 0) return
+    const seconds = elapsed * VISUAL_SECONDS_PER_SECOND
+    for (let index = 0; index < this.particles.length; index += 1) {
+      let particle = this.particles[index]
+      const sample = sampleParticleField(this.field, particle.longitude, particle.latitude)
+      particle.ageSeconds -= elapsed
+      if (!sample || particle.ageSeconds <= 0) {
+        particle = this.spawn()
+        this.particles[index] = particle
+        continue
+      }
+      const latitudeRadians = particle.latitude * Math.PI / 180
+      const longitude = particle.longitude + sample.velocity[0] * seconds
+        / Math.max(111_320 * Math.cos(latitudeRadians), 1)
+      const latitude = particle.latitude + sample.velocity[1] * seconds / 110_540
+      const nextSample = sampleParticleField(this.field, longitude, latitude)
+      if (!nextSample) {
+        this.particles[index] = this.spawn()
+        continue
+      }
+      particle.longitude = longitude
+      particle.latitude = latitude
+      particle.altitude = this.altitudeAt(longitude, latitude, nextSample)
+      particle.trail.push({ longitude, latitude, altitude: particle.altitude })
+      if (particle.trail.length > MAX_TRAIL_POINTS) particle.trail.shift()
+    }
+  }
+
+  private buildTrailVertices() {
+    let segmentCount = 0
+    for (const particle of this.particles) segmentCount += Math.max(0, particle.trail.length - 1)
+    const vertices = new Float32Array(segmentCount * 6 * VERTEX_FLOATS)
+    let offset = 0
+    for (const particle of this.particles) {
+      for (let index = 1; index < particle.trail.length; index += 1) {
+        const start = particle.trail[index - 1]
+        const end = particle.trail[index]
+        const startCoordinate = MercatorCoordinate.fromLngLat(
+          [start.longitude, start.latitude], start.altitude,
+        )
+        const endCoordinate = MercatorCoordinate.fromLngLat(
+          [end.longitude, end.latitude], end.altitude,
+        )
+        const progress = index / Math.max(1, particle.trail.length - 1)
+        const alpha = 0.08 + progress * 0.5
+        const width = 0.65 + progress * 0.8
+        const corners: [number, number][] = [
+          [0, -1], [0, 1], [1, -1],
+          [1, -1], [0, 1], [1, 1],
+        ]
+        for (const [t, side] of corners) {
+          vertices[offset++] = startCoordinate.x
+          vertices[offset++] = startCoordinate.y
+          vertices[offset++] = startCoordinate.z
+          vertices[offset++] = endCoordinate.x
+          vertices[offset++] = endCoordinate.y
+          vertices[offset++] = endCoordinate.z
+          vertices[offset++] = t
+          vertices[offset++] = side
+          vertices[offset++] = alpha
+          vertices[offset++] = width
+        }
+      }
+    }
+    return vertices
   }
 
   private findWetCells(field: FlowField) {
@@ -114,238 +440,73 @@ export class FlowParticleLayer {
   }
 
   private spawn(offset?: number): Particle {
-    if (!this.field || this.wetCells.length === 0) return { longitude: 0, latitude: 0, ageSeconds: 0 }
-    const wetIndex = offset == null
-      ? Math.floor(Math.random() * this.wetCells.length)
-      : offset
-    const cell = this.wetCells[wetIndex % this.wetCells.length]
-    const row = Math.floor(cell / this.field.width)
-    const column = cell % this.field.width
-    const [west, south, east, north] = this.field.bounds
-    return {
-      longitude: west + (column + Math.random()) / this.field.width * (east - west),
-      latitude: north - (row + Math.random()) / this.field.height * (north - south),
-      ageSeconds: PARTICLE_MIN_AGE_SECONDS + Math.random() * PARTICLE_AGE_SPREAD_SECONDS,
+    if (!this.field || this.wetCells.length === 0) {
+      return { longitude: 0, latitude: 0, altitude: 0, ageSeconds: 0, trail: [] }
     }
-  }
-
-  /**
-   * Local affine approximation of the map's lngLat → screen transform.
-   *
-   * MapLibre's map.project() becomes dramatically expensive with terrain
-   * enabled (~80µs vs ~0.25µs per call, measured), and this layer needs two
-   * projections per particle per frame — thousands of calls per second that
-   * otherwise saturate the main thread. The simulation domain is at most a
-   * few kilometres across, where the Mercator projection is locally affine
-   * to sub-pixel accuracy, so we measure the affine once per camera change
-   * (three project() calls) and evaluate it arithmetically per particle.
-   * The full 2×2 matrix keeps the approximation exact under map bearing.
-   */
-  private screenProjection: {
-    originX: number
-    originY: number
-    longitude: number
-    latitude: number
-    dXdLng: number
-    dYdLng: number
-    dXdLat: number
-    dYdLat: number
-  } | null = null
-
-  private project(longitude: number, latitude: number) {
-    if (!this.screenProjection) {
-      const bounds = this.field
-        ? this.field.bounds
-        : (() => {
-            const b = this.map.getBounds()
-            return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as [number, number, number, number]
-          })()
-      const originLng = (bounds[0] + bounds[2]) / 2
-      const originLat = (bounds[1] + bounds[3]) / 2
-      const delta = 0.001
-      const origin = this.map.project([originLng, originLat])
-      const eastProbe = this.map.project([originLng + delta, originLat])
-      const northProbe = this.map.project([originLng, originLat + delta])
-      this.screenProjection = {
-        originX: origin.x,
-        originY: origin.y,
-        longitude: originLng,
-        latitude: originLat,
-        dXdLng: (eastProbe.x - origin.x) / delta,
-        dYdLng: (eastProbe.y - origin.y) / delta,
-        dXdLat: (northProbe.x - origin.x) / delta,
-        dYdLat: (northProbe.y - origin.y) / delta,
-      }
-    }
-    const p = this.screenProjection
-    const dLng = longitude - p.longitude
-    const dLat = latitude - p.latitude
-    return {
-      x: p.originX + dLng * p.dXdLng + dLat * p.dXdLat,
-      y: p.originY + dLng * p.dYdLng + dLat * p.dYdLat,
-    }
-  }
-
-  private sample(longitude: number, latitude: number): [number, number] | null {
-    if (!this.field) return null
-    const [west, south, east, north] = this.field.bounds
-    // Bilinear interpolation between cell centres: dry (NaN) neighbours are
-    // excluded and the remaining weights renormalised. Nearest-neighbour
-    // sampling turns smooth circulation into polygonal rings near a vortex.
-    const gridX = (longitude - west) / (east - west) * this.field.width - 0.5
-    const gridY = (north - latitude) / (north - south) * this.field.height - 0.5
-    const column = Math.floor(gridX)
-    const row = Math.floor(gridY)
-    const fractionX = gridX - column
-    const fractionY = gridY - row
-    let u = 0
-    let v = 0
-    let weightSum = 0
-    for (let corner = 0; corner < 4; corner += 1) {
-      const neighbourColumn = column + (corner & 1)
-      const neighbourRow = row + (corner >> 1)
-      if (
-        neighbourColumn < 0 || neighbourColumn >= this.field.width
-        || neighbourRow < 0 || neighbourRow >= this.field.height
-      ) continue
-      const weight = (corner & 1 ? fractionX : 1 - fractionX)
-        * (corner >> 1 ? fractionY : 1 - fractionY)
-      if (weight === 0) continue
-      const offset = (neighbourRow * this.field.width + neighbourColumn) * 2
-      const neighbourU = this.field.vectors[offset]
-      const neighbourV = this.field.vectors[offset + 1]
-      if (!Number.isFinite(neighbourU) || !Number.isFinite(neighbourV)) continue
-      u += neighbourU * weight
-      v += neighbourV * weight
-      weightSum += weight
-    }
-    if (weightSum === 0) return null
-    u /= weightSum
-    v /= weightSum
-    if (Math.hypot(u, v) < MIN_SPEED_MPS) return null
-    return [u, v]
-  }
-
-  private readonly animate = (time: number) => {
-    const elapsed = Math.min((time - this.lastFrameTime) / 1000, 0.08)
-    this.lastFrameTime = time
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-
-    // Fade the accumulated trails instead of clearing: each particle keeps
-    // drawing over its own recent path, which builds continuous streamlines.
-    this.context.globalCompositeOperation = 'destination-out'
-    this.context.fillStyle = `rgba(0, 0, 0, ${1 - Math.exp(-elapsed / TRAIL_TAU_SECONDS)})`
-    this.context.fillRect(0, 0, this.canvas.width, this.canvas.height)
-    this.context.globalCompositeOperation = 'lighter'
-    this.context.lineCap = 'round'
-
-    for (let index = 0; index < this.particles.length; index += 1) {
-      let particle = this.particles[index]
-      const velocity = this.sample(particle.longitude, particle.latitude)
-      particle.ageSeconds -= elapsed
-      if (!velocity || particle.ageSeconds <= 0) {
-        particle = this.spawn()
-        this.particles[index] = particle
-        continue
-      }
-      const before = this.project(particle.longitude, particle.latitude)
-      const seconds = elapsed * VISUAL_SECONDS_PER_SECOND
-      const latitudeRadians = particle.latitude * Math.PI / 180
-      particle.longitude += velocity[0] * seconds / Math.max(111_320 * Math.cos(latitudeRadians), 1)
-      particle.latitude += velocity[1] * seconds / 110_540
-      const after = this.project(particle.longitude, particle.latitude)
-      if (!pointIsVisible(before, this.canvas) && !pointIsVisible(after, this.canvas)) continue
-      const speed = Math.hypot(...velocity)
-      this.context.strokeStyle = `rgba(83, 231, 255, ${Math.min(0.42, 0.05 + speed * 0.26)})`
-      this.context.lineWidth = Math.min(2.2, 0.8 + speed * 0.25) * pixelRatio
-      this.context.beginPath()
-      this.context.moveTo(before.x * pixelRatio, before.y * pixelRatio)
-      this.context.lineTo(after.x * pixelRatio, after.y * pixelRatio)
-      this.context.stroke()
-      // A brighter head makes the flow direction readable while the fading
-      // trail stretches behind it like a comet tail.
-      this.context.fillStyle = `rgba(190, 249, 255, ${Math.min(0.6, 0.12 + speed * 0.3)})`
-      this.context.beginPath()
-      this.context.arc(
-        after.x * pixelRatio,
-        after.y * pixelRatio,
-        Math.min(1.7, 0.7 + speed * 0.2) * pixelRatio,
-        0,
-        Math.PI * 2,
-      )
-      this.context.fill()
-    }
-    this.context.globalCompositeOperation = 'source-over'
-    this.animationFrame = requestAnimationFrame(this.animate)
-  }
-
-  private drawStaticArrows() {
-    if (!this.field) return
-    this.clearCanvas()
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-    const stride = Math.max(1, Math.ceil(Math.sqrt(this.wetCells.length / 180)))
-    this.context.strokeStyle = 'rgba(83, 231, 255, .78)'
-    this.context.fillStyle = 'rgba(83, 231, 255, .9)'
-    this.context.lineWidth = pixelRatio
-    for (let index = 0; index < this.wetCells.length; index += stride) {
-      const cell = this.wetCells[index]
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const wetIndex = offset == null
+        ? Math.floor(Math.random() * this.wetCells.length)
+        : offset + attempt
+      const cell = this.wetCells[wetIndex % this.wetCells.length]
       const row = Math.floor(cell / this.field.width)
       const column = cell % this.field.width
       const [west, south, east, north] = this.field.bounds
-      const longitude = west + (column + 0.5) / this.field.width * (east - west)
-      const latitude = north - (row + 0.5) / this.field.height * (north - south)
-      const velocity = this.sample(longitude, latitude)
-      if (!velocity) continue
-      const origin = this.project(longitude, latitude)
-      const latitudeRadians = latitude * Math.PI / 180
-      const projectedEnd = this.project(
-        longitude + velocity[0] * VISUAL_SECONDS_PER_SECOND
-          / Math.max(111_320 * Math.cos(latitudeRadians), 1),
-        latitude + velocity[1] * VISUAL_SECONDS_PER_SECOND / 110_540,
-      )
-      const deltaX = projectedEnd.x - origin.x
-      const deltaY = projectedEnd.y - origin.y
-      const projectedLength = Math.hypot(deltaX, deltaY)
-      if (projectedLength < 0.01) continue
-      const length = 8 + Math.min(10, Math.hypot(...velocity) * 2)
-      const endX = origin.x + deltaX / projectedLength * length
-      const endY = origin.y + deltaY / projectedLength * length
-      this.context.beginPath()
-      this.context.moveTo(origin.x * pixelRatio, origin.y * pixelRatio)
-      this.context.lineTo(endX * pixelRatio, endY * pixelRatio)
-      this.context.stroke()
-      this.context.beginPath()
-      this.context.arc(endX * pixelRatio, endY * pixelRatio, 1.5 * pixelRatio, 0, Math.PI * 2)
-      this.context.fill()
+      const longitude = west + (column + Math.random()) / this.field.width * (east - west)
+      const latitude = north - (row + Math.random()) / this.field.height * (north - south)
+      const sample = sampleParticleField(this.field, longitude, latitude)
+      if (!sample) continue
+      const altitude = this.altitudeAt(longitude, latitude, sample)
+      return {
+        longitude,
+        latitude,
+        altitude,
+        ageSeconds: PARTICLE_MIN_AGE_SECONDS + Math.random() * PARTICLE_AGE_SPREAD_SECONDS,
+        trail: [{ longitude, latitude, altitude }],
+      }
     }
+    return { longitude: 0, latitude: 0, altitude: 0, ageSeconds: 0, trail: [] }
   }
 
-  private clearCanvas() {
-    this.context.globalCompositeOperation = 'source-over'
-    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height)
+  private altitudeAt(longitude: number, latitude: number, sample: ParticleSample) {
+    const terrainElevation = sample.stage == null
+      ? this.map.queryTerrainElevation([longitude, latitude])
+      : null
+    return particleSurfaceAltitude(sample, terrainElevation, this.terrainExaggeration)
   }
 
-  private readonly resize = () => {
-    this.screenProjection = null
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-    const container = this.map.getContainer()
-    this.canvas.width = Math.max(1, Math.round(container.clientWidth * pixelRatio))
-    this.canvas.height = Math.max(1, Math.round(container.clientHeight * pixelRatio))
-    this.canvas.style.width = `${container.clientWidth}px`
-    this.canvas.style.height = `${container.clientHeight}px`
-    if (this.reducedMotion.matches) this.drawStaticArrows()
+  private buildStaticParticles() {
+    if (!this.field) return
+    this.particles = []
+    const stride = Math.max(1, Math.ceil(Math.sqrt(this.wetCells.length / 180)))
+    for (let index = 0; index < this.wetCells.length; index += stride) {
+      const particle = this.spawn(index)
+      const sample = sampleParticleField(this.field, particle.longitude, particle.latitude)
+      if (!sample) continue
+      const seconds = 25
+      const latitudeRadians = particle.latitude * Math.PI / 180
+      const longitude = particle.longitude + sample.velocity[0] * seconds
+        / Math.max(111_320 * Math.cos(latitudeRadians), 1)
+      const latitude = particle.latitude + sample.velocity[1] * seconds / 110_540
+      const endSample = sampleParticleField(this.field, longitude, latitude) ?? sample
+      particle.trail.push({
+        longitude,
+        latitude,
+        altitude: this.altitudeAt(longitude, latitude, endSample),
+      })
+      this.particles.push(particle)
+    }
   }
 
   private desiredCount() {
     if (!this.field || this.wetCells.length === 0) return 0
     const [west, south, east, north] = this.field.bounds
-    const topLeft = this.project(west, north)
-    const bottomRight = this.project(east, south)
+    const topLeft = this.map.project([west, north])
+    const bottomRight = this.map.project([east, south])
     const cellAreaPx = Math.abs(
       (bottomRight.x - topLeft.x) * (bottomRight.y - topLeft.y),
     ) / (this.field.width * this.field.height)
     if (!Number.isFinite(cellAreaPx) || cellAreaPx <= 0) {
-      return Math.min(900, Math.max(160, this.wetCells.length * 2))
+      return Math.min(PARTICLE_MAX_COUNT, Math.max(PARTICLE_MIN_COUNT, this.wetCells.length * 2))
     }
     const wetPixels = this.wetCells.length * cellAreaPx
     return Math.round(Math.min(
@@ -354,39 +515,73 @@ export class FlowParticleLayer {
     ))
   }
 
-  private readonly handleMove = () => {
-    this.screenProjection = null
-    if (this.canvas.dataset.flowMode === 'static') {
-      this.drawStaticArrows()
-      return
-    }
-    // Trail pixels are anchored to the previous view; keeping them while
-    // the map pans or zooms would smear stale streamlines across the map.
-    this.clearCanvas()
-    // Zooming changes the wet area's screen size; trim or top up the
-    // particle population so trail density stays roughly constant.
+  private readonly handleMoveEnd = () => {
+    if (!this.field || this.reducedMotion.matches) return
     const target = this.desiredCount()
-    if (target === 0 || this.particles.length === 0) return
-    if (this.particles.length > target) {
-      this.particles.length = target
-    } else {
-      while (this.particles.length < target) this.particles.push(this.spawn())
-    }
+    this.particles.length = Math.min(this.particles.length, target)
+    while (this.particles.length < target) this.particles.push(this.spawn())
   }
 
   private readonly motionPreferenceChanged = () => {
-    const frameIndex = this.canvas.dataset.flowFrame
-    this.setField(this.field, frameIndex == null ? null : Number(frameIndex))
+    this.setField(this.field, this.frameIndex)
   }
 
-  private stop() {
-    if (this.animationFrame != null) cancelAnimationFrame(this.animationFrame)
-    this.animationFrame = null
+  private scheduleRepaint() {
+    if (this.reducedMotion.matches || !this.field || this.repaintTimer != null) return
+    this.repaintTimer = setTimeout(() => {
+      this.repaintTimer = null
+      if (this.field && !this.destroyed) this.map.triggerRepaint()
+    }, REPAINT_MS)
+  }
+
+  private cancelRepaint() {
+    if (this.repaintTimer != null) clearTimeout(this.repaintTimer)
+    this.repaintTimer = null
+  }
+
+  private releaseGL() {
+    const gl = this.gl
+    const resources = this.resources
+    if (!gl || !resources) return
+    gl.deleteBuffer(resources.buffer)
+    gl.deleteProgram(resources.program)
+    this.resources = null
   }
 }
 
-function pointIsVisible(point: { x: number; y: number }, canvas: HTMLCanvasElement) {
-  const width = Number.parseFloat(canvas.style.width) || canvas.width
-  const height = Number.parseFloat(canvas.style.height) || canvas.height
-  return point.x >= -8 && point.y >= -8 && point.x <= width + 8 && point.y <= height + 8
+function decodeFloat16(bits: number) {
+  const sign = bits & 0x8000 ? -1 : 1
+  const exponent = (bits >>> 10) & 0x1f
+  const fraction = bits & 0x03ff
+  if (exponent === 0) return sign * fraction * 2 ** -24
+  if (exponent === 0x1f) return fraction ? Number.NaN : sign * Number.POSITIVE_INFINITY
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15)
+}
+
+function compileShader(gl: WebGL2RenderingContext, type: number, source: string) {
+  const shader = mustCreate(gl.createShader(type), '粒子 shader')
+  gl.shaderSource(shader, source)
+  gl.compileShader(shader)
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader)
+    gl.deleteShader(shader)
+    throw new Error(`流向粒子 shader 编译失败: ${log ?? '未知错误'}`)
+  }
+  return shader
+}
+
+function enableAttribute(
+  gl: WebGL2RenderingContext,
+  location: number,
+  size: number,
+  stride: number,
+  offset: number,
+) {
+  gl.enableVertexAttribArray(location)
+  gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset)
+}
+
+function mustCreate<T>(value: T | null, label: string): T {
+  if (value == null) throw new Error(`流向粒子初始化失败: 无法创建${label}`)
+  return value
 }

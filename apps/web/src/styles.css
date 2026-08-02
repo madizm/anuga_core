@@ -150,7 +150,6 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .terrain-mode.active b, .terrain-mode.active span { color: var(--cyan); }
 .terrain-settings { width: 29px; height: 42px; border: 1px solid #46636b; background: rgba(7, 18, 23, .94); color: #89a0a6; }
 .terrain-settings.active { border-color: var(--cyan-dim); color: var(--cyan); background: #0c2931; }
-.terrain-flow-warning { display: block; margin: 4px 0 0 auto; width: max-content; padding: 4px 7px; border-right: 2px solid var(--orange); background: rgba(7, 18, 23, .92); color: #d7a38f; font: 500 9px var(--display); letter-spacing: .05em; }
 .terrain-error-badge { display: block; margin: 4px 0 0 auto; width: max-content; padding: 4px 7px; border-right: 2px solid var(--orange); background: rgba(28, 15, 13, .94); color: #ff9c7f; font: 500 9px var(--display); letter-spacing: .04em; }
 .terrain-popover { position: absolute; top: 49px; right: 0; width: 232px; padding: 13px; border: 1px solid #3a5962; border-top: 2px solid var(--cyan); background: rgba(7, 18, 23, .97); box-shadow: 0 18px 42px rgba(0, 0, 0, .48); }
 .terrain-popover header { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
@@ -318,7 +317,6 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .result-maps.triple { grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line-bright); }
 .result-map-cell { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
 .result-map-canvas { width: 100%; height: 100%; }
-.flow-particle-canvas { position: absolute; z-index: 2; inset: 0; pointer-events: none; mix-blend-mode: screen; }
 .water-ripple-canvas { position: absolute; z-index: 2; inset: 0; pointer-events: none; mix-blend-mode: screen; }
 .water-ripple-canvas.colorize { mix-blend-mode: normal; }
 .result-map-label { position: absolute; z-index: 4; left: 14px; top: 14px; padding: 7px 10px; border-left: 2px solid var(--cyan); background: rgba(5, 15, 19, .88); color: #c8dadd; font: 600 11px var(--display); letter-spacing: .1em; }
