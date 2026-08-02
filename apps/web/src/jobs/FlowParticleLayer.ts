@@ -5,6 +5,7 @@ import {
   type Map,
 } from 'maplibre-gl'
 import type { FlowField } from '../api/types'
+import { advectGridPosition, gridUvToLngLat, lngLatToGridUv } from './flowGrid'
 
 interface TrailPoint {
   longitude: number
@@ -95,9 +96,9 @@ export function sampleParticleField(
   longitude: number,
   latitude: number,
 ): ParticleSample | null {
-  const [west, south, east, north] = field.bounds
-  const gridX = (longitude - west) / (east - west) * field.width - 0.5
-  const gridY = (north - latitude) / (north - south) * field.height - 0.5
+  const [uCoordinate, vCoordinate] = lngLatToGridUv(field, longitude, latitude)
+  const gridX = uCoordinate * field.width - 0.5
+  const gridY = vCoordinate * field.height - 0.5
   const column = Math.floor(gridX)
   const row = Math.floor(gridY)
   const fractionX = gridX - column
@@ -371,10 +372,13 @@ export class FlowParticleLayer implements CustomLayerInterface {
         this.particles[index] = particle
         continue
       }
-      const latitudeRadians = particle.latitude * Math.PI / 180
-      const longitude = particle.longitude + sample.velocity[0] * seconds
-        / Math.max(111_320 * Math.cos(latitudeRadians), 1)
-      const latitude = particle.latitude + sample.velocity[1] * seconds / 110_540
+      const [longitude, latitude] = advectGridPosition(
+        this.field,
+        particle.longitude,
+        particle.latitude,
+        sample.velocity,
+        seconds,
+      )
       const nextSample = sampleParticleField(this.field, longitude, latitude)
       if (!nextSample) {
         this.particles[index] = this.spawn()
@@ -450,9 +454,11 @@ export class FlowParticleLayer implements CustomLayerInterface {
       const cell = this.wetCells[wetIndex % this.wetCells.length]
       const row = Math.floor(cell / this.field.width)
       const column = cell % this.field.width
-      const [west, south, east, north] = this.field.bounds
-      const longitude = west + (column + Math.random()) / this.field.width * (east - west)
-      const latitude = north - (row + Math.random()) / this.field.height * (north - south)
+      const [longitude, latitude] = gridUvToLngLat(
+        this.field,
+        (column + Math.random()) / this.field.width,
+        (row + Math.random()) / this.field.height,
+      )
       const sample = sampleParticleField(this.field, longitude, latitude)
       if (!sample) continue
       const altitude = this.altitudeAt(longitude, latitude, sample)
@@ -483,10 +489,13 @@ export class FlowParticleLayer implements CustomLayerInterface {
       const sample = sampleParticleField(this.field, particle.longitude, particle.latitude)
       if (!sample) continue
       const seconds = 25
-      const latitudeRadians = particle.latitude * Math.PI / 180
-      const longitude = particle.longitude + sample.velocity[0] * seconds
-        / Math.max(111_320 * Math.cos(latitudeRadians), 1)
-      const latitude = particle.latitude + sample.velocity[1] * seconds / 110_540
+      const [longitude, latitude] = advectGridPosition(
+        this.field,
+        particle.longitude,
+        particle.latitude,
+        sample.velocity,
+        seconds,
+      )
       const endSample = sampleParticleField(this.field, longitude, latitude) ?? sample
       particle.trail.push({
         longitude,
@@ -499,9 +508,8 @@ export class FlowParticleLayer implements CustomLayerInterface {
 
   private desiredCount() {
     if (!this.field || this.wetCells.length === 0) return 0
-    const [west, south, east, north] = this.field.bounds
-    const topLeft = this.map.project([west, north])
-    const bottomRight = this.map.project([east, south])
+    const topLeft = this.map.project(gridUvToLngLat(this.field, 0, 0))
+    const bottomRight = this.map.project(gridUvToLngLat(this.field, 1, 1))
     const cellAreaPx = Math.abs(
       (bottomRight.x - topLeft.x) * (bottomRight.y - topLeft.y),
     ) / (this.field.width * this.field.height)

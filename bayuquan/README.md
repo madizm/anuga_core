@@ -153,7 +153,10 @@ EPSG:32651 COG aligned exactly with the cropped model DEM. Dry pixels retain
 their numerical values but are transparent through the internal display mask.
 
 The result workspace can request each frame's compact, versioned flow field
-from `/api/jobs/{jobId}/frames/{frameIndex}/flow` and display animated particles.
+from `/api/jobs/{jobId}/frames/{frameIndex}/flow`. BQFV v4 carries the four
+geographic corners of the projected result grid so water and particles retain
+the source raster's orientation instead of being stretched to a WGS84 bounding
+box.
 Browsers requesting reduced motion receive static directional arrows instead.
 
 All boundaries are fixed as transmissive. Initial water level is applied only

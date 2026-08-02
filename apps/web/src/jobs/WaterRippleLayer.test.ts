@@ -1,3 +1,4 @@
+import { MercatorCoordinate } from 'maplibre-gl'
 import { describe, expect, it } from 'vitest'
 import type { FlowField } from '../api/types'
 import {
@@ -14,6 +15,7 @@ function makeField(overrides: Partial<FlowField> = {}): FlowField {
     width: 2,
     height: 1,
     bounds: [122.1, 40.1, 122.2, 40.2],
+    corners: null,
     vectors: new Float32Array([Number.NaN, Number.NaN, 3, 4]),
     depths: new Float32Array([Number.NaN, 0.5]),
     texels: null,
@@ -125,5 +127,35 @@ describe('buildWaterSurfaceMesh', () => {
     expect(mesh.vertices[4]).toBe(0)
     expect(mesh.vertices.at(-2)).toBe(1)
     expect(mesh.vertices.at(-1)).toBe(1)
+    const first = new MercatorCoordinate(
+      mesh.vertices[0], mesh.vertices[1], mesh.vertices[2],
+    )
+    expect(first.toAltitude()).toBeCloseTo(12.5, 2)
+  })
+
+  it('uses a dense Uint32 mesh for large flow fields', () => {
+    const width = 300
+    const height = 300
+    const texels = new Uint16Array(width * height * 4)
+    for (let cell = 0; cell < width * height; cell += 1) {
+      texels[cell * 4 + 2] = 0x3c00 // depth 1
+      texels[cell * 4 + 3] = 0x4900 // stage 10
+    }
+    const field = makeField({
+      width,
+      height,
+      vectors: new Float32Array(width * height * 2),
+      depths: null,
+      texels,
+    })
+    const map = {
+      queryTerrainElevation: () => { throw new Error('v3 mesh must use stage') },
+    } as unknown as Parameters<typeof buildWaterSurfaceMesh>[0]
+
+    const mesh = buildWaterSurfaceMesh(map, field, 1.5)
+
+    expect(mesh.vertices).toHaveLength(257 * 257 * 5)
+    expect(mesh.indices).toBeInstanceOf(Uint32Array)
+    expect(mesh.indices).toHaveLength(256 * 256 * 6)
   })
 })

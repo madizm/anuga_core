@@ -15,7 +15,6 @@ import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
-from rasterio.warp import transform_bounds
 from collections.abc import Callable
 from contextlib import ExitStack, asynccontextmanager
 from urllib.parse import urlparse
@@ -666,17 +665,28 @@ def create_app(
                     & np.isfinite(velocity_u)
                     & np.isfinite(velocity_v)
                 )
-                bounds = transform_bounds(
-                    dataset.crs,
-                    "OGC:CRS84",
-                    *dataset.bounds,
-                    densify_pts=21,
+                # Preserve the orientation of the source raster grid. A UTM
+                # grid is rotated relative to a longitude/latitude bounding
+                # box; encoding only transform_bounds displaced its corners
+                # by roughly two 10 m cells over a 2.3 km result area.
+                transformer = Transformer.from_crs(
+                    dataset.crs, "OGC:CRS84", always_xy=True
                 )
-                # Version 3 packs (u, v, depth, stage) per cell as float16 in
+                left, bottom, right, top = dataset.bounds
+                corner_x, corner_y = transformer.transform(
+                    [left, right, left, right],
+                    [top, top, bottom, bottom],
+                )
+                grid_corners = tuple(
+                    coordinate
+                    for pair in zip(corner_x, corner_y)
+                    for coordinate in pair
+                )
+                # Version 4 packs (u, v, depth, stage) per cell as float16 in
                 # texture-ready RGBA order: browsers upload the payload
                 # verbatim as an RGBA16F texture. Dry cells use the exact
                 # float16 sentinel depth = -1 so no NaN ever reaches a GPU
-                # sampler. Stage rides the otherwise spare alpha channel.
+                # sampler. Its header carries the exact projected-grid corners.
                 texels = np.zeros(
                     (out_shape[0], out_shape[1], 4), dtype="<f2"
                 )
@@ -686,13 +696,13 @@ def create_app(
                 texels[..., 3] = stage
                 texels[~wet] = (0, 0, -1, 0)
                 header = struct.pack(
-                    "<4sHHHH4d",
+                    "<4sHHHH8d",
                     b"BQFV",
-                    3,
+                    4,
                     out_shape[1],
                     out_shape[0],
                     0,
-                    *bounds,
+                    *grid_corners,
                 )
         except HTTPException:
             raise

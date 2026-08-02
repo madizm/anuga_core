@@ -653,13 +653,17 @@ def test_flow_field_endpoint_publishes_wet_velocity_components(tmp_path):
     magic, version, width, height, _reserved = unpack_from(
         "<4sHHHH", response.content
     )
-    assert (magic, version, width, height) == (b"BQFV", 3, 2, 1)
-    west, south, east, north = unpack_from("<4d", response.content, 12)
-    assert 121 < west < east < 123
-    assert 39 < south < north < 41
-    # v3 texels are (u, v, depth, stage) float16; dry cells carry the exact
+    assert (magic, version, width, height) == (b"BQFV", 4, 2, 1)
+    nw_lon, nw_lat, ne_lon, ne_lat, sw_lon, sw_lat, se_lon, se_lat = (
+        unpack_from("<8d", response.content, 12)
+    )
+    assert 121 < nw_lon < ne_lon < 123
+    assert 121 < sw_lon < se_lon < 123
+    assert 39 < sw_lat < nw_lat < 41
+    assert 39 < se_lat < ne_lat < 41
+    # v4 texels are (u, v, depth, stage) float16; dry cells carry the exact
     # sentinel depth -1 instead of NaN.
-    texels = np.frombuffer(response.content, dtype="<f2", offset=44)
+    texels = np.frombuffer(response.content, dtype="<f2", offset=76)
     np.testing.assert_array_equal(texels[:4], [0, 0, -1, 0])
     np.testing.assert_allclose(texels[4:], [3, 4, 1, 6])
 
@@ -702,9 +706,9 @@ def test_flow_field_endpoint_downsamples_to_max_dim(tmp_path):
     magic, version, width, height, _reserved = unpack_from(
         "<4sHHHH", response.content
     )
-    assert (magic, version, width, height) == (b"BQFV", 3, 16, 8)
+    assert (magic, version, width, height) == (b"BQFV", 4, 16, 8)
     texels = np.frombuffer(
-        response.content, dtype="<f2", offset=44,
+        response.content, dtype="<f2", offset=76,
     ).reshape(height, width, 4)
     assert np.isfinite(texels).all()
     assert (texels[..., 2] >= 0).all()

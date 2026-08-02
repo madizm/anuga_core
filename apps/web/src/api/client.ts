@@ -44,7 +44,9 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 async function flowField(jobId: string, frameIndex: number): Promise<FlowField> {
-  const response = await fetch(`/api/jobs/${jobId}/frames/${frameIndex}/flow`)
+  // The query separates v4 responses from immutable v3 entries already in
+  // browser/proxy caches while the endpoint remains backward compatible.
+  const response = await fetch(`/api/jobs/${jobId}/frames/${frameIndex}/flow?v=4`)
   if (!response.ok) {
     let detail = `无法加载流向场 (${response.status})`
     try {
@@ -56,7 +58,7 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
     throw new Error(detail)
   }
   const buffer = await response.arrayBuffer()
-  if (buffer.byteLength < 44) throw new Error('流向场数据不完整')
+  if (buffer.byteLength < 12) throw new Error('流向场数据不完整')
   const view = new DataView(buffer)
   const magic = String.fromCharCode(
     view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3),
@@ -64,35 +66,50 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
   const version = view.getUint16(4, true)
   const width = view.getUint16(6, true)
   const height = view.getUint16(8, true)
-  if (magic !== 'BQFV' || (version !== 1 && version !== 2 && version !== 3) || width === 0 || height === 0) {
+  if (magic !== 'BQFV' || ![1, 2, 3, 4].includes(version) || width === 0 || height === 0) {
     throw new Error('流向场格式不受支持')
   }
-  // v3 packs fp16 RGBA texels (2 bytes × 4 channels); v1/v2 use float32.
-  const bytesPerCell = version === 3 ? 8 : (version === 2 ? 3 : 2) * 4
-  const expectedBytes = 44 + width * height * bytesPerCell
+  const headerBytes = version === 4 ? 76 : 44
+  if (buffer.byteLength < headerBytes) throw new Error('流向场数据不完整')
+  // v3/v4 pack fp16 RGBA texels (2 bytes × 4 channels); v1/v2 use float32.
+  const bytesPerCell = version >= 3 ? 8 : (version === 2 ? 3 : 2) * 4
+  const expectedBytes = headerBytes + width * height * bytesPerCell
   if (buffer.byteLength !== expectedBytes) throw new Error('流向场数据不完整')
-  const bounds: [number, number, number, number] = [
-    view.getFloat64(12, true), view.getFloat64(20, true),
-    view.getFloat64(28, true), view.getFloat64(36, true),
-  ]
+  const corners = version === 4 ? [
+    [view.getFloat64(12, true), view.getFloat64(20, true)],
+    [view.getFloat64(28, true), view.getFloat64(36, true)],
+    [view.getFloat64(44, true), view.getFloat64(52, true)],
+    [view.getFloat64(60, true), view.getFloat64(68, true)],
+  ] as FlowField['corners'] : null
+  const bounds: [number, number, number, number] = corners
+    ? [
+        Math.min(...corners.map((corner) => corner[0])),
+        Math.min(...corners.map((corner) => corner[1])),
+        Math.max(...corners.map((corner) => corner[0])),
+        Math.max(...corners.map((corner) => corner[1])),
+      ]
+    : [
+        view.getFloat64(12, true), view.getFloat64(20, true),
+        view.getFloat64(28, true), view.getFloat64(36, true),
+      ]
   if (!bounds.every(Number.isFinite) || bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) {
     throw new Error('流向场范围无效')
   }
   const cellCount = width * height
-  if (version === 3) {
+  if (version >= 3) {
     // Texels upload verbatim; only the particle layer needs a CPU-side
     // float32 copy of the velocity channels.
-    const texels = new Uint16Array(buffer.slice(44))
+    const texels = new Uint16Array(buffer.slice(headerBytes))
     const vectors = new Float32Array(cellCount * 2)
     for (let cell = 0; cell < cellCount; cell += 1) {
       vectors[cell * 2] = decodeFloat16(texels[cell * 4])
       vectors[cell * 2 + 1] = decodeFloat16(texels[cell * 4 + 1])
     }
-    return { width, height, bounds, vectors, depths: null, texels }
+    return { width, height, bounds, corners, vectors, depths: null, texels }
   }
-  const packed = new Float32Array(buffer.slice(44))
+  const packed = new Float32Array(buffer.slice(headerBytes))
   if (version === 1) {
-    return { width, height, bounds, vectors: packed, depths: null, texels: null }
+    return { width, height, bounds, corners, vectors: packed, depths: null, texels: null }
   }
   // v2 interleaves (depth, u, v) per cell; split the planes so consumers of
   // the legacy velocity layout keep working unchanged.
@@ -103,7 +120,7 @@ async function flowField(jobId: string, frameIndex: number): Promise<FlowField> 
     vectors[cell * 2] = packed[cell * 3 + 1]
     vectors[cell * 2 + 1] = packed[cell * 3 + 2]
   }
-  return { width, height, bounds, vectors, depths, texels: null }
+  return { width, height, bounds, corners, vectors, depths, texels: null }
 }
 
 /** Decodes one IEEE 754 binary16 value. */

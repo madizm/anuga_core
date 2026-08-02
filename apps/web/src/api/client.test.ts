@@ -35,6 +35,21 @@ function flowPayloadV3(cells: number[]) {
   return buffer
 }
 
+function flowPayloadV4(cells: number[]) {
+  const buffer = new ArrayBuffer(76 + cells.length * 2)
+  const view = new DataView(buffer)
+  for (const [index, byte] of [...'BQFV'].entries()) {
+    view.setUint8(index, byte.charCodeAt(0))
+  }
+  view.setUint16(4, 4, true)
+  view.setUint16(6, 2, true)
+  view.setUint16(8, 1, true)
+  const corners = [122.1, 40.2, 122.2, 40.199, 122.101, 40.1, 122.201, 40.099]
+  corners.forEach((value, index) => view.setFloat64(12 + index * 8, value, true))
+  new Uint16Array(buffer, 76).set(cells)
+  return buffer
+}
+
 function mockFlowResponse(buffer: ArrayBuffer) {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(buffer, {
     status: 200,
@@ -106,6 +121,22 @@ describe('api.flowField', () => {
     expect([...field.vectors]).toEqual([0, 0, 3, 4])
   })
 
+  it('decodes v4 exact grid corners and derives their envelope', async () => {
+    mockFlowResponse(flowPayloadV4([
+      FP16.zero, FP16.zero, FP16.minusOne, FP16.zero,
+      FP16.three, FP16.four, FP16.one, FP16.six,
+    ]))
+
+    const field = await api.flowField('job-a', 7)
+
+    expect(field.corners).toEqual([
+      [122.1, 40.2], [122.2, 40.199],
+      [122.101, 40.1], [122.201, 40.099],
+    ])
+    expect(field.bounds).toEqual([122.1, 40.099, 122.201, 40.2])
+    expect([...field.vectors]).toEqual([0, 0, 3, 4])
+  })
+
   it('rejects truncated v2 payloads', async () => {
     const buffer = flowPayload(2, [Number.NaN, Number.NaN, Number.NaN, 1, 3, 4])
     mockFlowResponse(buffer.slice(0, 44 + 4 * 4))
@@ -121,7 +152,7 @@ describe('api.flowField', () => {
   })
 
   it('rejects unknown versions', async () => {
-    mockFlowResponse(flowPayload(4 as 1, [1, 2]))
+    mockFlowResponse(flowPayload(5 as 1, [1, 2]))
 
     await expect(api.flowField('job-a', 7)).rejects.toThrow('流向场格式不受支持')
   })

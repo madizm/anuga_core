@@ -6,6 +6,7 @@ import {
 } from 'maplibre-gl'
 import type { FlowField, ResultQuantity } from '../api/types'
 import { waterRippleParams } from './waterRippleParams'
+import { gridUvToLngLat } from './flowGrid'
 
 const CROSSFADE_MS = 220
 
@@ -75,9 +76,10 @@ attribute vec3 a_position;
 attribute vec2 a_uv;
 varying vec2 v_uv;
 uniform mat4 u_matrix;
+uniform float u_clearance;
 void main() {
   v_uv = a_uv;
-  gl_Position = u_matrix * vec4(a_position, 1.0);
+  gl_Position = u_matrix * vec4(a_position.xy, a_position.z + u_clearance, 1.0);
 }
 `
 
@@ -266,7 +268,7 @@ interface RippleResources {
 }
 
 const UNIFORM_NAMES = [
-  'u_matrix',
+  'u_matrix', 'u_clearance',
   'u_field_current', 'u_field_previous', 'u_fade', 'u_grid_size',
   'u_cell_meters', 'u_time', 'u_sun', 'u_specular', 'u_sheen', 'u_sparkle',
   'u_amplitude', 'u_wave_length', 'u_advect', 'u_feather', 'u_full_depth',
@@ -279,7 +281,10 @@ const QUANTITY_CODES: Record<ResultQuantity, number> = {
   speed: 2,
 }
 
-const MAX_MESH_CELLS = 48
+// Keep the water geometry close to the 512-cell flow field while bounding
+// memory when three result maps are visible. The former 48-cell mesh crossed
+// through finer terrain triangles and produced camera-dependent strip gaps.
+const MAX_MESH_CELLS = 256
 let nextLayerId = 0
 
 /** Decode one IEEE-754 binary16 value from the v3 flow payload. */
@@ -331,10 +336,49 @@ function sampleSurface(field: FlowField, u: number, v: number): SurfaceSample | 
   return { depth: depth / weightSum, stage: stage / weightSum }
 }
 
+function fillMissingAltitudes(
+  altitudes: Float64Array,
+  columns: number,
+  rows: number,
+) {
+  const queue = new Int32Array(altitudes.length)
+  let head = 0
+  let tail = 0
+  for (let vertex = 0; vertex < altitudes.length; vertex += 1) {
+    if (Number.isFinite(altitudes[vertex])) queue[tail++] = vertex
+  }
+  if (tail === 0) {
+    altitudes.fill(0)
+    return
+  }
+  while (head < tail) {
+    const vertex = queue[head++]
+    const row = Math.floor(vertex / columns)
+    const column = vertex - row * columns
+    if (column > 0) tail = fillNeighbour(altitudes, queue, tail, vertex, vertex - 1)
+    if (column + 1 < columns) tail = fillNeighbour(altitudes, queue, tail, vertex, vertex + 1)
+    if (row > 0) tail = fillNeighbour(altitudes, queue, tail, vertex, vertex - columns)
+    if (row + 1 < rows) tail = fillNeighbour(altitudes, queue, tail, vertex, vertex + columns)
+  }
+}
+
+function fillNeighbour(
+  altitudes: Float64Array,
+  queue: Int32Array,
+  tail: number,
+  source: number,
+  neighbour: number,
+) {
+  if (Number.isFinite(altitudes[neighbour])) return tail
+  altitudes[neighbour] = altitudes[source]
+  queue[tail] = neighbour
+  return tail + 1
+}
+
 export interface WaterSurfaceMesh {
   /** Interleaved mercator x/y/z and field u/v. */
   vertices: Float32Array
-  indices: Uint16Array
+  indices: Uint32Array
 }
 
 /**
@@ -350,28 +394,47 @@ export function buildWaterSurfaceMesh(
 ): WaterSurfaceMesh {
   const columns = Math.min(field.width, MAX_MESH_CELLS)
   const rows = Math.min(field.height, MAX_MESH_CELLS)
-  const vertices = new Float32Array((columns + 1) * (rows + 1) * 5)
-  const [west, south, east, north] = field.bounds
-  let offset = 0
-  for (let row = 0; row <= rows; row += 1) {
+  const vertexColumns = columns + 1
+  const vertexRows = rows + 1
+  const vertexCount = vertexColumns * vertexRows
+  const vertices = new Float32Array(vertexCount * 5)
+  const altitudes = new Float64Array(vertexCount)
+  altitudes.fill(Number.NaN)
+  for (let row = 0; row < vertexRows; row += 1) {
     const v = row / rows
-    const latitude = north + (south - north) * v
-    for (let column = 0; column <= columns; column += 1) {
+    for (let column = 0; column < vertexColumns; column += 1) {
       const u = column / columns
-      const longitude = west + (east - west) * u
+      const [longitude, latitude] = gridUvToLngLat(field, u, v)
       const sample = sampleSurface(field, u, v)
-      let altitude: number
+      const vertex = row * vertexColumns + column
       if (sample && field.texels) {
         // Stage and DEM use the same vertical datum. Terrain exaggeration is
         // applied only to the ground component; water depth remains physical.
         const ground = sample.stage - sample.depth
-        altitude = terrainExaggeration > 0
+        altitudes[vertex] = terrainExaggeration > 0
           ? ground * terrainExaggeration + sample.depth
           : sample.stage
-      } else {
+      } else if (!field.texels) {
         const terrain = map.queryTerrainElevation([longitude, latitude])
-        altitude = (terrain ?? 0) + (sample?.depth ?? 0)
+        altitudes[vertex] = (terrain ?? 0) + (sample?.depth ?? 0)
       }
+    }
+  }
+
+  // Dry v3 texels intentionally contain no stage. Extend the nearest wet
+  // surface altitude through masked geometry so triangles at a shoreline do
+  // not dive toward sea level. These fragments are still discarded by the
+  // wet mask; the fill only stabilises interpolation at their shared edges.
+  fillMissingAltitudes(altitudes, vertexColumns, vertexRows)
+
+  let offset = 0
+  for (let row = 0; row < vertexRows; row += 1) {
+    const v = row / rows
+    for (let column = 0; column < vertexColumns; column += 1) {
+      const u = column / columns
+      const [longitude, latitude] = gridUvToLngLat(field, u, v)
+      const vertex = row * vertexColumns + column
+      const altitude = altitudes[vertex]
       const coordinate = MercatorCoordinate.fromLngLat([longitude, latitude], altitude)
       vertices[offset++] = coordinate.x
       vertices[offset++] = coordinate.y
@@ -380,7 +443,9 @@ export function buildWaterSurfaceMesh(
       vertices[offset++] = v
     }
   }
-  const indices = new Uint16Array(columns * rows * 6)
+  // 256×256 cells have 66,049 vertices, just beyond Uint16's addressable
+  // range. WebGL2 guarantees 32-bit element indices.
+  const indices = new Uint32Array(columns * rows * 6)
   offset = 0
   for (let row = 0; row < rows; row += 1) {
     for (let column = 0; column < columns; column += 1) {
@@ -636,6 +701,12 @@ export class WaterRippleLayer implements CustomLayerInterface {
     // defaultProjectionData.mainMatrix is the matrix explicitly scaled for
     // custom-layer Mercator coordinates in the 0..1 range.
     gl.uniformMatrix4fv(uniforms.u_matrix, false, options.defaultProjectionData.mainMatrix)
+    const center = gridUvToLngLat(field, 0.5, 0.5)
+    const clearance = MercatorCoordinate.fromLngLat(
+      center,
+      Math.max(0, params.terrainClearanceM),
+    ).z
+    gl.uniform1f(uniforms.u_clearance, clearance)
     gl.uniform1f(uniforms.u_fade, fade)
     gl.uniform2f(uniforms.u_grid_size, field.width, field.height)
     gl.uniform2f(uniforms.u_cell_meters, cellMeters[0], cellMeters[1])
@@ -672,7 +743,13 @@ export class WaterRippleLayer implements CustomLayerInterface {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.disable(gl.CULL_FACE)
     gl.depthMask(false)
-    gl.drawElements(gl.TRIANGLES, resources.indexCount, gl.UNSIGNED_SHORT, 0)
+    // A small depth bias handles residual raster-vs-mesh interpolation error
+    // without disabling terrain occlusion for genuinely hidden water.
+    gl.enable(gl.POLYGON_OFFSET_FILL)
+    const depthBias = Math.max(0, params.terrainDepthBias)
+    gl.polygonOffset(-depthBias, -depthBias)
+    gl.drawElements(gl.TRIANGLES, resources.indexCount, gl.UNSIGNED_INT, 0)
+    gl.disable(gl.POLYGON_OFFSET_FILL)
     this.scheduleRepaint()
   }
 

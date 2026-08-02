@@ -7,6 +7,7 @@ function legacyField(): FlowField {
     width: 2,
     height: 1,
     bounds: [122, 40, 122.2, 40.1],
+    corners: null,
     vectors: new Float32Array([1, 2, 3, 4]),
     depths: new Float32Array([0.5, 1.5]),
     texels: null,

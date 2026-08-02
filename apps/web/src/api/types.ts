@@ -232,10 +232,19 @@ export interface SimulationFrame {
   createdAt: string
 }
 
+export type FlowGridCorners = [
+  northwest: [number, number],
+  northeast: [number, number],
+  southwest: [number, number],
+  southeast: [number, number],
+]
+
 export interface FlowField {
   width: number
   height: number
   bounds: [number, number, number, number]
+  /** Exact geographic corners of the source raster grid (BQFV v4; null for legacy payloads). */
+  corners: FlowGridCorners | null
   /**
    * Interleaved (u, v) velocity components for CPU consumers (particles).
    * NaN outside wet cells for v1/v2 fields; 0 for dry cells in v3.
@@ -244,7 +253,7 @@ export interface FlowField {
   /** Per-cell water depth in metres (BQFV v2 only); null otherwise. */
   depths: Float32Array | null
   /**
-   * v3 texture-ready fp16 RGBA texels (u, v, depth, stage) — upload
+   * v3/v4 texture-ready fp16 RGBA texels (u, v, depth, stage) — upload
    * verbatim as RGBA16F/HALF_FLOAT. Dry cells carry the depth sentinel -1.
    * Null for legacy v1/v2 fields.
    */
