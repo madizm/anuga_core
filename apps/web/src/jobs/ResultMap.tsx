@@ -185,6 +185,11 @@ export function ResultMap({
   }, [bounds, effectiveTerrain, hillshade, terrainExaggeration, terrainRetry, terrainTilejsonUrl, triple])
 
   useEffect(() => {
+    const exaggeration = effectiveTerrain ? terrainExaggeration : 0
+    rippleLayers.current.forEach((layer) => layer?.setTerrainExaggeration(exaggeration))
+  }, [bounds, effectiveTerrain, terrainExaggeration, terrainRetry, triple])
+
+  useEffect(() => {
     while (terrainCameras.current.length < maps.current.length) {
       terrainCameras.current.push({ pitch: 55, bearing: -20 })
     }

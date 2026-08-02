@@ -59,7 +59,7 @@ export function TerrainControl({
         >⌄</button>
       </div>
       {flowIsTwoDimensional && enabled && (
-        <span className="terrain-flow-warning">水面效果为二维投影</span>
+        <span className="terrain-flow-warning">流向粒子为二维投影</span>
       )}
       {error && <span className="terrain-error-badge">地形失败 · 已回退二维</span>}
       {waterError && <span className="terrain-error-badge water-error-badge">水波失败 · 已回退</span>}
@@ -91,7 +91,7 @@ export function TerrainControl({
             <p className="terrain-notice">编辑期间暂时使用二维正交视图</p>
           )}
           {flowIsTwoDimensional && enabled && (
-            <p className="terrain-notice warning">流向与水波为二维投影，仅供方向参考</p>
+            <p className="terrain-notice warning">流向粒子为二维投影，仅供方向参考；水面已贴合三维地形</p>
           )}
           {error && (
             <div className="terrain-failure">

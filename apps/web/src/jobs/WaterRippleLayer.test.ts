@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { FlowField } from '../api/types'
 import {
+  buildWaterSurfaceMesh,
   cellSizeMeters,
   crossfadeWeight,
+  halfFloatToNumber,
   packFieldPixels,
   sunDirection,
 } from './WaterRippleLayer'
@@ -90,5 +92,38 @@ describe('crossfadeWeight', () => {
 
   it('snaps to done under reduced motion', () => {
     expect(crossfadeWeight(0, true)).toBe(1)
+  })
+})
+
+describe('halfFloatToNumber', () => {
+  it('decodes normal, negative, subnormal, and special binary16 values', () => {
+    expect(halfFloatToNumber(0x3c00)).toBe(1)
+    expect(halfFloatToNumber(0xc000)).toBe(-2)
+    expect(halfFloatToNumber(0x0001)).toBeCloseTo(2 ** -24, 12)
+    expect(halfFloatToNumber(0x7c00)).toBe(Number.POSITIVE_INFINITY)
+    expect(halfFloatToNumber(0x7e00)).toBeNaN()
+  })
+})
+
+describe('buildWaterSurfaceMesh', () => {
+  it('builds indexed geographic triangles rather than a screen-space quad', () => {
+    const field = makeField({
+      vectors: new Float32Array([1, 1, 1, 1]),
+      depths: new Float32Array([0.5, 0.5]),
+    })
+    const map = {
+      queryTerrainElevation: () => 12,
+    } as unknown as Parameters<typeof buildWaterSurfaceMesh>[0]
+
+    const mesh = buildWaterSurfaceMesh(map, field, 1.5)
+
+    // A 2×1 field has a 3×2 vertex grid and two geographic quads.
+    expect(mesh.vertices).toHaveLength(6 * 5)
+    expect(mesh.indices).toHaveLength(2 * 6)
+    expect([...mesh.indices]).toEqual([0, 1, 3, 1, 4, 3, 1, 2, 4, 2, 5, 4])
+    expect(mesh.vertices[3]).toBe(0)
+    expect(mesh.vertices[4]).toBe(0)
+    expect(mesh.vertices.at(-2)).toBe(1)
+    expect(mesh.vertices.at(-1)).toBe(1)
   })
 })

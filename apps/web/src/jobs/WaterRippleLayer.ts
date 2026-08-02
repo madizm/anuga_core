@@ -1,4 +1,9 @@
-import type { Map } from 'maplibre-gl'
+import {
+  MercatorCoordinate,
+  type CustomLayerInterface,
+  type CustomRenderMethodInput,
+  type Map,
+} from 'maplibre-gl'
 import type { FlowField, ResultQuantity } from '../api/types'
 import { waterRippleParams } from './waterRippleParams'
 
@@ -66,12 +71,13 @@ export function crossfadeWeight(elapsedMs: number, reducedMotion: boolean) {
 }
 
 const VERTEX_SHADER = `
-attribute vec2 a_clip;
+attribute vec3 a_position;
 attribute vec2 a_uv;
 varying vec2 v_uv;
+uniform mat4 u_matrix;
 void main() {
   v_uv = a_uv;
-  gl_Position = vec4(a_clip, 0.0, 1.0);
+  gl_Position = u_matrix * vec4(a_position, 1.0);
 }
 `
 
@@ -250,14 +256,17 @@ void main() {
 
 interface RippleResources {
   program: WebGLProgram
-  quad: WebGLBuffer
+  mesh: WebGLBuffer
+  indices: WebGLBuffer
+  indexCount: number
   current: WebGLTexture | null
   previous: WebGLTexture | null
-  attributes: { clip: number; uv: number }
+  attributes: { position: number; uv: number }
   uniforms: Record<string, WebGLUniformLocation | null>
 }
 
 const UNIFORM_NAMES = [
+  'u_matrix',
   'u_field_current', 'u_field_previous', 'u_fade', 'u_grid_size',
   'u_cell_meters', 'u_time', 'u_sun', 'u_specular', 'u_sheen', 'u_sparkle',
   'u_amplitude', 'u_wave_length', 'u_advect', 'u_feather', 'u_full_depth',
@@ -270,99 +279,216 @@ const QUANTITY_CODES: Record<ResultQuantity, number> = {
   speed: 2,
 }
 
+const MAX_MESH_CELLS = 48
+let nextLayerId = 0
+
+/** Decode one IEEE-754 binary16 value from the v3 flow payload. */
+export function halfFloatToNumber(bits: number) {
+  const sign = bits & 0x8000 ? -1 : 1
+  const exponent = (bits >>> 10) & 0x1f
+  const fraction = bits & 0x03ff
+  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024)
+  if (exponent === 0x1f) return fraction ? Number.NaN : sign * Number.POSITIVE_INFINITY
+  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024)
+}
+
+interface SurfaceSample { depth: number; stage: number }
+
+function sampleSurface(field: FlowField, u: number, v: number): SurfaceSample | null {
+  const gridX = u * field.width - 0.5
+  const gridY = v * field.height - 0.5
+  const column = Math.floor(gridX)
+  const row = Math.floor(gridY)
+  const fractionX = gridX - column
+  const fractionY = gridY - row
+  let depth = 0
+  let stage = 0
+  let weightSum = 0
+  for (let corner = 0; corner < 4; corner += 1) {
+    const x = column + (corner & 1)
+    const y = row + (corner >> 1)
+    if (x < 0 || x >= field.width || y < 0 || y >= field.height) continue
+    const weight = (corner & 1 ? fractionX : 1 - fractionX)
+      * (corner >> 1 ? fractionY : 1 - fractionY)
+    if (weight <= 0) continue
+    const cell = y * field.width + x
+    let cellDepth: number
+    let cellStage: number
+    if (field.texels) {
+      cellDepth = halfFloatToNumber(field.texels[cell * 4 + 2])
+      cellStage = halfFloatToNumber(field.texels[cell * 4 + 3])
+      if (cellDepth < 0 || !Number.isFinite(cellStage)) continue
+    } else {
+      cellDepth = field.depths?.[cell] ?? Number.NaN
+      if (!Number.isFinite(cellDepth)) continue
+      cellStage = Number.NaN
+    }
+    depth += cellDepth * weight
+    if (Number.isFinite(cellStage)) stage += cellStage * weight
+    weightSum += weight
+  }
+  if (weightSum === 0) return null
+  return { depth: depth / weightSum, stage: stage / weightSum }
+}
+
+export interface WaterSurfaceMesh {
+  /** Interleaved mercator x/y/z and field u/v. */
+  vertices: Float32Array
+  indices: Uint16Array
+}
+
 /**
- * Additive water-surface shimmer on its own overlay canvas (the same pattern
- * as the particle layer): procedural ripple normals advected by the frame
- * velocity field, sun specular, wet-edge feathering from the depth plane.
- *
- * It deliberately does NOT render as a MapLibre custom layer: animating a
- * custom layer requires map.triggerRepaint() every frame, which re-renders
- * the whole style on the main thread and was measured to drop the page from
- * 120 fps to 7 fps. A private canvas redraws only a single textured quad per
- * frame and leaves the map's render loop untouched.
+ * Build a terrain-aware geographic mesh. Unlike the former four-corner
+ * screen quad, every vertex remains in map coordinates and is transformed by
+ * MapLibre's camera matrix, so perspective and camera altitude cannot move
+ * the texture relative to the map.
  */
-export class WaterRippleLayer {
-  private readonly canvas = document.createElement('canvas')
-  private readonly gl: WebGL2RenderingContext
+export function buildWaterSurfaceMesh(
+  map: Map,
+  field: FlowField,
+  terrainExaggeration = 0,
+): WaterSurfaceMesh {
+  const columns = Math.min(field.width, MAX_MESH_CELLS)
+  const rows = Math.min(field.height, MAX_MESH_CELLS)
+  const vertices = new Float32Array((columns + 1) * (rows + 1) * 5)
+  const [west, south, east, north] = field.bounds
+  let offset = 0
+  for (let row = 0; row <= rows; row += 1) {
+    const v = row / rows
+    const latitude = north + (south - north) * v
+    for (let column = 0; column <= columns; column += 1) {
+      const u = column / columns
+      const longitude = west + (east - west) * u
+      const sample = sampleSurface(field, u, v)
+      let altitude: number
+      if (sample && field.texels) {
+        // Stage and DEM use the same vertical datum. Terrain exaggeration is
+        // applied only to the ground component; water depth remains physical.
+        const ground = sample.stage - sample.depth
+        altitude = terrainExaggeration > 0
+          ? ground * terrainExaggeration + sample.depth
+          : sample.stage
+      } else {
+        const terrain = map.queryTerrainElevation([longitude, latitude])
+        altitude = (terrain ?? 0) + (sample?.depth ?? 0)
+      }
+      const coordinate = MercatorCoordinate.fromLngLat([longitude, latitude], altitude)
+      vertices[offset++] = coordinate.x
+      vertices[offset++] = coordinate.y
+      vertices[offset++] = coordinate.z
+      vertices[offset++] = u
+      vertices[offset++] = v
+    }
+  }
+  const indices = new Uint16Array(columns * rows * 6)
+  offset = 0
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const nw = row * (columns + 1) + column
+      const sw = (row + 1) * (columns + 1) + column
+      const ne = nw + 1
+      const se = sw + 1
+      // Counter-clockwise when viewed from above. Terrain rendering may
+      // leave face culling enabled in the shared WebGL context.
+      indices[offset++] = nw
+      indices[offset++] = ne
+      indices[offset++] = sw
+      indices[offset++] = ne
+      indices[offset++] = se
+      indices[offset++] = sw
+    }
+  }
+  return { vertices, indices }
+}
+
+/**
+ * Procedural water rendered as a MapLibre 3D custom layer. Rendering in the
+ * map's own WebGL context supplies the authoritative camera matrix and depth
+ * buffer, keeping the surface fixed to terrain at every pitch and zoom.
+ */
+export class WaterRippleLayer implements CustomLayerInterface {
+  readonly id = `water-ripple-${nextLayerId++}`
+  readonly type = 'custom' as const
+  readonly renderingMode = '3d' as const
+  private gl: WebGL2RenderingContext | null = null
   private resources: RippleResources | null = null
   private field: FlowField | null = null
   private fadeStartedAt = 0
   private readonly startedAt = performance.now()
-  private animationFrame: number | null = null
-  private rendered = false
   private colorize = false
   private quantity: ResultQuantity = 'depth'
+  private terrainExaggeration = 0
+  private repaintTimer: ReturnType<typeof setTimeout> | null = null
+  private added = false
+  private destroyed = false
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 
   constructor(private readonly map: Map) {
-    this.canvas.className = 'water-ripple-canvas'
-    this.canvas.setAttribute('aria-hidden', 'true')
-    map.getContainer().appendChild(this.canvas)
-    const context = this.canvas.getContext('webgl2', {
-      alpha: true,
-      antialias: false,
-      premultipliedAlpha: true,
-    })
-    if (!context) {
-      this.canvas.remove()
+    this.reducedMotion.addEventListener('change', this.motionPreferenceChanged)
+    if (map.isStyleLoaded()) this.addToMap()
+    else map.once('load', this.addToMap)
+  }
+
+  private readonly addToMap = () => {
+    if (this.destroyed || this.added || this.map.getLayer(this.id)) return
+    this.map.addLayer(this)
+    this.added = true
+  }
+
+  onAdd(_map: Map, context: WebGLRenderingContext | WebGL2RenderingContext) {
+    if (!(context instanceof WebGL2RenderingContext)) {
       throw new Error('水波效果需要 WebGL2')
     }
     this.gl = context
-    try {
-      this.initGL()
-    } catch (error) {
-      this.canvas.remove()
-      throw error
-    }
-    this.canvas.addEventListener('webglcontextlost', this.handleContextLost)
-    this.canvas.addEventListener('webglcontextrestored', this.handleContextRestored)
-    this.map.on('resize', this.resize)
-    this.map.on('move', this.handleMove)
-    this.reducedMotion.addEventListener('change', this.motionPreferenceChanged)
-    this.resize()
+    this.initGL()
+    if (this.field) this.upload(this.field, false)
+  }
+
+  onRemove() {
+    this.releaseGL()
+    this.gl = null
+    this.added = false
   }
 
   setField(field: FlowField | null) {
     const previous = this.field
     this.field = field
     if (!field) {
-      this.stop()
       this.clearTextures()
-      this.rendered = false
       delete this.map.getContainer().dataset.waterRipple
-      this.clearCanvas()
+      this.cancelRepaint()
+      this.map.triggerRepaint()
       return
     }
     const sameGrid = previous != null
       && previous.width === field.width && previous.height === field.height
     this.fadeStartedAt = performance.now()
-    this.upload(field, sameGrid)
-    if (this.reducedMotion.matches) {
-      this.draw()
-    } else if (this.animationFrame == null) {
-      this.animationFrame = requestAnimationFrame(this.animate)
-    }
+    if (this.resources) this.upload(field, sameGrid)
+    this.map.getContainer().dataset.waterRipple = 'active'
+    this.map.triggerRepaint()
   }
 
-  /**
-   * Switches between full water-surface rendering (depth ramp, normal
-   * blending — used when the depth raster is hidden) and the additive
-   * highlight veil used on top of the stage/speed rasters.
-   */
   setColorize(colorize: boolean) {
     if (this.colorize === colorize) return
     this.colorize = colorize
-    this.canvas.classList.toggle('colorize', colorize)
     this.updateDataset()
-    if (this.reducedMotion.matches) this.draw()
+    this.map.triggerRepaint()
   }
 
-  /** Selects which quantity the colorize ramp encodes. */
   setQuantity(quantity: ResultQuantity) {
     if (this.quantity === quantity) return
     this.quantity = quantity
     this.updateDataset()
-    if (this.reducedMotion.matches) this.draw()
+    this.map.triggerRepaint()
+  }
+
+  /** Match MapLibre's visual terrain exaggeration when positioning water. */
+  setTerrainExaggeration(exaggeration: number) {
+    const next = Math.max(0, exaggeration)
+    if (this.terrainExaggeration === next) return
+    this.terrainExaggeration = next
+    if (this.field && this.resources) this.uploadMesh(this.field)
+    this.map.triggerRepaint()
   }
 
   private updateDataset() {
@@ -374,25 +500,24 @@ export class WaterRippleLayer {
   }
 
   destroy() {
-    this.stop()
+    this.destroyed = true
+    this.cancelRepaint()
+    this.map.off('load', this.addToMap)
+    if (this.map.getLayer(this.id)) this.map.removeLayer(this.id)
+    else this.releaseGL()
     delete this.map.getContainer().dataset.waterRipple
     delete this.map.getContainer().dataset.waterColorize
     delete this.map.getContainer().dataset.waterQuantity
-    this.canvas.removeEventListener('webglcontextlost', this.handleContextLost)
-    this.canvas.removeEventListener('webglcontextrestored', this.handleContextRestored)
-    this.map.off('resize', this.resize)
-    this.map.off('move', this.handleMove)
     this.reducedMotion.removeEventListener('change', this.motionPreferenceChanged)
-    this.releaseGL()
-    this.canvas.remove()
   }
 
   private initGL() {
     const gl = this.gl
+    if (!gl) return
     this.releaseGL()
     const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER)
     const fragment = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER)
-    const program = gl.createProgram()
+    const program = mustCreate(gl.createProgram(), 'shader 程序')
     gl.attachShader(program, vertex)
     gl.attachShader(program, fragment)
     gl.linkProgram(program)
@@ -404,38 +529,38 @@ export class WaterRippleLayer {
       throw new Error(`水波 shader 链接失败: ${log ?? '未知错误'}`)
     }
     const uniforms: Record<string, WebGLUniformLocation | null> = {}
-    for (const name of UNIFORM_NAMES) {
-      uniforms[name] = gl.getUniformLocation(program, name)
-    }
+    for (const name of UNIFORM_NAMES) uniforms[name] = gl.getUniformLocation(program, name)
     this.resources = {
       program,
-      quad: mustCreate(gl.createBuffer(), '顶点缓冲'),
+      mesh: mustCreate(gl.createBuffer(), '网格缓冲'),
+      indices: mustCreate(gl.createBuffer(), '索引缓冲'),
+      indexCount: 0,
       current: null,
       previous: null,
       attributes: {
-        clip: gl.getAttribLocation(program, 'a_clip'),
+        position: gl.getAttribLocation(program, 'a_position'),
         uv: gl.getAttribLocation(program, 'a_uv'),
       },
       uniforms,
     }
-    if (this.field) this.upload(this.field, false)
   }
 
   private releaseGL() {
-    const resources = this.resources
-    if (!resources) return
     const gl = this.gl
+    const resources = this.resources
+    if (!gl || !resources) return
     if (resources.current) gl.deleteTexture(resources.current)
     if (resources.previous) gl.deleteTexture(resources.previous)
-    gl.deleteBuffer(resources.quad)
+    gl.deleteBuffer(resources.mesh)
+    gl.deleteBuffer(resources.indices)
     gl.deleteProgram(resources.program)
     this.resources = null
   }
 
   private upload(field: FlowField, keepPrevious: boolean) {
-    const resources = this.resources
-    if (!resources) return
     const gl = this.gl
+    const resources = this.resources
+    if (!gl || !resources) return
     const texture = mustCreate(gl.createTexture(), '场纹理')
     gl.bindTexture(gl.TEXTURE_2D, texture)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
@@ -443,17 +568,11 @@ export class WaterRippleLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     if (field.texels) {
-      // v3 payload uploads verbatim — the server already laid out fp16
-      // (u, v, depth, stage) texels in RGBA order.
-      gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA16F, field.width, field.height, 0,
-        gl.RGBA, gl.HALF_FLOAT, field.texels,
-      )
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, field.width, field.height, 0,
+        gl.RGBA, gl.HALF_FLOAT, field.texels)
     } else {
-      gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA32F, field.width, field.height, 0,
-        gl.RGBA, gl.FLOAT, packFieldPixels(field),
-      )
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, field.width, field.height, 0,
+        gl.RGBA, gl.FLOAT, packFieldPixels(field))
     }
     if (resources.current && keepPrevious) {
       if (resources.previous) gl.deleteTexture(resources.previous)
@@ -464,36 +583,39 @@ export class WaterRippleLayer {
       resources.previous = null
     }
     resources.current = texture
+    this.uploadMesh(field)
+  }
+
+  private uploadMesh(field: FlowField) {
+    const gl = this.gl
+    const resources = this.resources
+    if (!gl || !resources) return
+    const mesh = buildWaterSurfaceMesh(this.map, field, this.terrainExaggeration)
+    gl.bindBuffer(gl.ARRAY_BUFFER, resources.mesh)
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW)
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.indices)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW)
+    resources.indexCount = mesh.indices.length
   }
 
   private clearTextures() {
+    const gl = this.gl
     const resources = this.resources
-    if (!resources) return
-    if (resources.current) this.gl.deleteTexture(resources.current)
-    if (resources.previous) this.gl.deleteTexture(resources.previous)
+    if (!gl || !resources) return
+    if (resources.current) gl.deleteTexture(resources.current)
+    if (resources.previous) gl.deleteTexture(resources.previous)
     resources.current = null
     resources.previous = null
   }
 
-  private frameSkip = 0
-
-  private readonly animate = () => {
-    this.animationFrame = null
-    if (!this.field) return
-    // Slow-moving shimmer reads identically at 30 fps, and the time uniform
-    // is wall-clock driven so the animation speed is unchanged. Skipping
-    // every other repaint halves the fullscreen shader cost, which matters
-    // when the GPU is also busy rendering pitched 3D terrain.
-    this.frameSkip = (this.frameSkip + 1) % 2
-    if (this.frameSkip === 0) this.draw()
-    this.animationFrame = requestAnimationFrame(this.animate)
-  }
-
-  private draw() {
+  render(
+    glContext: WebGLRenderingContext | WebGL2RenderingContext,
+    options: CustomRenderMethodInput,
+  ) {
+    const gl = glContext as WebGL2RenderingContext
     const resources = this.resources
     const field = this.field
     if (!resources || !resources.current || !field) return
-    const gl = this.gl
     const { program, uniforms } = resources
     const now = performance.now()
     const fade = resources.previous
@@ -508,29 +630,12 @@ export class WaterRippleLayer {
     const sun = sunDirection(params.sunAzimuth, params.sunElevation)
     const cellMeters = cellSizeMeters(field)
 
-    // Project the field corners into the overlay's clip space. Four
-    // map.project() calls per frame is far cheaper than forcing the map to
-    // re-render just to hand us its matrix.
-    const [west, south, east, north] = field.bounds
-    const nw = this.map.project([west, north])
-    const sw = this.map.project([west, south])
-    const ne = this.map.project([east, north])
-    const se = this.map.project([east, south])
-    const width = Number.parseFloat(this.canvas.style.width) || this.canvas.width
-    const height = Number.parseFloat(this.canvas.style.height) || this.canvas.height
-    const clipX = (x: number) => x / width * 2 - 1
-    const clipY = (y: number) => 1 - y / height * 2
-    // a_clip in clip space, a_uv in grid space (row 0 = north).
-    const vertices = new Float32Array([
-      clipX(nw.x), clipY(nw.y), 0, 0,
-      clipX(sw.x), clipY(sw.y), 0, 1,
-      clipX(ne.x), clipY(ne.y), 1, 0,
-      clipX(ne.x), clipY(ne.y), 1, 0,
-      clipX(sw.x), clipY(sw.y), 0, 1,
-      clipX(se.x), clipY(se.y), 1, 1,
-    ])
-
     gl.useProgram(program)
+    // Custom-layer vertices use normalized Mercator coordinates. The generic
+    // modelViewProjectionMatrix operates on MapLibre world coordinates;
+    // defaultProjectionData.mainMatrix is the matrix explicitly scaled for
+    // custom-layer Mercator coordinates in the 0..1 range.
+    gl.uniformMatrix4fv(uniforms.u_matrix, false, options.defaultProjectionData.mainMatrix)
     gl.uniform1f(uniforms.u_fade, fade)
     gl.uniform2f(uniforms.u_grid_size, field.width, field.height)
     gl.uniform2f(uniforms.u_cell_meters, cellMeters[0], cellMeters[1])
@@ -548,10 +653,7 @@ export class WaterRippleLayer {
     gl.uniform1f(uniforms.u_shadow, params.shadowStrength)
     gl.uniform1f(uniforms.u_water_alpha, params.waterAlpha)
     gl.uniform1f(uniforms.u_format, field.texels ? 1 : 0)
-    // Stage needs the v3 alpha channel; legacy fields fall back to depth.
-    const quantity = this.quantity === 'stage' && !field.texels
-      ? 'depth'
-      : this.quantity
+    const quantity = this.quantity === 'stage' && !field.texels ? 'depth' : this.quantity
     gl.uniform1f(uniforms.u_quantity, QUANTITY_CODES[quantity])
 
     gl.activeTexture(gl.TEXTURE0)
@@ -560,86 +662,38 @@ export class WaterRippleLayer {
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, resources.previous ?? resources.current)
     gl.uniform1i(uniforms.u_field_previous, 1)
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, resources.quad)
-    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW)
-    gl.enableVertexAttribArray(resources.attributes.clip)
-    gl.vertexAttribPointer(resources.attributes.clip, 2, gl.FLOAT, false, 16, 0)
+    gl.bindBuffer(gl.ARRAY_BUFFER, resources.mesh)
+    gl.enableVertexAttribArray(resources.attributes.position)
+    gl.vertexAttribPointer(resources.attributes.position, 3, gl.FLOAT, false, 20, 0)
     gl.enableVertexAttribArray(resources.attributes.uv)
-    gl.vertexAttribPointer(resources.attributes.uv, 2, gl.FLOAT, false, 16, 8)
-
-    gl.disable(gl.BLEND)
-    gl.clearColor(0, 0, 0, 0)
-    gl.clear(gl.COLOR_BUFFER_BIT)
-    gl.drawArrays(gl.TRIANGLES, 0, 6)
-    if (!this.rendered) {
-      this.rendered = true
-      this.map.getContainer().dataset.waterRipple = 'active'
-    }
+    gl.vertexAttribPointer(resources.attributes.uv, 2, gl.FLOAT, false, 20, 12)
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.indices)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    gl.disable(gl.CULL_FACE)
+    gl.depthMask(false)
+    gl.drawElements(gl.TRIANGLES, resources.indexCount, gl.UNSIGNED_SHORT, 0)
+    this.scheduleRepaint()
   }
 
-  private clearCanvas() {
-    this.gl.clearColor(0, 0, 0, 0)
-    this.gl.clear(this.gl.COLOR_BUFFER_BIT)
+  private scheduleRepaint() {
+    if (this.reducedMotion.matches || !this.field || this.repaintTimer != null) return
+    this.repaintTimer = setTimeout(() => {
+      this.repaintTimer = null
+      if (this.field && !this.destroyed) this.map.triggerRepaint()
+    }, 33)
   }
 
-  private readonly resize = () => {
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-    const container = this.map.getContainer()
-    this.canvas.width = Math.max(1, Math.round(container.clientWidth * pixelRatio))
-    this.canvas.height = Math.max(1, Math.round(container.clientHeight * pixelRatio))
-    this.canvas.style.width = `${container.clientWidth}px`
-    this.canvas.style.height = `${container.clientHeight}px`
-    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height)
-    if (this.reducedMotion.matches) this.draw()
-  }
-
-  private readonly handleMove = () => {
-    // Redraw on every camera update so the water stays glued to the map
-    // during pan/zoom. MapLibre dispatches "move" inside its own render
-    // pass, so drawing here lands in the same composited frame as the map
-    // canvas and no positional lag is visible. The 30 fps throttle only
-    // applies to the ambient shimmer while the camera is stationary.
-    if (this.field) this.draw()
+  private cancelRepaint() {
+    if (this.repaintTimer != null) clearTimeout(this.repaintTimer)
+    this.repaintTimer = null
   }
 
   private readonly motionPreferenceChanged = () => {
-    if (this.reducedMotion.matches) {
-      this.stop()
-      this.draw()
-    } else if (this.field && this.animationFrame == null) {
-      this.animationFrame = requestAnimationFrame(this.animate)
-    }
-  }
-
-  private readonly handleContextLost = (event: Event) => {
-    event.preventDefault()
-    this.stop()
-    // The GL objects died with the context; drop the references without
-    // making delete calls into a dead context.
-    this.resources = null
-  }
-
-  private readonly handleContextRestored = () => {
-    try {
-      this.initGL()
-      this.resize()
-      if (this.field && !this.reducedMotion.matches && this.animationFrame == null) {
-        this.animationFrame = requestAnimationFrame(this.animate)
-      }
-      if (this.field && this.reducedMotion.matches) this.draw()
-    } catch {
-      // Leave the layer dormant; the user can retry via the toggle.
-      delete this.map.getContainer().dataset.waterRipple
-    }
-  }
-
-  private stop() {
-    if (this.animationFrame != null) cancelAnimationFrame(this.animationFrame)
-    this.animationFrame = null
+    if (this.reducedMotion.matches) this.cancelRepaint()
+    this.map.triggerRepaint()
   }
 }
-
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string) {
   const shader = mustCreate(gl.createShader(type), 'shader')
   gl.shaderSource(shader, source)
