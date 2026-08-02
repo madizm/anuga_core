@@ -1,14 +1,13 @@
-import { MercatorCoordinate } from 'maplibre-gl'
 import { describe, expect, it } from 'vitest'
 import type { FlowField } from '../api/types'
 import {
-  buildWaterSurfaceMesh,
   cellSizeMeters,
   crossfadeWeight,
-  halfFloatToNumber,
   packFieldPixels,
   sunDirection,
-} from './WaterRippleLayer'
+  waterCanvasCoordinates,
+  waterCanvasSize,
+} from './TerrainDrapedWaterLayer'
 
 function makeField(overrides: Partial<FlowField> = {}): FlowField {
   return {
@@ -97,65 +96,28 @@ describe('crossfadeWeight', () => {
   })
 })
 
-describe('halfFloatToNumber', () => {
-  it('decodes normal, negative, subnormal, and special binary16 values', () => {
-    expect(halfFloatToNumber(0x3c00)).toBe(1)
-    expect(halfFloatToNumber(0xc000)).toBe(-2)
-    expect(halfFloatToNumber(0x0001)).toBeCloseTo(2 ** -24, 12)
-    expect(halfFloatToNumber(0x7c00)).toBe(Number.POSITIVE_INFINITY)
-    expect(halfFloatToNumber(0x7e00)).toBeNaN()
-  })
-})
-
-describe('buildWaterSurfaceMesh', () => {
-  it('builds indexed geographic triangles rather than a screen-space quad', () => {
-    const field = makeField({
-      vectors: new Float32Array([1, 1, 1, 1]),
-      depths: new Float32Array([0.5, 0.5]),
-    })
-    const map = {
-      queryTerrainElevation: () => 12,
-    } as unknown as Parameters<typeof buildWaterSurfaceMesh>[0]
-
-    const mesh = buildWaterSurfaceMesh(map, field, 1.5)
-
-    // A 2×1 field has a 3×2 vertex grid and two geographic quads.
-    expect(mesh.vertices).toHaveLength(6 * 5)
-    expect(mesh.indices).toHaveLength(2 * 6)
-    expect([...mesh.indices]).toEqual([0, 1, 3, 1, 4, 3, 1, 2, 4, 2, 5, 4])
-    expect(mesh.vertices[3]).toBe(0)
-    expect(mesh.vertices[4]).toBe(0)
-    expect(mesh.vertices.at(-2)).toBe(1)
-    expect(mesh.vertices.at(-1)).toBe(1)
-    const first = new MercatorCoordinate(
-      mesh.vertices[0], mesh.vertices[1], mesh.vertices[2],
-    )
-    expect(first.toAltitude()).toBeCloseTo(12.5, 2)
+describe('terrain-draped canvas placement', () => {
+  it('orders bounds clockwise from northwest for MapLibre CanvasSource', () => {
+    expect(waterCanvasCoordinates(makeField())).toEqual([
+      [122.1, 40.2],
+      [122.2, 40.2],
+      [122.2, 40.1],
+      [122.1, 40.1],
+    ])
   })
 
-  it('uses a dense Uint32 mesh for large flow fields', () => {
-    const width = 300
-    const height = 300
-    const texels = new Uint16Array(width * height * 4)
-    for (let cell = 0; cell < width * height; cell += 1) {
-      texels[cell * 4 + 2] = 0x3c00 // depth 1
-      texels[cell * 4 + 3] = 0x4900 // stage 10
-    }
-    const field = makeField({
-      width,
-      height,
-      vectors: new Float32Array(width * height * 2),
-      depths: null,
-      texels,
-    })
-    const map = {
-      queryTerrainElevation: () => { throw new Error('v3 mesh must use stage') },
-    } as unknown as Parameters<typeof buildWaterSurfaceMesh>[0]
+  it('preserves the exact projected grid footprint', () => {
+    const corners: FlowField['corners'] = [
+      [1, 4], [3, 5], [0, 1], [2, 2],
+    ]
 
-    const mesh = buildWaterSurfaceMesh(map, field, 1.5)
+    expect(waterCanvasCoordinates(makeField({ corners }))).toEqual([
+      corners[0], corners[1], corners[3], corners[2],
+    ])
+  })
 
-    expect(mesh.vertices).toHaveLength(257 * 257 * 5)
-    expect(mesh.indices).toBeInstanceOf(Uint32Array)
-    expect(mesh.indices).toHaveLength(256 * 256 * 6)
+  it('uses four pixels per field cell while bounding texture uploads', () => {
+    expect(waterCanvasSize({ width: 124, height: 104 })).toEqual([496, 416])
+    expect(waterCanvasSize({ width: 300, height: 150 })).toEqual([512, 256])
   })
 })

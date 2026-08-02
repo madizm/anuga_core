@@ -38,6 +38,7 @@ Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
 - live SSE job status with database frame catch-up after reconnect;
 - first-frame display, follow-latest, scrubber, and 700 ms playback;
 - depth, stage, speed, and synchronized three-map modes;
+- terrain-draped procedural water, with animated flow particles and no independent water/terrain depth mesh;
 - double-buffered raster sources with a short cross-fade;
 - point sampling of all three quantities;
 - Job deep links (`?job=<uuid>`) that survive page reloads.

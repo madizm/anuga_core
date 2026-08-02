@@ -25,10 +25,6 @@ export interface WaterRippleParams {
   featherDepthM: number
   /** Depth at which ripples reach full amplitude, metres. */
   fullAmplitudeDepthM: number
-  /** Clearance above the computed water surface, metres. */
-  terrainClearanceM: number
-  /** Polygon depth bias used to resolve terrain/water depth contention. */
-  terrainDepthBias: number
   /** How dark ripple troughs get in colorize mode, 0-1. */
   shadowStrength: number
   /** Water body opacity in colorize mode, 0-1. */
@@ -47,8 +43,6 @@ export const waterRippleParams: WaterRippleParams = {
   sunElevation: 50,
   featherDepthM: 0.05,
   fullAmplitudeDepthM: 0.5,
-  terrainClearanceM: 0.5,
-  terrainDepthBias: 2,
   shadowStrength: 0.35,
   waterAlpha: 0.92,
 }
@@ -73,8 +67,6 @@ const SLIDERS: SliderSpec[] = [
   { key: 'sunElevation', label: '太阳高度°', min: 5, max: 85, step: 1 },
   { key: 'featherDepthM', label: '边界羽化(m)', min: 0.005, max: 0.2, step: 0.005 },
   { key: 'fullAmplitudeDepthM', label: '满幅水深(m)', min: 0.1, max: 2, step: 0.05 },
-  { key: 'terrainClearanceM', label: '离地偏移(m)', min: 0, max: 3, step: 0.05 },
-  { key: 'terrainDepthBias', label: '地形深度偏移', min: 0, max: 8, step: 0.25 },
   { key: 'shadowStrength', label: '波纹阴影', min: 0, max: 0.8, step: 0.02 },
   { key: 'waterAlpha', label: '水体不透明', min: 0.5, max: 1, step: 0.01 },
 ]

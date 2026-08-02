@@ -8,7 +8,7 @@ import {
   type BufferState,
 } from './bufferedRasterFrames'
 import { FlowParticleLayer } from './FlowParticleLayer'
-import { WaterRippleLayer } from './WaterRippleLayer'
+import { TerrainDrapedWaterLayer } from './TerrainDrapedWaterLayer'
 import { installWaterRippleTuningPanel } from './waterRippleParams'
 import { TerrainControl } from '../map/TerrainControl'
 import {
@@ -63,7 +63,7 @@ export function ResultMap({
   const maps = useRef<Map[]>([])
   const buffers = useRef<BufferState[]>([])
   const flowLayers = useRef<FlowParticleLayer[]>([])
-  const rippleLayers = useRef<(WaterRippleLayer | null)[]>([])
+  const rippleLayers = useRef<(TerrainDrapedWaterLayer | null)[]>([])
   const rippleField = useRef<FlowField | null>(null)
   const flowState = useRef<{ field: FlowField | null; frameIndex: number | null }>({
     field: null,
@@ -186,7 +186,6 @@ export function ResultMap({
 
   useEffect(() => {
     const exaggeration = effectiveTerrain ? terrainExaggeration : 0
-    rippleLayers.current.forEach((layer) => layer?.setTerrainExaggeration(exaggeration))
     flowLayers.current.forEach((layer) => layer.setTerrainExaggeration(exaggeration))
   }, [bounds, effectiveTerrain, terrainExaggeration, terrainRetry, triple])
 
@@ -266,10 +265,10 @@ export function ResultMap({
 
   const createRippleLayers = () => {
     setWaterError(null)
-    const layers: (WaterRippleLayer | null)[] = []
+    const layers: (TerrainDrapedWaterLayer | null)[] = []
     for (const map of maps.current) {
       try {
-        const layer = new WaterRippleLayer(map)
+        const layer = new TerrainDrapedWaterLayer(map)
         layer.setField(rippleField.current)
         layers.push(layer)
       } catch (error) {

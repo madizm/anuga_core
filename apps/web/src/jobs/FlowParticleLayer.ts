@@ -149,7 +149,7 @@ export function sampleParticleField(
   }
 }
 
-/** Position a particle on the same exaggerated water surface as the ripple mesh. */
+/** Position a particle at the simulation water surface under terrain exaggeration. */
 export function particleSurfaceAltitude(
   sample: Pick<ParticleSample, 'depth' | 'stage'>,
   terrainElevation: number | null,
