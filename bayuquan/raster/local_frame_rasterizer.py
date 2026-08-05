@@ -45,6 +45,12 @@ class LocalFrameRasterizer:
         self.local_cell_index = (
             local_rows * self.columns + local_columns
         ).astype(np.int32)
+        self._cell_areas = np.bincount(
+            self.local_cell_index,
+            weights=self.triangle_area_m2,
+            minlength=self.rows * self.columns,
+        )
+        self._cell_areas.setflags(write=False)
         self.dry_depth_m = dry_depth_m
         a, _, c, _, e, f = area.transform
         upper_left_y = f + row_start * e
@@ -108,11 +114,11 @@ class LocalFrameRasterizer:
             weights=triangle_values * self.triangle_area_m2,
             minlength=self.rows * self.columns,
         )
-        areas = np.bincount(
-            self.local_cell_index,
-            weights=self.triangle_area_m2,
-            minlength=self.rows * self.columns,
-        )
         result = np.full(self.rows * self.columns, np.nan, dtype=float)
-        np.divide(weighted, areas, out=result, where=areas > 0)
+        np.divide(
+            weighted,
+            self._cell_areas,
+            out=result,
+            where=self._cell_areas > 0,
+        )
         return result.reshape(self.rows, self.columns)

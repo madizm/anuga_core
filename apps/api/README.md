@@ -20,6 +20,29 @@ per job by default. Override that value when starting Compose, for example
 on the target host. Keep the combined thread count of the standard and
 high-resource workers within the host's available CPU cores.
 
+Build a CPU-specific image on the deployment host with:
+
+```bash
+ANUGA_CPU_NATIVE=true docker compose build api worker high-resource-worker
+```
+
+This enables the compiler's native ISA and tuning flags. The resulting images
+are intentionally non-portable and must not be moved to a different CPU model.
+Portable builds remain the default.
+
+SWW is optional. To retain frame COGs and reports without creating or uploading
+the potentially large `model.sww` artifact:
+
+```bash
+BAYUQUAN_WRITE_SWW=false docker compose up --build
+```
+
+Frame rasterization remains synchronous so it snapshots the current ANUGA
+state safely. COG creation, object upload, frame metadata and Redis publication
+then run on an ordered background pipeline with at most two in-flight frames.
+`report.json` records setup, solver, frame-analysis and publication phase
+timings under `timingsSeconds`.
+
 Endpoints:
 
 - API/OpenAPI: <http://localhost:8000/docs>

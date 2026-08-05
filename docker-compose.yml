@@ -48,7 +48,10 @@ services:
         condition: service_healthy
 
   api:
-    build: .
+    build:
+      context: .
+      args:
+        ANUGA_CPU_NATIVE: ${ANUGA_CPU_NATIVE:-false}
     command: >-
       sh -c "alembic upgrade head &&
       uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --workers 4"
@@ -70,6 +73,7 @@ services:
       TITILER_URL: http://titiler
       GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
       DEM_PRODUCT_MANIFEST: /workspace/OUTPUT/model/dem-products.json
+      BAYUQUAN_WRITE_SWW: ${BAYUQUAN_WRITE_SWW:-true}
     ports:
       - "8000:8000"
     working_dir: /opt/webgis
@@ -89,7 +93,10 @@ services:
         condition: service_healthy
 
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        ANUGA_CPU_NATIVE: ${ANUGA_CPU_NATIVE:-false}
     command: >-
       celery -A apps.worker.tasks:celery_app worker
       --loglevel=INFO --concurrency=1 --prefetch-multiplier=1 -Q standard
@@ -112,7 +119,10 @@ services:
         condition: service_healthy
 
   high-resource-worker:
-    build: .
+    build:
+      context: .
+      args:
+        ANUGA_CPU_NATIVE: ${ANUGA_CPU_NATIVE:-false}
     command: >-
       celery -A apps.worker.tasks:celery_app worker
       --loglevel=INFO --concurrency=1 --prefetch-multiplier=1

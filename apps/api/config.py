@@ -22,6 +22,7 @@ class Settings:
     auto_create_schema: bool
     dem_product_manifest: Path | None = None
     simulation_area_cache: Path | None = None
+    write_sww: bool = True
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -53,4 +54,7 @@ class Settings:
                 "SIMULATION_AREA_CACHE",
                 str(root / "simulation_areas"),
             )),
+            write_sww=os.getenv(
+                "BAYUQUAN_WRITE_SWW", "true"
+            ).lower() in {"1", "true", "yes"},
         )

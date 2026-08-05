@@ -26,6 +26,7 @@ anuga/_version.py
 *.cpp
 *.tmp
 *.txt
+!meson_options.txt
 *.vim
 *.sww
 *.tif

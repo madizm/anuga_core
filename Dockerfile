@@ -2,6 +2,7 @@ FROM python:3.12-slim-bookworm
 
 ARG DEBIAN_MIRROR=http://mirrors.aliyun.com/debian
 ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG ANUGA_CPU_NATIVE=false
 
 ENV PIP_INDEX_URL=${PYPI_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=120
@@ -27,7 +28,7 @@ WORKDIR /opt/anuga-src
 
 # Keep the compiled ANUGA dependency layer independent from Web GIS service
 # changes. This makes API/frontend iteration reuse the expensive native build.
-COPY pyproject.toml meson.build _git_version.py README.rst LICENSE.txt ./
+COPY pyproject.toml meson.build meson_options.txt _git_version.py README.rst LICENSE.txt ./
 COPY anuga ./anuga
 COPY scripts ./scripts
 
@@ -42,6 +43,7 @@ RUN python -m pip install --no-cache-dir \
         setuptools \
         wheel \
     && python -m pip install --no-cache-dir --no-build-isolation \
+        --config-settings=setup-args=-Dcpu_native=${ANUGA_CPU_NATIVE} \
         ".[parallel,web-gis]" \
     && cd /tmp \
     && python -c "import anuga; print('Built ANUGA', anuga.__version__)"

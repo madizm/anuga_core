@@ -3,7 +3,7 @@
 ANUGA Performance Benchmark Suite
 ----------------------------------
 Measures wall time and peak memory for simulations of increasing size and
-for each multiprocessor_mode (0=Python Euler, 1=Python RK2, 2=C RK2/GPU).
+for each supported multiprocessor mode (1=CPU OpenMP, 2=experimental GPU).
 
 Results are written to a JSON file for later comparison with
 compare_benchmarks.py.
@@ -19,8 +19,8 @@ Usage
     # All sizes including large (~360K tris, slow)
     python benchmarks/run_benchmarks.py --sizes small,medium,large
 
-    # Only mode 0 and 2
-    python benchmarks/run_benchmarks.py --modes 0,2
+    # Explicitly test the experimental GPU mode
+    python benchmarks/run_benchmarks.py --modes 2
 
     # Custom output file
     python benchmarks/run_benchmarks.py --output my_results.json
@@ -126,8 +126,12 @@ def _create_domain(nx, ny, mode, tmpdir):
     domain.set_boundary({t: Reflective_boundary(domain)
                          for t in domain.get_boundary_tags()})
 
-    if mode >= 1:
-        domain.set_multiprocessor_mode(mode)
+    domain.set_multiprocessor_mode(mode)
+    if domain.get_multiprocessor_mode() != mode:
+        raise RuntimeError(
+            f'requested multiprocessor mode {mode} is unavailable; '
+            f'fell back to {domain.get_multiprocessor_mode()}'
+        )
 
     return domain
 
@@ -156,7 +160,7 @@ def run_one(size, mode, omp_threads, sampler):
     size : str
         One of 'small', 'medium', 'large'.
     mode : int
-        multiprocessor_mode (0, 1, or 2).
+        multiprocessor_mode (1=CPU OpenMP or 2=experimental GPU).
     omp_threads : int
         Value of OMP_NUM_THREADS (informational only — caller must set env).
     sampler : _MemSampler
@@ -171,7 +175,9 @@ def run_one(size, mode, omp_threads, sampler):
     tmpdir = tempfile.mkdtemp()
 
     try:
+        setup_started = time.perf_counter()
         domain = _create_domain(cfg['nx'], cfg['ny'], mode, tmpdir)
+        setup_wall_time_s = time.perf_counter() - setup_started
         n_tris = domain.number_of_triangles
 
         # Memory snapshot after full domain setup (before any evolve)
@@ -179,12 +185,14 @@ def run_one(size, mode, omp_threads, sampler):
         sampler.reset_peak()
 
         t0 = time.perf_counter()
+        n_steps = 0
         for _ in domain.evolve(yieldstep=cfg['yieldstep'],
                                finaltime=cfg['finaltime']):
-            pass
+            # Generic_Domain resets number_of_steps after every yield. Read
+            # each interval before the generator resumes and accumulate all
+            # CFL steps instead of reporting only the final interval.
+            n_steps += domain.number_of_steps
         wall_time_s = time.perf_counter() - t0
-
-        n_steps = domain.number_of_steps
         peak_rss_mb = sampler.peak_mb
         cells_per_s = (n_tris * n_steps / wall_time_s) if wall_time_s > 0 else 0.0
 
@@ -200,7 +208,9 @@ def run_one(size, mode, omp_threads, sampler):
         'omp_threads': omp_threads,
         'finaltime': cfg['finaltime'],
         'n_steps': n_steps,
+        'setup_wall_time_s': round(setup_wall_time_s, 3),
         'wall_time_s': round(wall_time_s, 3),
+        'total_wall_time_s': round(setup_wall_time_s + wall_time_s, 3),
         'cells_per_s': round(cells_per_s, 0),
         'setup_rss_mb': round(setup_rss_mb, 1),
         'peak_rss_mb': round(peak_rss_mb, 1),
@@ -260,8 +270,8 @@ def main():
         help='Comma-separated sizes to run: small,medium,large  (default: small,medium)',
     )
     parser.add_argument(
-        '--modes', default='0,1,2',
-        help='Comma-separated multiprocessor_modes to test  (default: 0,1,2)',
+        '--modes', default='1',
+        help='Comma-separated multiprocessor_modes to test: 1,2  (default: 1)',
     )
     parser.add_argument(
         '--output', default=None,
@@ -271,6 +281,9 @@ def main():
 
     sizes = [s.strip() for s in args.sizes.split(',')]
     modes = [int(m.strip()) for m in args.modes.split(',')]
+
+    if any(mode not in {1, 2} for mode in modes):
+        parser.error('Modes must be 1 (CPU OpenMP) or 2 (experimental GPU)')
 
     for s in sizes:
         if s not in SCENARIOS:
@@ -300,7 +313,7 @@ def main():
     sampler.start()
 
     results = []
-    header = f"{'Scenario':<28} {'tris':>8}  {'mode':>4}  {'thrd':>4}  {'steps':>6}  {'wall(s)':>8}  {'cells/s':>10}  {'setup MB':>9}  {'peak MB':>8}  {'MB/Ktri':>8}"
+    header = f"{'Scenario':<28} {'tris':>8}  {'mode':>4}  {'thrd':>4}  {'steps':>7}  {'setup(s)':>8}  {'wall(s)':>8}  {'cells/s':>10}  {'setup MB':>9}  {'peak MB':>8}  {'MB/Ktri':>8}"
     rule = '-' * len(header)
     print(header)
     print(rule)
@@ -315,7 +328,8 @@ def main():
                 results.append(rec)
                 print(
                     f"\r  {rec['name']:<28} {rec['n_triangles']:>8}  {rec['mode']:>4}  "
-                    f"{rec['omp_threads']:>4}  {rec['n_steps']:>6}  "
+                    f"{rec['omp_threads']:>4}  {rec['n_steps']:>7}  "
+                    f"{rec['setup_wall_time_s']:>8.2f}  "
                     f"{rec['wall_time_s']:>8.2f}  {rec['cells_per_s']:>10,.0f}  "
                     f"{rec['setup_rss_mb']:>9.1f}  {rec['peak_rss_mb']:>8.1f}  "
                     f"{rec['mb_per_ktri']:>8.3f}"

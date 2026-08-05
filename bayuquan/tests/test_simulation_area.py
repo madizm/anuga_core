@@ -356,3 +356,56 @@ def test_local_mesh_runs_with_transmissive_boundary_and_conserves_flat_water(
 
     assert frames == pytest.approx([0, 0.2, 0.4, 0.6, 0.8, 1.0])
     assert domain.get_water_volume() == pytest.approx(initial_volume)
+
+
+@pytest.mark.parametrize("write_sww", [False, True])
+def test_local_run_controls_sww_and_reports_phase_timings(
+    tmp_path, write_sww
+):
+    try:
+        from bayuquan.simulation.local_runner import run_local_simulation
+        from bayuquan.simulation.spec import ScenarioSpec
+    except (FileNotFoundError, ModuleNotFoundError) as error:
+        pytest.skip(f"compiled ANUGA extension is unavailable: {error}")
+
+    dem = write_dem(tmp_path, np.zeros((1, 2)))
+    model_inputs = write_model_inputs(tmp_path, (1, 2))
+    catalog = SimulationAreaCatalog(
+        dem,
+        tmp_path / "areas",
+        dataset_version="dem-v1",
+        model_inputs_path=model_inputs,
+    )
+    area = catalog.resolve(
+        polygon(100, 290, 160, 320), geometry_crs="EPSG:32651"
+    )
+    spec = ScenarioSpec.from_dict({
+        "name": "no-sww",
+        "durationSeconds": 1,
+        "yieldstepSeconds": 1,
+        "frictionScenario": "middle",
+        "inlets": [{
+            "id": "inlet-a",
+            "name": "inlet-a",
+            "enabled": True,
+            "cellIds": ["r0000-c0000"],
+            "dischargeM3s": 0.1,
+            "velocityMode": "zero",
+            "initialWaterLevelM": None,
+        }],
+    }, catalog.mapping(area.area_hash))
+    output = tmp_path / f"result-{write_sww}"
+
+    report = run_local_simulation(
+        spec,
+        area.area_hash,
+        catalog,
+        str(model_inputs),
+        output,
+        write_sww=write_sww,
+    )
+
+    assert report["swwWritten"] is write_sww
+    assert (output / "model.sww").exists() is write_sww
+    assert report["timingsSeconds"]["prepare"] >= 0
+    assert report["timingsSeconds"]["solverAdvance"] >= 0

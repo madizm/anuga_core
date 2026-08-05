@@ -1,0 +1,6 @@
+option(
+  'cpu_native',
+  type: 'boolean',
+  value: false,
+  description: 'Build native extensions for the build host CPU (non-portable)',
+)

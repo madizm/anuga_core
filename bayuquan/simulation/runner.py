@@ -16,6 +16,7 @@ import anuga
 from .fixed_model import AsciiGrid, FixedModelPaths
 from .grid_mapping import GridTriangleMapping
 from .spec import ScenarioSpec
+from .timing import PhaseTimings, timed_evolve
 
 
 @dataclass
@@ -97,6 +98,8 @@ def prepare_simulation(
     spec: ScenarioSpec,
     paths: FixedModelPaths,
     output_dir: Path | str,
+    *,
+    write_sww: bool = True,
 ) -> PreparedSimulation:
     """Load assets, initialize quantities, and install inlet operators."""
     if spec.hydraulic_features.all:
@@ -124,9 +127,11 @@ def prepare_simulation(
     domain.set_flow_algorithm("DE0")
     domain.set_name("model")
     domain.set_datadir(str(output))
-    domain.set_quantities_to_be_stored(
-        {"elevation": 1, "stage": 2, "xmomentum": 2, "ymomentum": 2}
-    )
+    domain.set_store(write_sww)
+    if write_sww:
+        domain.set_quantities_to_be_stored(
+            {"elevation": 1, "stage": 2, "xmomentum": 2, "ymomentum": 2}
+        )
 
     elevation = AsciiGrid(paths.elevation)
     friction = AsciiGrid(paths.friction(spec.friction_scenario))
@@ -174,22 +179,28 @@ def run_simulation(
     *,
     frame_sink: Callable[[object, float, int], None] | None = None,
     progress_sink: Callable[[float, int], None] | None = None,
+    write_sww: bool = True,
 ) -> dict:
     """Execute a scenario and return its water-volume and hazard report."""
     started = time.monotonic()
-    prepared = prepare_simulation(spec, paths, output_dir)
+    timings = PhaseTimings()
+    with timings.measure("prepare"):
+        prepared = prepare_simulation(
+            spec, paths, output_dir, write_sww=write_sww
+        )
     domain = prepared.domain
     maximum_depth = np.zeros(len(domain.areas), dtype=float)
     maximum_speed = 0.0
     ever_wet = np.zeros(len(domain.areas), dtype=bool)
     last_time = -1.0
 
-    for frame_index, simulation_time in enumerate(
-        domain.evolve(
-            yieldstep=spec.yieldstep_seconds,
-            finaltime=spec.duration_seconds,
-        )
-    ):
+    for frame_index, simulation_time in enumerate(timed_evolve(
+        domain,
+        yieldstep=spec.yieldstep_seconds,
+        finaltime=spec.duration_seconds,
+        timings=timings,
+    )):
+        analysis_started = time.perf_counter()
         if simulation_time <= last_time:
             raise RuntimeError("ANUGA emitted non-increasing frame times")
         last_time = float(simulation_time)
@@ -213,10 +224,15 @@ def run_simulation(
         maximum_depth = np.maximum(maximum_depth, depth)
         maximum_speed = max(maximum_speed, float(speed.max()))
         ever_wet |= depth >= 0.01
+        timings.add(
+            "frameAnalysis", time.perf_counter() - analysis_started
+        )
         if frame_sink is not None:
-            frame_sink(domain, float(simulation_time), frame_index)
+            with timings.measure("frameSink"):
+                frame_sink(domain, float(simulation_time), frame_index)
         if progress_sink is not None:
-            progress_sink(float(simulation_time), frame_index)
+            with timings.measure("progressSink"):
+                progress_sink(float(simulation_time), frame_index)
 
     if not np.isclose(last_time, spec.duration_seconds):
         raise RuntimeError(
@@ -240,6 +256,7 @@ def run_simulation(
         "crs": "EPSG:32651",
         "meshSha256": GridTriangleMapping.file_sha256(paths.mesh),
         "openmpThreads": int(domain.omp_num_threads),
+        "swwWritten": write_sww,
         "durationSeconds": spec.duration_seconds,
         "yieldstepSeconds": spec.yieldstep_seconds,
         "frameCount": spec.frame_count,
@@ -256,6 +273,7 @@ def run_simulation(
         "maximumSpeedMps": maximum_speed,
         "everWetAreaM2": float(domain.areas[ever_wet].sum()),
         "runtimeSeconds": time.monotonic() - started,
+        "timingsSeconds": timings.snapshot(),
         "rainfall": rain,
         "inlets": [
             {

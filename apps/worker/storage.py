@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,16 +41,11 @@ class ObjectStorage:
         with path.open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(block)
-        temporary_key = f".attempts/{uuid.uuid4()}/{key}"
-        self.client.upload_file(str(path), self.bucket, temporary_key)
-        try:
-            self.client.copy_object(
-                Bucket=self.bucket,
-                Key=key,
-                CopySource={"Bucket": self.bucket, "Key": temporary_key},
-            )
-        finally:
-            self.client.delete_object(Bucket=self.bucket, Key=temporary_key)
+        # S3 multipart uploads become visible only after completion, and a
+        # single-part upload is atomically visible as one object. Uploading the
+        # immutable job key directly avoids a redundant server-side copy and
+        # temporary-object delete for every frame.
+        self.client.upload_file(str(path), self.bucket, key)
         return StoredObject(
             uri=f"s3://{self.bucket}/{key}",
             size_bytes=path.stat().st_size,

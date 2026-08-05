@@ -31,6 +31,7 @@ from .feature_compiler import (
 )
 from .runner import PreparedSimulation, install_rainfall_operator, rainfall_report
 from .spec import ScenarioSpec
+from .timing import PhaseTimings, timed_evolve
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,8 @@ def prepare_local_simulation(
     catalog: SimulationAreaCatalog,
     model_inputs_path: str,
     output_dir: Path | str,
+    *,
+    write_sww: bool = True,
 ) -> LocalSimulation:
     """Compile features, construct a domain, and install all operators."""
     area = catalog.area(area_hash)
@@ -67,12 +70,14 @@ def prepare_local_simulation(
     domain.set_flow_algorithm("DE0")
     domain.set_name("model")
     domain.set_datadir(str(output))
-    domain.set_quantities_to_be_stored({
-        "elevation": 1,
-        "stage": 2,
-        "xmomentum": 2,
-        "ymomentum": 2,
-    })
+    domain.set_store(write_sww)
+    if write_sww:
+        domain.set_quantities_to_be_stored({
+            "elevation": 1,
+            "stage": 2,
+            "xmomentum": 2,
+            "ymomentum": 2,
+        })
 
     if spec.hydraulic_features.requires_custom_mesh:
         apply_feature_quantities(
@@ -158,13 +163,21 @@ def run_local_simulation(
     frame_sink: Callable[[object, float, int], None] | None = None,
     progress_sink: Callable[[float, int], None] | None = None,
     prepared_sink: Callable[[LocalSimulation], None] | None = None,
+    write_sww: bool = True,
 ) -> dict:
     """Execute one local-area scenario and return its hydraulic report."""
     started = time.monotonic()
+    timings = PhaseTimings()
     area = catalog.area(area_hash)
-    local = prepare_local_simulation(
-        spec, area_hash, catalog, model_inputs_path, output_dir
-    )
+    with timings.measure("prepare"):
+        local = prepare_local_simulation(
+            spec,
+            area_hash,
+            catalog,
+            model_inputs_path,
+            output_dir,
+            write_sww=write_sww,
+        )
     if prepared_sink is not None:
         prepared_sink(local)
     prepared = local.prepared
@@ -174,10 +187,13 @@ def run_local_simulation(
     ever_wet = np.zeros(len(domain.areas), dtype=bool)
     last_time = -1.0
 
-    for frame_index, simulation_time in enumerate(domain.evolve(
+    for frame_index, simulation_time in enumerate(timed_evolve(
+        domain,
         yieldstep=spec.yieldstep_seconds,
         finaltime=spec.duration_seconds,
+        timings=timings,
     )):
+        analysis_started = time.perf_counter()
         if simulation_time <= last_time:
             raise RuntimeError("ANUGA emitted non-increasing frame times")
         last_time = float(simulation_time)
@@ -199,10 +215,15 @@ def run_local_simulation(
         maximum_depth = np.maximum(maximum_depth, depth)
         maximum_speed = max(maximum_speed, float(speed.max()))
         ever_wet |= depth >= 0.01
+        timings.add(
+            "frameAnalysis", time.perf_counter() - analysis_started
+        )
         if frame_sink is not None:
-            frame_sink(domain, float(simulation_time), frame_index)
+            with timings.measure("frameSink"):
+                frame_sink(domain, float(simulation_time), frame_index)
         if progress_sink is not None:
-            progress_sink(float(simulation_time), frame_index)
+            with timings.measure("progressSink"):
+                progress_sink(float(simulation_time), frame_index)
 
     if not np.isclose(last_time, spec.duration_seconds):
         raise RuntimeError(
@@ -231,6 +252,7 @@ def run_local_simulation(
         "meshSha256": local.mesh_sha256,
         "meshTriangleCount": len(domain.areas),
         "openmpThreads": int(domain.omp_num_threads),
+        "swwWritten": write_sww,
         "durationSeconds": spec.duration_seconds,
         "yieldstepSeconds": spec.yieldstep_seconds,
         "frameCount": spec.frame_count,
@@ -253,6 +275,7 @@ def run_local_simulation(
         "maximumSpeedMps": maximum_speed,
         "everWetAreaM2": float(domain.areas[ever_wet].sum()),
         "runtimeSeconds": time.monotonic() - started,
+        "timingsSeconds": timings.snapshot(),
         "rainfall": rain,
         "hydraulicFeatures": _hydraulic_feature_report(spec, local),
     }

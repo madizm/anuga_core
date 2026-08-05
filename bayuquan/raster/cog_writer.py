@@ -10,11 +10,9 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from affine import Affine
-from rasterio.shutil import copy as raster_copy
 
 from .frame_rasterizer import FrameRasterizer, RasterFrame
 from .interpolation import RasterGrid
-
 
 NODATA = -9999.0
 
@@ -40,37 +38,31 @@ class CogWriter:
         expected_shape = (5, self.grid.rows, self.grid.columns)
         if frame.values.shape != expected_shape:
             raise ValueError(
-                f"frame shape {frame.values.shape} does not match "
-                f"{expected_shape}"
+                f"frame shape {frame.values.shape} does not match {expected_shape}"
             )
         if frame.display_mask.shape != expected_shape[1:]:
             raise ValueError("frame display mask does not match output grid")
 
-        stage_path = self._temporary_path(target.parent, ".stage.tif")
         cog_path = self._temporary_path(target.parent, ".cog.tif")
         try:
-            self._write_staging(frame, stage_path)
-            raster_copy(
-                stage_path,
-                cog_path,
-                driver="COG",
-                compress=self.compression,
-                blocksize=256,
-                overviews="NONE",
-            )
-            self.validate(cog_path)
+            self._write_cog(frame, cog_path)
+            # Pixel validity was checked in memory before writing. Runtime
+            # validation therefore reads metadata only, avoiding another full
+            # compressed-raster pass for every frame.
+            self.validate(cog_path, read_values=False)
             os.replace(cog_path, target)
         finally:
-            stage_path.unlink(missing_ok=True)
             cog_path.unlink(missing_ok=True)
         return WrittenCog(path=target, size_bytes=target.stat().st_size)
 
-    def _write_staging(self, frame: RasterFrame, path: Path) -> None:
+    def _write_cog(self, frame: RasterFrame, path: Path) -> None:
         data = np.asarray(frame.values, dtype=np.float32).copy()
         model_mask = np.isfinite(data).all(axis=0)
+        if np.any(data[0, model_mask] < 0):
+            raise ValueError("frame contains negative water depth")
         data[:, ~model_mask] = NODATA
         profile = {
-            "driver": "GTiff",
+            "driver": "COG",
             "width": self.grid.columns,
             "height": self.grid.rows,
             "count": 5,
@@ -78,10 +70,9 @@ class CogWriter:
             "crs": self.grid.crs,
             "transform": Affine(*self.grid.transform_tuple),
             "nodata": NODATA,
-            "tiled": True,
-            "blockxsize": 256,
-            "blockysize": 256,
+            "blocksize": 256,
             "compress": self.compression,
+            "overviews": "NONE",
         }
         with rasterio.open(path, "w", **profile) as dataset:
             dataset.write(data)
@@ -95,7 +86,12 @@ class CogWriter:
                 wet_area_m2=f"{frame.wet_area_m2:.9g}",
             )
 
-    def validate(self, path: Path | str) -> None:
+    def validate(
+        self,
+        path: Path | str,
+        *,
+        read_values: bool = True,
+    ) -> None:
         with rasterio.open(path) as dataset:
             if dataset.shape != (self.grid.rows, self.grid.columns):
                 raise ValueError("COG dimensions do not match fixed grid")
@@ -117,12 +113,13 @@ class CogWriter:
             layout = dataset.tags(ns="IMAGE_STRUCTURE").get("LAYOUT")
             if layout != "COG":
                 raise ValueError("output is not a cloud-optimized GeoTIFF")
-            values = dataset.read()
-            model_mask = np.isfinite(values).all(axis=0) & np.all(
-                values != NODATA, axis=0
-            )
-            if np.any(values[0, model_mask] < 0):
-                raise ValueError("COG contains negative water depth")
+            if read_values:
+                values = dataset.read()
+                model_mask = np.isfinite(values).all(axis=0) & np.all(
+                    values != NODATA, axis=0
+                )
+                if np.any(values[0, model_mask] < 0):
+                    raise ValueError("COG contains negative water depth")
 
     @staticmethod
     def _temporary_path(directory: Path, suffix: str) -> Path:

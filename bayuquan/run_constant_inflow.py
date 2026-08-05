@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("/workspace/OUTPUT/model/web_gis_run"),
     )
+    parser.add_argument(
+        "--no-sww",
+        action="store_true",
+        help="Do not write the optional ANUGA SWW result file",
+    )
     return parser.parse_args()
 
 
@@ -84,6 +89,7 @@ def main() -> None:
         args.output_dir,
         frame_sink=publish_frame,
         progress_sink=progress,
+        write_sww=not args.no_sww,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
 

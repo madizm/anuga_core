@@ -10,6 +10,29 @@ project('anuga', 'c', 'cpp', 'cython',
   version: run_command('python', ['_git_version.py'], check: false).stdout().strip(),
   default_options: ['cpp_std=c++17'])
 
+# Portable binaries remain the default. Native tuning is opt-in and must be
+# built on the same CPU family/model that will run the resulting wheel/image.
+if get_option('cpu_native')
+  cc = meson.get_compiler('c')
+  compiler_id = cc.get_id()
+  if compiler_id in ['gcc', 'clang', 'apple-clang']
+    native_args = cc.get_supported_arguments(
+      ['-march=native', '-mtune=native']
+    )
+  elif compiler_id in ['intel', 'intel-llvm']
+    native_args = cc.get_supported_arguments(['-xHost'])
+  else
+    error('cpu_native is not supported for compiler ' + compiler_id)
+  endif
+  if native_args.length() == 0
+    error('cpu_native was requested but no native CPU flags are supported')
+  endif
+  add_project_arguments(native_args, language: ['c', 'cpp'])
+  message('Native CPU build enabled: ' + ' '.join(native_args))
+else
+  message('Portable CPU build enabled')
+endif
+
 # Fetch additional git metadata for the generated _version.py
 git = find_program('git', required: false, native: true)
 if git.found()

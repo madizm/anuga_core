@@ -124,6 +124,23 @@ Use `ANUGA_OMP_NUM_THREADS=1` as the single-thread baseline. The worker log and
 high-resource workers can run simultaneously, their combined thread count
 must fit the host CPU allocation.
 
+For a deployment-host-specific build, enable native CPU instructions while
+building on the same CPU that will run the image:
+
+```bash
+ANUGA_CPU_NATIVE=true docker compose build api worker high-resource-worker
+```
+
+Do not publish that image as a portable artifact. Leave the option unset for a
+generic image. To skip SWW while retaining frame COGs and `report.json`, run:
+
+```bash
+BAYUQUAN_WRITE_SWW=false docker compose up --build
+```
+
+The report records `swwWritten` and per-phase wall times. Frame COG publication
+is ordered and pipelined behind numerical evolution with bounded memory.
+
 ```bash
 bayuquan/run_in_docker.sh \
   --scenario /workspace/bayuquan/default_scenario.json \

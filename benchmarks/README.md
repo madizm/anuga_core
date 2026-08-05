@@ -8,7 +8,7 @@ Tools to track wall-time and memory performance across commits.
 # Activate your env
 conda activate anuga_env_3.14
 
-# Run small + medium scenarios, all modes (takes ~40 s)
+# Run small + medium scenarios in CPU OpenMP mode
 python benchmarks/run_benchmarks.py
 
 # Quick sanity check — small only (~5 s)
@@ -36,18 +36,24 @@ python benchmarks/compare_benchmarks.py benchmarks/results/before.json \
 
 | Mode | Description |
 |------|-------------|
-| 0    | Python Euler (default) |
-| 1    | Python RK2 |
-| 2    | C RK2 / GPU (CPU_ONLY_MODE if no GPU present) |
+| 1    | CPU OpenMP (default; thread count comes from `OMP_NUM_THREADS`) |
+| 2    | Experimental GPU/offload path; request explicitly with `--modes 2` |
 
 ## Metrics
 
 | Metric      | Meaning |
 |-------------|---------|
-| `cells/s`   | n_triangles × n_steps / wall_time — primary performance figure |
+| `cells/s`   | n_triangles × all CFL steps / evolve wall time — primary performance figure |
+| `setup(s)`  | Domain creation and initial-condition wall time |
+| `wall(s)`   | Evolve-only wall time, excluding setup |
 | `setup MB`  | RSS after domain creation (before any evolve) |
 | `peak MB`   | Peak RSS sampled at 100 ms intervals during evolve |
 | `MB/Ktri`   | peak_MB / (n_triangles / 1000) — memory per 1 000 triangles |
+
+Step counts are accumulated at every yield because ANUGA resets its interval
+counter after yielding. Results created before this correction reported only
+the final interval's steps and have invalid `cells/s` values; their wall-time
+measurements remain usable.
 
 ## Workflow: before/after comparison
 
