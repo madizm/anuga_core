@@ -5,7 +5,9 @@ import type { DensePreviewGrid } from './types'
 const ACTIVE = 1
 const EXTERIOR = 0
 const SOLID_HOLE = -1
-const MAX_DENSE_PREVIEW_CELLS = 1_048_576
+// Keep the synchronous GPU readback and diagnostic allocations bounded on
+// ordinary laptops; this is a sketch renderer, not a production raster path.
+const MAX_DENSE_PREVIEW_CELLS = 262_144
 
 export function buildDensePreviewGrid(
   source: SimulationGrid,

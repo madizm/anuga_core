@@ -6,6 +6,7 @@ import { WebGL2PreviewSolver } from './webgl2PreviewSolver'
 
 const MAX_STEPS_PER_FRAME = 14
 const MAX_BACKLOG_REAL_SECONDS = 0.5
+const PREVIEW_SNAPSHOT_INTERVAL_MS = 1000 / 15
 const DEFAULT_PLAYBACK_RATE = 60
 
 type Listener = (status: PreviewStatus) => void
@@ -19,6 +20,7 @@ export class PreviewController {
   private animationFrame: number | null = null
   private lastWallTime = 0
   private backlogSeconds = 0
+  private lastSnapshotWallTime = 0
   private disposed = false
 
   constructor(
@@ -64,7 +66,20 @@ export class PreviewController {
   pause() {
     if (this.disposed || this.statusValue.phase !== 'running') return
     this.cancelFrame()
-    this.statusValue = { ...this.statusValue, phase: 'paused' }
+    try {
+      this.statusValue = {
+        ...this.statusValue,
+        phase: 'paused',
+        snapshot: this.solver.snapshot(this.statusValue.timeSeconds),
+      }
+      this.lastSnapshotWallTime = performance.now()
+    } catch (error) {
+      this.statusValue = {
+        ...this.statusValue,
+        phase: 'error',
+        error: (error as Error).message || '快速预览状态读取失败',
+      }
+    }
     this.emit()
   }
 
@@ -87,6 +102,7 @@ export class PreviewController {
       snapshot: this.solver.snapshot(0),
       error: null,
     }
+    this.lastSnapshotWallTime = performance.now()
     this.emit()
   }
 
@@ -141,12 +157,21 @@ export class PreviewController {
         this.backlogSeconds -= dt
         steps += 1
       }
-      const snapshot = this.solver.snapshot(timeSeconds)
-      snapshot.diagnostics.simulatedSecondsPerRealSecond = elapsedRealSeconds > 0
-        ? (timeSeconds - startedAt) / elapsedRealSeconds : 0
+      const completed = timeSeconds >= this.statusValue.durationSeconds
+      let snapshot = this.statusValue.snapshot
+      if (
+        snapshot == null
+        || completed
+        || wallTime - this.lastSnapshotWallTime >= PREVIEW_SNAPSHOT_INTERVAL_MS
+      ) {
+        snapshot = this.solver.snapshot(timeSeconds)
+        snapshot.diagnostics.simulatedSecondsPerRealSecond = elapsedRealSeconds > 0
+          ? (timeSeconds - startedAt) / elapsedRealSeconds : 0
+        this.lastSnapshotWallTime = wallTime
+      }
       this.statusValue = {
         ...this.statusValue,
-        phase: timeSeconds >= this.statusValue.durationSeconds ? 'completed' : 'running',
+        phase: completed ? 'completed' : 'running',
         timeSeconds,
         snapshot,
       }
