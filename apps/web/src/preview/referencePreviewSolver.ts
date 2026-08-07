@@ -57,14 +57,9 @@ export class ReferencePreviewSolver implements PreviewSolver {
         let h = here[0] - timeStepSeconds / dx * (right[0] - left[0] + north[0] - south[0])
         let qx = here[1] - timeStepSeconds / dx * (right[1] - left[1] + north[1] - south[1])
         let qy = here[2] - timeStepSeconds / dx * (right[2] - left[2] + north[2] - south[2])
-        const terrainGradient = terrainGradientAt(this.grid, x, y)
         h = Math.max(0, h + timeStepSeconds * (rainfallRateMps + this.grid.inletDepthRateMps[cell]))
-        qx += timeStepSeconds * (
-          this.grid.inletXMomentumRate[cell] - PREVIEW_GRAVITY_MPS2 * h * terrainGradient[0]
-        )
-        qy += timeStepSeconds * (
-          this.grid.inletYMomentumRate[cell] - PREVIEW_GRAVITY_MPS2 * h * terrainGradient[1]
-        )
+        qx += timeStepSeconds * this.grid.inletXMomentumRate[cell]
+        qy += timeStepSeconds * this.grid.inletYMomentumRate[cell]
         if (h < PREVIEW_DRY_DEPTH_M) {
           qx = 0
           qy = 0
@@ -120,10 +115,17 @@ export class ReferencePreviewSolver implements PreviewSolver {
     if (mask < 0) return wallFlux(here, direction)
     if (mask === 0) return openBoundaryFlux(here, direction)
     const neighbour = readState(this.state, neighbourCell)
-    return rusanovFlux(
-      direction === 'right' || direction === 'left' ? 'x' : 'y',
-      direction === 'left' || direction === 'south' ? neighbour : here,
-      direction === 'left' || direction === 'south' ? here : neighbour,
+    const axis = direction === 'right' || direction === 'left' ? 'x' : 'y'
+    const hereTerrain = finiteTerrain(this.grid.elevationM[y * this.grid.width + x])
+    const neighbourTerrain = finiteTerrain(this.grid.elevationM[neighbourCell])
+    const hereIsLeft = direction === 'right' || direction === 'north'
+    return hydrostaticFlux(
+      axis,
+      hereIsLeft ? here : neighbour,
+      hereIsLeft ? neighbour : here,
+      hereIsLeft ? hereTerrain : neighbourTerrain,
+      hereIsLeft ? neighbourTerrain : hereTerrain,
+      hereIsLeft,
     )
   }
 }
@@ -143,6 +145,35 @@ function rusanovFlux(axis: 'x' | 'y', left: Triple, right: Triple): Triple {
     0.5 * (leftFlux[1] + rightFlux[1]) - 0.5 * alpha * (right[1] - left[1]),
     0.5 * (leftFlux[2] + rightFlux[2]) - 0.5 * alpha * (right[2] - left[2]),
   ]
+}
+
+function hydrostaticFlux(
+  axis: 'x' | 'y',
+  left: Triple,
+  right: Triple,
+  leftTerrain: number,
+  rightTerrain: number,
+  hereIsLeft: boolean,
+): Triple {
+  const interfaceTerrain = Math.max(leftTerrain, rightTerrain)
+  const reconstructedLeft = reconstructState(left, leftTerrain, interfaceTerrain)
+  const reconstructedRight = reconstructState(right, rightTerrain, interfaceTerrain)
+  const flux = rusanovFlux(axis, reconstructedLeft, reconstructedRight)
+  const here = hereIsLeft ? left : right
+  const reconstructedHere = hereIsLeft ? reconstructedLeft : reconstructedRight
+  const pressureCorrection = 0.5 * PREVIEW_GRAVITY_MPS2 * (
+    Math.max(0, here[0]) ** 2 - reconstructedHere[0] ** 2
+  )
+  flux[axis === 'x' ? 1 : 2] += pressureCorrection
+  return flux
+}
+
+function reconstructState(state: Triple, terrain: number, interfaceTerrain: number): Triple {
+  const depth = Math.max(0, state[0])
+  const reconstructedDepth = Math.max(0, depth + terrain - interfaceTerrain)
+  if (depth <= EPSILON || reconstructedDepth <= 0) return [0, 0, 0]
+  const scale = reconstructedDepth / depth
+  return [reconstructedDepth, state[1] * scale, state[2] * scale]
 }
 
 function physicalFlux(axis: 'x' | 'y', state: Triple): Triple {
@@ -171,22 +202,6 @@ function openBoundaryFlux(state: Triple, direction: 'right' | 'left' | 'north' |
 function wallFlux(state: Triple, direction: 'right' | 'left' | 'north' | 'south'): Triple {
   const pressure = 0.5 * PREVIEW_GRAVITY_MPS2 * Math.max(0, state[0]) ** 2
   return direction === 'right' || direction === 'left' ? [0, pressure, 0] : [0, 0, pressure]
-}
-
-function terrainGradientAt(grid: DensePreviewGrid, x: number, y: number): [number, number] {
-  const cell = y * grid.width + x
-  const here = finiteTerrain(grid.elevationM[cell])
-  const west = neighbourTerrain(grid, x - 1, y, here)
-  const east = neighbourTerrain(grid, x + 1, y, here)
-  const south = neighbourTerrain(grid, x, y - 1, here)
-  const north = neighbourTerrain(grid, x, y + 1, here)
-  return [(east - west) / (2 * grid.cellSizeM), (north - south) / (2 * grid.cellSizeM)]
-}
-
-function neighbourTerrain(grid: DensePreviewGrid, x: number, y: number, fallback: number) {
-  if (x < 0 || x >= grid.width || y < 0 || y >= grid.height) return fallback
-  const index = y * grid.width + x
-  return grid.mask[index] === 1 ? finiteTerrain(grid.elevationM[index]) : fallback
 }
 
 function finiteTerrain(value: number) {

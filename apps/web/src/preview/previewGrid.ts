@@ -5,16 +5,27 @@ import type { DensePreviewGrid } from './types'
 const ACTIVE = 1
 const EXTERIOR = 0
 const SOLID_HOLE = -1
+const MAX_DENSE_PREVIEW_CELLS = 1_048_576
 
 export function buildDensePreviewGrid(
   source: SimulationGrid,
   scenario: ScenarioPayload,
   cellSizeM: number,
+  maxTextureSize = Number.POSITIVE_INFINITY,
 ): DensePreviewGrid {
   const width = source.columnStop - source.columnStart
   const height = source.rowStop - source.rowStart
-  if (width <= 0 || height <= 0) throw new Error('快速预览网格范围无效')
+  if (
+    !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+    || width <= 0 || height <= 0
+  ) throw new Error('快速预览网格范围无效')
+  if (width > maxTextureSize || height > maxTextureSize) {
+    throw new Error('计算区域超过当前显卡的预览纹理上限')
+  }
   const length = width * height
+  if (!Number.isSafeInteger(length) || length > MAX_DENSE_PREVIEW_CELLS) {
+    throw new Error('快速预览稠密网格超过浏览器内存上限')
+  }
   const mask = new Float32Array(length)
   mask.fill(SOLID_HOLE)
   const elevationM = new Float32Array(length)

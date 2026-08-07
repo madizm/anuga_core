@@ -48,7 +48,11 @@ export class PreviewController {
   }
 
   start() {
-    if (this.disposed || this.statusValue.phase === 'running') return
+    if (
+      this.disposed
+      || this.statusValue.phase === 'running'
+      || this.statusValue.phase === 'stale'
+    ) return
     if (this.statusValue.phase === 'completed') this.reset()
     this.statusValue = { ...this.statusValue, phase: 'running', error: null }
     this.lastWallTime = performance.now()
@@ -72,7 +76,7 @@ export class PreviewController {
   }
 
   reset() {
-    if (this.disposed) return
+    if (this.disposed || this.statusValue.phase === 'stale') return
     this.cancelFrame()
     this.solver.reset()
     this.backlogSeconds = 0

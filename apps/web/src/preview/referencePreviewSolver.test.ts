@@ -54,6 +54,20 @@ describe('ReferencePreviewSolver', () => {
     expect(snapshot.diagnostics.waterVolumeM3).toBeLessThanOrEqual(9 * 900)
   })
 
+  it('keeps a constant water surface still over varying terrain', () => {
+    const source = makeGrid(3)
+    source.elevationM.set([8, 9, 8, 9, 10, 9, 8, 9, 8])
+    const solver = new ReferencePreviewSolver(buildDensePreviewGrid(source, scenario(), 30))
+    for (let cell = 0; cell < solver.grid.width * solver.grid.height; cell += 1) {
+      solver.grid.initialState[cell * 4] = 12 - solver.grid.elevationM[cell]
+    }
+    solver.reset()
+    solver.step(0.1, 0)
+    expect(solver.readState(4)[0]).toBeCloseTo(2, 6)
+    expect(solver.readState(4)[1]).toBeCloseTo(0, 6)
+    expect(solver.readState(4)[2]).toBeCloseTo(0, 6)
+  })
+
   it('adds rainfall with the declared area and time units', () => {
     const solver = solverFor(scenario(), 2)
     const rain = 0.001

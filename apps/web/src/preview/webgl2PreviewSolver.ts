@@ -71,6 +71,28 @@ vec3 rusanov(vec3 left, vec3 right, int axis) {
   float alpha = max(waveSpeed(left, axis), waveSpeed(right, axis));
   return 0.5 * (leftFlux + rightFlux) - 0.5 * alpha * (right - left);
 }
+vec3 reconstructState(vec3 state, float terrain, float interfaceTerrain) {
+  float h = max(state.x, 0.0);
+  float reconstructedH = max(0.0, h + terrain - interfaceTerrain);
+  if (h <= EPSILON || reconstructedH <= 0.0) return vec3(0.0);
+  return vec3(reconstructedH, state.yz * (reconstructedH / h));
+}
+vec3 hydrostaticFlux(
+  vec3 left, vec3 right, float leftTerrain, float rightTerrain, int axis, bool hereIsLeft
+) {
+  float interfaceTerrain = max(leftTerrain, rightTerrain);
+  vec3 reconstructedLeft = reconstructState(left, leftTerrain, interfaceTerrain);
+  vec3 reconstructedRight = reconstructState(right, rightTerrain, interfaceTerrain);
+  vec3 flux = rusanov(reconstructedLeft, reconstructedRight, axis);
+  vec3 here = hereIsLeft ? left : right;
+  vec3 reconstructedHere = hereIsLeft ? reconstructedLeft : reconstructedRight;
+  float correction = 0.5 * u_gravity * (
+    max(here.x, 0.0) * max(here.x, 0.0) - reconstructedHere.x * reconstructedHere.x
+  );
+  if (axis == 0) flux.y += correction;
+  else flux.z += correction;
+  return flux;
+}
 vec3 interfaceFlux(ivec2 pixel, ivec2 neighbour, vec3 here, int axis, int direction) {
   ivec2 size = textureSize(u_state, 0);
   if (neighbour.x < 0 || neighbour.y < 0 || neighbour.x >= size.x || neighbour.y >= size.y) {
@@ -80,9 +102,11 @@ vec3 interfaceFlux(ivec2 pixel, ivec2 neighbour, vec3 here, int axis, int direct
   if (neighbourMask < -0.5) return wallFlux(here, axis);
   if (neighbourMask < 0.5) return openFlux(here, axis, direction);
   vec3 neighbourState = readState(neighbour).xyz;
+  float hereTerrain = readTerrain(pixel, 0.0);
+  float neighbourTerrain = readTerrain(neighbour, hereTerrain);
   return direction < 0
-    ? rusanov(neighbourState, here, axis)
-    : rusanov(here, neighbourState, axis);
+    ? hydrostaticFlux(neighbourState, here, neighbourTerrain, hereTerrain, axis, false)
+    : hydrostaticFlux(here, neighbourState, hereTerrain, neighbourTerrain, axis, true);
 }
 
 void main() {
@@ -102,17 +126,10 @@ void main() {
   float qx = here.y - dtOverDx * (right.y - left.y + north.y - south.y);
   float qy = here.z - dtOverDx * (right.z - left.z + north.z - south.z);
 
-  float terrain = readTerrain(pixel, 0.0);
-  float west = readTerrain(pixel + ivec2(-1, 0), terrain);
-  float east = readTerrain(pixel + ivec2(1, 0), terrain);
-  float southTerrain = readTerrain(pixel + ivec2(0, -1), terrain);
-  float northTerrain = readTerrain(pixel + ivec2(0, 1), terrain);
-  float slopeX = (east - west) / (2.0 * u_dx);
-  float slopeY = (northTerrain - southTerrain) / (2.0 * u_dx);
   vec3 source = texelFetch(u_source, pixel, 0).rgb;
   h = max(0.0, h + u_dt * (source.r + u_rain));
-  qx += u_dt * (source.g - u_gravity * h * slopeX);
-  qy += u_dt * (source.b - u_gravity * h * slopeY);
+  qx += u_dt * source.g;
+  qy += u_dt * source.b;
 
   if (h < DRY) {
     qx = 0.0;

@@ -79,4 +79,20 @@ describe('buildDensePreviewGrid', () => {
     // The missing centre is enclosed by the eight active cells.
     expect([...result.mask].filter((value) => value === -1)).toHaveLength(1)
   })
+
+  it('rejects oversized dense bounds before allocating grid arrays', () => {
+    const input = grid()
+    input.cellCount = 1
+    input.demRows = 2_000_000
+    input.demColumns = 2_000_000
+    input.rowStop = 2_000_000
+    input.columnStop = 2_000_000
+    input.cellIndices = new Uint32Array([0])
+    input.elevationM = new Float32Array([10])
+    input.manningLow = new Float32Array([0.03])
+    input.manningMiddle = new Float32Array([0.05])
+    input.manningHigh = new Float32Array([0.1])
+    expect(() => buildDensePreviewGrid(input, scenario(), 30, 16_384)).toThrow(/纹理上限/)
+    expect(() => buildDensePreviewGrid(input, scenario(), 30)).toThrow(/内存上限/)
+  })
 })

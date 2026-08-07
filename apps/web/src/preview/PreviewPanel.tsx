@@ -61,7 +61,7 @@ export function PreviewPanel({
         <button className="preview-play" disabled={!capabilities.supported || stale} onClick={running ? onPause : onStart}>
           <span>{running ? 'Ⅱ' : '▶'}</span>{running ? '暂停' : status?.phase === 'completed' ? '重新开始' : '开始预览'}
         </button>
-        <button className="preview-reset" disabled={!active} onClick={onReset}>重置</button>
+        <button className="preview-reset" disabled={!active || stale} onClick={onReset}>重置</button>
       </div>
       <div className="preview-rate" role="group" aria-label="预览速度">
         <span>SIM SPEED</span>

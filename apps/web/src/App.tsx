@@ -286,11 +286,8 @@ export default function App() {
     try {
       const denseGrid = buildDensePreviewGrid(
         grid.data, currentPayload, demProduct.cellSizeM,
+        previewCapabilities.maxTextureSize,
       )
-      if (
-        denseGrid.width > previewCapabilities.maxTextureSize
-        || denseGrid.height > previewCapabilities.maxTextureSize
-      ) throw new Error('计算区域超过当前显卡的预览纹理上限')
       const controller = new PreviewController({
         grid: denseGrid,
         scenario: currentPayload,
@@ -432,7 +429,7 @@ export default function App() {
               capabilities={previewCapabilities}
               quantity={previewQuantity}
               flowEnabled={previewFlowEnabled}
-              onStart={() => launchPreview(true)}
+              onStart={() => previewControllerRef.current?.start()}
               onPause={() => previewControllerRef.current?.pause()}
               onReset={() => previewControllerRef.current?.reset()}
               onClose={closePreview}
