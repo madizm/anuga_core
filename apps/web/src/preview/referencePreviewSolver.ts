@@ -108,12 +108,12 @@ export class ReferencePreviewSolver implements PreviewSolver {
     const nx = x + dx
     const ny = y + dy
     if (nx < 0 || nx >= this.grid.width || ny < 0 || ny >= this.grid.height) {
-      return openBoundaryFlux(here, direction)
+      return transmissiveBoundaryFlux(here, direction)
     }
     const neighbourCell = ny * this.grid.width + nx
     const mask = this.grid.mask[neighbourCell]
     if (mask < 0) return wallFlux(here, direction)
-    if (mask === 0) return openBoundaryFlux(here, direction)
+    if (mask === 0) return transmissiveBoundaryFlux(here, direction)
     const neighbour = readState(this.state, neighbourCell)
     const axis = direction === 'right' || direction === 'left' ? 'x' : 'y'
     const hereTerrain = finiteTerrain(this.grid.elevationM[y * this.grid.width + x])
@@ -191,11 +191,10 @@ function waveSpeed(axis: 'x' | 'y', state: Triple) {
   return Math.abs(momentum) / Math.max(h, EPSILON) + Math.sqrt(PREVIEW_GRAVITY_MPS2 * h)
 }
 
-function openBoundaryFlux(state: Triple, direction: 'right' | 'left' | 'north' | 'south'): Triple {
-  const outward = direction === 'right' ? state[1] > 0
-    : direction === 'left' ? state[1] < 0
-      : direction === 'north' ? state[2] > 0 : state[2] < 0
-  if (!outward) return [0, 0, 0]
+function transmissiveBoundaryFlux(
+  state: Triple,
+  direction: 'right' | 'left' | 'north' | 'south',
+): Triple {
   return physicalFlux(direction === 'right' || direction === 'left' ? 'x' : 'y', state)
 }
 

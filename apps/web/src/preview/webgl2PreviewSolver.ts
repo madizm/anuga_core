@@ -59,11 +59,8 @@ vec3 wallFlux(vec3 state, int axis) {
   float pressure = 0.5 * u_gravity * max(state.x, 0.0) * max(state.x, 0.0);
   return axis == 0 ? vec3(0.0, pressure, 0.0) : vec3(0.0, 0.0, pressure);
 }
-vec3 openFlux(vec3 state, int axis, int direction) {
-  float outward = axis == 0
-    ? (direction > 0 ? state.y : -state.y)
-    : (direction > 0 ? state.z : -state.z);
-  return outward > 0.0 ? physicalFlux(state, axis) : vec3(0.0);
+vec3 transmissiveFlux(vec3 state, int axis) {
+  return physicalFlux(state, axis);
 }
 vec3 rusanov(vec3 left, vec3 right, int axis) {
   vec3 leftFlux = physicalFlux(left, axis);
@@ -96,11 +93,11 @@ vec3 hydrostaticFlux(
 vec3 interfaceFlux(ivec2 pixel, ivec2 neighbour, vec3 here, int axis, int direction) {
   ivec2 size = textureSize(u_state, 0);
   if (neighbour.x < 0 || neighbour.y < 0 || neighbour.x >= size.x || neighbour.y >= size.y) {
-    return openFlux(here, axis, direction);
+    return transmissiveFlux(here, axis);
   }
   float neighbourMask = readMask(neighbour);
   if (neighbourMask < -0.5) return wallFlux(here, axis);
-  if (neighbourMask < 0.5) return openFlux(here, axis, direction);
+  if (neighbourMask < 0.5) return transmissiveFlux(here, axis);
   vec3 neighbourState = readState(neighbour).xyz;
   float hereTerrain = readTerrain(pixel, 0.0);
   float neighbourTerrain = readTerrain(neighbour, hereTerrain);

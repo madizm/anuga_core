@@ -47,11 +47,11 @@ describe('ReferencePreviewSolver', () => {
       solver.grid.initialState[cell * 4] = 1
     }
     solver.reset()
-    solver.step(0.1, 0)
-    const snapshot = solver.snapshot(0.1)
-    expect(snapshot.diagnostics.maximumDepthM).toBeLessThanOrEqual(1)
-    expect(snapshot.diagnostics.maximumSpeedMps).toBeLessThan(0.1)
-    expect(snapshot.diagnostics.waterVolumeM3).toBeLessThanOrEqual(9 * 900)
+    for (let step = 0; step < 10; step += 1) solver.step(0.1, 0)
+    const snapshot = solver.snapshot(1)
+    expect(snapshot.diagnostics.maximumDepthM).toBeCloseTo(1, 6)
+    expect(snapshot.diagnostics.maximumSpeedMps).toBeCloseTo(0, 6)
+    expect(snapshot.diagnostics.waterVolumeM3).toBeCloseTo(9 * 900, 3)
   })
 
   it('keeps a constant water surface still over varying terrain', () => {
@@ -62,10 +62,12 @@ describe('ReferencePreviewSolver', () => {
       solver.grid.initialState[cell * 4] = 12 - solver.grid.elevationM[cell]
     }
     solver.reset()
-    solver.step(0.1, 0)
-    expect(solver.readState(4)[0]).toBeCloseTo(2, 6)
-    expect(solver.readState(4)[1]).toBeCloseTo(0, 6)
-    expect(solver.readState(4)[2]).toBeCloseTo(0, 6)
+    for (let step = 0; step < 10; step += 1) solver.step(0.1, 0)
+    for (let cell = 0; cell < solver.grid.width * solver.grid.height; cell += 1) {
+      expect(solver.readState(cell)[0]).toBeCloseTo(12 - solver.grid.elevationM[cell], 6)
+      expect(solver.readState(cell)[1]).toBeCloseTo(0, 6)
+      expect(solver.readState(cell)[2]).toBeCloseTo(0, 6)
+    }
   })
 
   it('adds rainfall with the declared area and time units', () => {
