@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { LineString, Point, Polygon } from 'geojson'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api/client'
@@ -12,6 +12,7 @@ import type {
   ScenarioPayload,
   SimulationArea,
   ValidationResult,
+  ResultQuantity,
 } from './api/types'
 import { InletPanel } from './inlets/InletPanel'
 import { ResultWorkspace } from './jobs/ResultWorkspace'
@@ -25,6 +26,12 @@ import { createHydraulicFeature, type HydraulicDrawMode } from './hydraulics/hyd
 import { LayerPanel } from './map/LayerPanel'
 import { ModelMap } from './map/ModelMap'
 import { DISABLED_RAINFALL, hasEffectiveRainfall, rainfallIntervals, rainfallValidationError } from './rainfall/rainfall'
+import { PreviewCompatibilityDialog, PreviewPanel } from './preview/PreviewPanel'
+import { PreviewController } from './preview/PreviewController'
+import { buildDensePreviewGrid } from './preview/previewGrid'
+import { detectPreviewCapabilities } from './preview/previewCapabilities'
+import { previewCompatibility } from './preview/previewScenario'
+import type { PreviewStatus } from './preview/types'
 
 export default function App() {
   const inlets = useInletStore((state) => state.inlets)
@@ -51,6 +58,21 @@ export default function App() {
   const [areaDrawMode, setAreaDrawMode] = useState<'rectangle' | 'polygon' | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [jobsOpen, setJobsOpen] = useState(false)
+  const previewControllerRef = useRef<PreviewController | null>(null)
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus | null>(null)
+  const [previewQuantity, setPreviewQuantity] = useState<ResultQuantity>('depth')
+  const [previewFlowEnabled, setPreviewFlowEnabled] = useState(true)
+  const [previewCompatibilityNames, setPreviewCompatibilityNames] = useState<string[] | null>(null)
+  const [previewFingerprint, setPreviewFingerprint] = useState<string | null>(null)
+  const previewCapabilities = useMemo(() => detectPreviewCapabilities(), [])
+  const closePreview = useCallback(() => {
+    previewControllerRef.current?.dispose()
+    previewControllerRef.current = null
+    setPreviewStatus(null)
+    setPreviewFingerprint(null)
+    setPreviewCompatibilityNames(null)
+  }, [])
+  useEffect(() => closePreview, [closePreview])
   const clearAllSelections = useInletStore((state) => state.clearAllSelections)
   const replaceInlets = useInletStore((state) => state.replaceInlets)
   const demProducts = useQuery({
@@ -104,6 +126,7 @@ export default function App() {
   }, [areaMutation])
 
   const beginAreaDrawing = (mode: 'rectangle' | 'polygon') => {
+    closePreview()
     if (!demProduct) {
       setMessage('DEM 产品目录尚未就绪')
       return
@@ -120,6 +143,7 @@ export default function App() {
   }
 
   const startDemVariant = () => {
+    closePreview()
     if (!area) return
     if (!window.confirm('将保留非空间参数，但清空模拟区域和全部入口位置。是否继续？')) return
     clearAllSelections()
@@ -168,6 +192,7 @@ export default function App() {
       return { scenario, simulationArea }
     },
     onSuccess: ({ scenario, simulationArea }) => {
+      closePreview()
       setDemProductId(scenario.demProductId)
       setName(scenario.name)
       setDuration(scenario.durationSeconds)
@@ -222,6 +247,7 @@ export default function App() {
       return api.createJob(saved.id, validation.warnings.length > 0)
     },
     onSuccess: (job) => {
+      closePreview()
       void queryClient.invalidateQueries({ queryKey: ['jobs'] })
       setJobId(job.id)
       window.history.replaceState(null, '', `?job=${job.id}`)
@@ -240,6 +266,53 @@ export default function App() {
   const rainfallReady = hasEffectiveRainfall(rainfall, duration)
   const rainfallValid = rainfallValidationError(rainfall, duration) === null
   const localReady = Boolean(area) && rainfallValid && (inletsReady || rainfallReady)
+  const currentPayloadFingerprint = JSON.stringify(currentPayload)
+
+  const launchPreview = (ignoreCompatibility = false) => {
+    if (!grid.data || !demProduct || !localReady) {
+      setMessage('请先完成计算区域和水源配置')
+      return
+    }
+    if (!previewCapabilities.supported) {
+      setMessage(previewCapabilities.reason ?? '当前设备不支持快速预览')
+      return
+    }
+    const compatibility = previewCompatibility(currentPayload)
+    if (!ignoreCompatibility && !compatibility.supported) {
+      setPreviewCompatibilityNames(compatibility.messages)
+      return
+    }
+    closePreview()
+    try {
+      const denseGrid = buildDensePreviewGrid(
+        grid.data, currentPayload, demProduct.cellSizeM,
+      )
+      if (
+        denseGrid.width > previewCapabilities.maxTextureSize
+        || denseGrid.height > previewCapabilities.maxTextureSize
+      ) throw new Error('计算区域超过当前显卡的预览纹理上限')
+      const controller = new PreviewController({
+        grid: denseGrid,
+        scenario: currentPayload,
+      })
+      previewControllerRef.current = controller
+      controller.subscribe(setPreviewStatus)
+      setPreviewFingerprint(currentPayloadFingerprint)
+      setPreviewCompatibilityNames(null)
+      controller.start()
+    } catch (error) {
+      closePreview()
+      setMessage((error as Error).message || '快速预览初始化失败')
+    }
+  }
+
+  useEffect(() => {
+    const controller = previewControllerRef.current
+    if (
+      controller && previewFingerprint
+      && previewFingerprint !== currentPayloadFingerprint
+    ) controller.invalidate()
+  }, [currentPayloadFingerprint, previewFingerprint])
 
   const handleFeatureDrawn = useCallback((geometry: LineString | Polygon | Point) => {
     if (!featureDrawMode || !area) return
@@ -287,6 +360,11 @@ export default function App() {
           <button className="secondary-button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
             {saveMutation.isPending ? '保存中' : '保存场景'}
           </button>
+          <button
+            className="preview-button"
+            disabled={!localReady || !grid.data || !previewCapabilities.supported}
+            onClick={() => launchPreview()}
+          ><span>◇</span> {previewStatus ? '重新预览' : '快速预览'}</button>
           <button className="run-button" disabled={!localReady} onClick={validateAndOpen}>
             <span>▶</span> 运行模拟
           </button>
@@ -318,6 +396,9 @@ export default function App() {
               crossSectionSelection={crossSectionSelection}
               featureDrawMode={featureDrawMode}
               onFeatureDrawn={handleFeatureDrawn}
+              previewSnapshot={previewStatus?.snapshot ?? null}
+              previewQuantity={previewQuantity}
+              previewFlowEnabled={previewFlowEnabled}
             />
           )}
           <AreaControl
@@ -345,6 +426,22 @@ export default function App() {
             onMeshPreview={setHydraulicMeshPreview}
             onCrossSectionSelectionChange={setCrossSectionSelection}
           />
+          {previewStatus && (
+            <PreviewPanel
+              status={previewStatus}
+              capabilities={previewCapabilities}
+              quantity={previewQuantity}
+              flowEnabled={previewFlowEnabled}
+              onStart={() => launchPreview(true)}
+              onPause={() => previewControllerRef.current?.pause()}
+              onReset={() => previewControllerRef.current?.reset()}
+              onClose={closePreview}
+              onRate={(rate) => previewControllerRef.current?.setPlaybackRate(rate)}
+              onQuantity={setPreviewQuantity}
+              onFlow={setPreviewFlowEnabled}
+              onFormal={() => { closePreview(); void validateAndOpen() }}
+            />
+          )}
           {area && grid.isLoading && <div className="loading-grid"><span />正在装载局部 {demProduct?.cellSizeM ?? '—'} m 网格</div>}
         </section>
         <InletPanel
@@ -414,6 +511,14 @@ export default function App() {
           onClose={() => setHistoryOpen(false)}
           onOpen={openHistoricalScenario}
           onRefresh={() => void history.refetch()}
+        />
+      )}
+      {previewCompatibilityNames && (
+        <PreviewCompatibilityDialog
+          names={previewCompatibilityNames}
+          onContinue={() => launchPreview(true)}
+          onCancel={() => setPreviewCompatibilityNames(null)}
+          onFormal={() => { setPreviewCompatibilityNames(null); void validateAndOpen() }}
         />
       )}
       {showCheck && validation && (

@@ -602,3 +602,115 @@ test('job deep link fits result tiles to its simulation area', async ({ page }) 
       && latitude >= areaBounds[1] && latitude <= areaBounds[3]
   })).toBe(true)
 })
+
+function previewGridPayload() {
+  const cellCount = 4
+  const buffer = Buffer.alloc(100 + cellCount * 7 * 4)
+  buffer.write('BQSG', 0, 'ascii')
+  buffer.writeUInt16LE(1, 4)
+  buffer.writeUInt16LE(100, 6)
+  buffer.writeUInt32LE(cellCount, 8)
+  buffer.writeUInt32LE(2, 12)
+  buffer.writeUInt32LE(2, 16)
+  buffer.writeUInt32LE(0, 20)
+  buffer.writeUInt32LE(2, 24)
+  buffer.writeUInt32LE(0, 28)
+  buffer.writeUInt32LE(2, 32)
+  const corners = [122, 40.02, 122.02, 40.02, 122, 40, 122.02, 40]
+  corners.forEach((value, index) => buffer.writeDoubleLE(value, 36 + index * 8))
+  const writePlane = (plane: number, values: number[]) => values.forEach((value, index) => {
+    buffer.writeUInt32LE(value, 100 + (plane * cellCount + index) * 4)
+  })
+  const writeFloatPlane = (plane: number, values: number[]) => values.forEach((value, index) => {
+    buffer.writeFloatLE(value, 100 + (plane * cellCount + index) * 4)
+  })
+  writePlane(0, [0, 1, 2, 3])
+  writeFloatPlane(1, [10, 10, 10, 10])
+  writeFloatPlane(2, [0, 0, 0, 0])
+  writeFloatPlane(3, [0, 0, 0, 0])
+  writeFloatPlane(4, [0.03, 0.03, 0.03, 0.03])
+  writeFloatPlane(5, [0.05, 0.05, 0.05, 0.05])
+  writeFloatPlane(6, [0.1, 0.1, 0.1, 0.1])
+  return buffer
+}
+
+test('browser GPU preview follows draft controls and invalidates on scenario edits', async ({ page }) => {
+  await page.route('**/api/dem-products', (route) => route.fulfill({
+    json: {
+      defaultDemProductId: 'dem-test',
+      products: [{
+        id: 'dem-test', name: '预览 DEM', status: 'active', isDefault: true,
+        crs: 'EPSG:32651', cellSizeM: 10, sourceResolutionM: 30,
+        informationResolutionM: 30, datasetVersion: 'dataset-test',
+        verticalDatum: 'test', elevationUnit: 'm', resamplingMethod: 'bilinear',
+        maxCells: 25_000, maxTriangles: 50_000, resourceQueue: 'local',
+        demSha256: 'd'.repeat(64),
+        simulationAreaResolveUrl: '/api/dem-products/dem-test/simulation-areas/resolve',
+        demTilejsonUrl: '/api/mock-dem', terrainTilejsonUrl: '/api/mock-terrain', derived: true,
+      }],
+    },
+  }))
+  await page.route('**/api/dem-products/**', async (route) => {
+    const url = route.request().url()
+    if (url.endsWith('/simulation-areas/resolve')) {
+      return route.fulfill({ json: {
+        id: 'a'.repeat(64), areaHash: 'a'.repeat(64), demProductId: 'dem-test',
+        datasetVersion: 'dataset-test', crs: 'EPSG:32651', cellCount: 4,
+        areaM2: 400, cellSizeM: 10, triangleCount: 8,
+        window: { rowStart: 0, rowStop: 2, columnStart: 0, columnStop: 2 },
+        elevationM: { minimum: 10, maximum: 10, mean: 10 },
+        gridUrl: '/api/dem-products/dem-test/simulation-areas/a/grid',
+        boundaryCondition: 'transmissive',
+      } })
+    }
+    if (url.endsWith('/grid')) return route.fulfill({ body: previewGridPayload(), contentType: 'application/octet-stream' })
+    if (url.endsWith('/selection/resolve')) return route.fulfill({ json: {
+      cellIds: ['r0000-c0000'], cellCount: 1, geometricAreaM2: 100,
+      triangleCount: 2, effectiveTriangleAreaM2: 100,
+      elevationM: { minimum: 10, maximum: 10, mean: 10 },
+      buildingFraction: { minimum: 0, maximum: 0 }, manning: { minimum: 0.05, maximum: 0.05 },
+    } })
+    return route.fulfill({ status: 404, body: 'not found' })
+  })
+  await page.route('**/api/mock-dem', (route) => route.fulfill({ json: {
+    tilejson: '3.0.0', tiles: ['/api/mock-dem-tiles/{z}/{x}/{y}.png'], minzoom: 0, maxzoom: 18,
+  } }))
+  await page.route('**/api/mock-terrain', (route) => route.fulfill({ json: {
+    tilejson: '3.0.0', tiles: ['/api/mock-terrain-tiles/{z}/{x}/{y}.png'], minzoom: 0, maxzoom: 14,
+  } }))
+  await page.route('**/api/mock-*-tiles/**', (route) => route.fulfill({
+    contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X4W1WQAAAABJRU5ErkJggg==', 'base64'),
+  }))
+  await page.route('**/tiles1.geovisearth.com/**', (route) => route.fulfill({
+    contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X4W1WQAAAABJRU5ErkJggg==', 'base64'),
+  }))
+
+  await page.goto('/')
+  await expect(page.locator('.model-map')).toHaveAttribute('data-dem-ready', 'true', { timeout: 20_000 })
+  const canvas = page.locator('.maplibregl-canvas')
+  await expect(canvas).toBeVisible()
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('preview map has no bounds')
+  await page.getByRole('button', { name: /矩形/ }).click()
+  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.4)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.6)
+  await page.mouse.up()
+  await expect(page.getByText('局部计算域已锁定')).toBeVisible({ timeout: 20_000 })
+  await expect(page.locator('.model-map')).toHaveAttribute('data-grid-ready', 'true', { timeout: 20_000 })
+  await page.waitForTimeout(1_000)
+  await selectCenterCell(page)
+  await expect(page.getByRole('button', { name: '快速预览' })).toBeEnabled()
+  await page.getByRole('button', { name: '快速预览' }).click()
+  await expect(page.getByRole('region', { name: '快速预览控制' })).toBeVisible()
+  await expect(page.getByText('LOCAL GPU PREVIEW · NON-AUTHORITATIVE')).toBeVisible()
+  await expect(page.locator('.model-map')).toHaveAttribute('data-preview-renderer', 'webgl2')
+  await expect(page.locator('.model-map')).toHaveAttribute('data-preview-field', 'depth', { timeout: 20_000 })
+  await expect.poll(async () => Number(await page.locator('.model-map').getAttribute('data-preview-time'))).toBeGreaterThan(0)
+  await page.getByRole('button', { name: '暂停' }).click()
+  await expect(page.getByText('已暂停')).toBeVisible()
+  await page.locator('.scenario-rail label').filter({ hasText: '模拟时长' }).locator('input').fill('120')
+  await expect(page.getByText('场景已修改，预览失效')).toBeVisible()
+  await page.getByRole('button', { name: '关闭快速预览' }).click()
+  await expect(page.locator('.model-map')).not.toHaveAttribute('data-preview-time', /.+/)
+})
