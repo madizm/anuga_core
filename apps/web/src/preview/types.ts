@@ -5,6 +5,34 @@ export const PREVIEW_DRY_DEPTH_M = 0.01
 export const PREVIEW_GRAVITY_MPS2 = 9.81
 
 /** Dense, south-to-north grid used by both the CPU reference and GPU solver. */
+export interface PreviewStructureLink {
+  id: string
+  type: 'culvert' | 'bridge'
+  inletCell: number
+  outletCell: number
+  areaM2: number
+  blockage: number
+  lossCoefficient: number
+}
+
+export interface PreviewHydraulicModel {
+  bedElevationM: Float32Array
+  manningN: Float32Array
+  sourceDepthRateMps: Float32Array
+  outletCapacityM3s: Float32Array
+  outletFullCapacityDepthM: Float32Array
+  outletBlockage: Float32Array
+  wallX: Float32Array
+  wallY: Float32Array
+  crestX: Float32Array
+  crestY: Float32Array
+  qFactorX: Float32Array
+  qFactorY: Float32Array
+  links: PreviewStructureLink[]
+  approximatedFeatures: string[]
+  unsupportedFeatures: string[]
+}
+
 export interface DensePreviewGrid {
   width: number
   height: number
@@ -22,6 +50,7 @@ export interface DensePreviewGrid {
   activeAreaM2: number
   initialWaterVolumeM3: number
   inletDischargeM3s: number
+  hydraulics?: PreviewHydraulicModel
 }
 
 export interface PreviewCapabilities {
@@ -42,6 +71,8 @@ export interface PreviewDiagnostics {
   maximumSpeedMps: number
   wetCellCount: number
   simulatedSecondsPerRealSecond: number
+  structureOutflowM3?: number
+  massResidualM3?: number
 }
 
 export interface PreviewSnapshot {

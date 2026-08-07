@@ -32,6 +32,20 @@ describe('preview scenario contract', () => {
     expect(result.messages).toEqual(['桥梁 1（桥梁）'])
   })
 
+  it('marks rasterized hydraulic features as approximate but previewable', () => {
+    const result = previewCompatibility({
+      ...base,
+      hydraulicFeatures: [{
+        id: 'levee-1', name: '堤防 1', enabled: true, type: 'levee',
+        geometry: { type: 'LineString', coordinates: [[122, 40], [122.01, 40.01]] },
+        crestMode: 'relative', heightAboveGroundM: 2, qFactor: 1,
+      }],
+    })
+    expect(result.supported).toBe(true)
+    expect(result.approximationMessages).toEqual(['堤防 1（堤防）'])
+    expect(result.messages).toEqual([])
+  })
+
   it('allows a clean rainfall/inlet preview contract', () => {
     expect(previewCompatibility(base)).toMatchObject({ supported: true, messages: [] })
   })

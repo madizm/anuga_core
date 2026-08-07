@@ -79,6 +79,38 @@ describe('ReferencePreviewSolver', () => {
     expect(snapshot.diagnostics.appliedInputVolumeM3).toBeCloseTo(rain * 4 * 900 * 10, 2)
   })
 
+  it('blocks below-crest flow across a rasterized levee face', () => {
+    const solver = solverFor(scenario({
+      hydraulicFeatures: [{
+        id: 'levee-1', name: '堤防', enabled: true, type: 'levee',
+        geometry: { type: 'LineString', coordinates: [[122.01, 40], [122.01, 40.03]] },
+        crestMode: 'absolute', crestElevationM: 12, qFactor: 1,
+      }],
+    }))
+    for (let y = 0; y < solver.grid.height; y += 1) solver.grid.initialState[(y * 3) * 4] = 1
+    solver.reset()
+    solver.step(0.1, 0)
+    for (let y = 0; y < solver.grid.height; y += 1) {
+      expect(solver.readState(y * 3 + 1)[0]).toBeCloseTo(0, 8)
+    }
+  })
+
+  it('limits a drainage outlet by its declared capacity', () => {
+    const solver = solverFor(scenario({
+      hydraulicFeatures: [{
+        id: 'outlet-1', name: '排水口', enabled: true, type: 'drainageOutlet',
+        geometry: { type: 'Point', coordinates: [122.015, 40.015] },
+        capacityM3s: 9, intakeRadiusM: 1, fullCapacityDepthM: 0.3, blockage: 0,
+      }],
+    }))
+    for (let cell = 0; cell < 9; cell += 1) solver.grid.initialState[cell * 4] = 1
+    solver.reset()
+    solver.step(1, 0)
+    const snapshot = solver.snapshot(1)
+    expect(snapshot.diagnostics.structureOutflowM3).toBeCloseTo(9, 6)
+    expect(snapshot.diagnostics.waterVolumeM3).toBeCloseTo(9 * 900 - 9, 4)
+  })
+
   it('keeps all states finite and non-negative after a dam-break-like pulse', () => {
     const solver = solverFor(scenario({
       inlets: [{

@@ -11,6 +11,7 @@ export function PreviewPanel({
   capabilities,
   quantity,
   flowEnabled,
+  approximationNames,
   onStart,
   onPause,
   onReset,
@@ -24,6 +25,7 @@ export function PreviewPanel({
   capabilities: PreviewCapabilities
   quantity: ResultQuantity
   flowEnabled: boolean
+  approximationNames: string[]
   onStart: () => void
   onPause: () => void
   onReset: () => void
@@ -52,6 +54,11 @@ export function PreviewPanel({
         </div>
       )}
       {status?.error && <div className="preview-warning error" role="alert"><b>预览暂停</b><span>{status.error}</span></div>}
+      {approximationNames.length > 0 && (
+        <div className="preview-warning" role="status">
+          <b>水工要素采用栅格近似</b><span>{approximationNames.join('、')}</span>
+        </div>
+      )}
       <div className="preview-time">
         <div><span>SIMULATION TIME</span><strong>T+{Math.round(status?.timeSeconds ?? 0)}s</strong><small>/ {status?.durationSeconds ?? 0}s</small></div>
         <i className={running ? 'running' : ''} />
