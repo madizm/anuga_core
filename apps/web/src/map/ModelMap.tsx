@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import maplibregl, { type GeoJSONSource, type Map, type MapMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type {
-  EngineeringChannelFeature, FrictionScenario, HydraulicFeature,
+  EngineeringChannelFeature, FrictionScenario, HydraulicFeature, ResultQuantity,
 } from '../api/types'
 import { engineeringChannelSectionOverlay } from '../hydraulics/hydraulicFeatures'
 import { useInletStore } from '../inlets/inletStore'
@@ -21,6 +21,8 @@ import {
 } from './terrain'
 import { useTerrainStore } from './terrainStore'
 import { SimulationGridLayer } from './SimulationGridLayer'
+import { PreviewMapLayer } from '../preview/PreviewMapLayer'
+import type { PreviewSnapshot } from '../preview/types'
 import {
   cellAtLngLat,
   cellBounds,
@@ -42,6 +44,9 @@ interface ModelMapProps {
   featureDrawMode?: 'levee' | 'simpleChannel' | 'engineeringChannel'
     | 'culvert' | 'bridge' | 'drainageOutlet' | 'breach' | null
   onFeatureDrawn?: (geometry: LineString | Polygon | Point) => void
+  previewSnapshot?: PreviewSnapshot | null
+  previewQuantity?: ResultQuantity
+  previewFlowEnabled?: boolean
 }
 
 const DEM_SOURCE = 'model-dem'
@@ -89,10 +94,14 @@ export function ModelMap({
   crossSectionSelection = null,
   featureDrawMode = null,
   onFeatureDrawn,
+  previewSnapshot = null,
+  previewQuantity = 'depth',
+  previewFlowEnabled = true,
 }: ModelMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
   const gridLayerRef = useRef<SimulationGridLayer | null>(null)
+  const previewLayerRef = useRef<PreviewMapLayer | null>(null)
   const brushVisited = useRef(new Set<string>())
   const boxStart = useRef<MapMouseEvent['point'] | null>(null)
   const areaStart = useRef<MapMouseEvent['lngLat'] | null>(null)
@@ -157,10 +166,36 @@ export function ModelMap({
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left')
     mapRef.current = map
     return () => {
+      previewLayerRef.current?.destroy()
+      previewLayerRef.current = null
       map.remove()
       mapRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const install = () => {
+      if (!previewLayerRef.current) previewLayerRef.current = new PreviewMapLayer(map)
+    }
+    if (map.isStyleLoaded()) install()
+    else map.once('load', install)
+    return () => {
+      map.off('load', install)
+      previewLayerRef.current?.destroy()
+      previewLayerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const layer = previewLayerRef.current
+    if (!layer) return
+    layer.setSnapshot(previewSnapshot)
+    layer.setQuantity(previewQuantity)
+    layer.setFlowEnabled(previewFlowEnabled)
+    layer.setTerrainExaggeration(effectiveTerrain ? terrainExaggeration : 0)
+  }, [effectiveTerrain, previewFlowEnabled, previewQuantity, previewSnapshot, terrainExaggeration])
 
   useEffect(() => {
     const map = mapRef.current
