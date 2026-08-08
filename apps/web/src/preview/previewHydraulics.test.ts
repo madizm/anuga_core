@@ -37,6 +37,60 @@ describe('compilePreviewHydraulics', () => {
     expect(result.approximatedFeatures).toEqual(['河道（简化河道）'])
   })
 
+  it('applies a channel polygon to the matching north-side dense cells', () => {
+    const result = compilePreviewHydraulics(grid(), [{
+      id: 'channel-north', name: '北侧河道', enabled: true, type: 'simpleChannel',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[[0, 3], [3, 3], [3, 2], [0, 2], [0, 3]]],
+      },
+      elevationMode: 'lowerBy', depthM: 2, manningN: 0.03, maxTriangleAreaM2: 10,
+    }])
+    expect(Array.from(result.bedElevationM)).toEqual([
+      10, 10, 10,
+      10, 10, 10,
+      8, 8, 8,
+    ])
+  })
+
+  it('falls back to a nearby valid DEM cell for relative levee crests', () => {
+    const gridWithNoData = grid()
+    gridWithNoData.elevationM[7] = Number.NaN
+    const result = compilePreviewHydraulics(gridWithNoData, [{
+      id: 'levee-nodata', name: '无效区堤防', enabled: true, type: 'levee',
+      geometry: { type: 'LineString', coordinates: [[0.5, 2.5], [2.5, 2.5]] },
+      crestMode: 'relative', heightAboveGroundM: 4, qFactor: 1,
+    }])
+    expect(Array.from(result.crestY).filter(Number.isFinite)).toEqual([14, 14])
+  })
+
+  it('uses the drawn north-south position for relative levee crests', () => {
+    const asymmetricGrid = grid()
+    asymmetricGrid.elevationM.set([
+      10, 10, 10,
+      20, 20, 20,
+      30, 30, 30,
+    ])
+    const result = compilePreviewHydraulics(asymmetricGrid, [{
+      id: 'levee-relative', name: '北侧堤防', enabled: true, type: 'levee',
+      geometry: { type: 'LineString', coordinates: [[0, 2.5], [3, 2.5]] },
+      crestMode: 'relative', heightAboveGroundM: 4, qFactor: 1,
+    }])
+    const activeFaces = Array.from(result.crestY).filter(Number.isFinite)
+    expect(activeFaces).toHaveLength(3)
+    expect(activeFaces.every((value) => value === 34)).toBe(true)
+  })
+
+  it('compiles a diagonal levee as a connected staircase of x and y faces', () => {
+    const result = compilePreviewHydraulics(grid(), [{
+      id: 'levee-diagonal', name: '斜向堤防', enabled: true, type: 'levee',
+      geometry: { type: 'LineString', coordinates: [[0, 3], [3, 0]] },
+      crestMode: 'absolute', crestElevationM: 12, qFactor: 1,
+    }])
+    expect(Array.from(result.wallX).filter((value) => value === 1)).toHaveLength(3)
+    expect(Array.from(result.wallY).filter((value) => value === 1)).toHaveLength(3)
+  })
+
   it('compiles a levee to cell faces and a breach removes only its local face', () => {
     const levee = {
       id: 'levee-1', name: '堤防', enabled: true, type: 'levee' as const,

@@ -102,35 +102,61 @@ function compileLevee(
     const start = toDensePoint(grid, coordinates[segment - 1])
     const end = toDensePoint(grid, coordinates[segment])
     if (!start || !end) continue
-    const distance = Math.max(Math.abs(end.x - start.x), Math.abs(end.y - start.y))
-    const samples = Math.max(1, Math.ceil(distance * 4))
-    for (let sample = 0; sample <= samples; sample += 1) {
-      const t = sample / samples
-      const x = start.x + (end.x - start.x) * t
-      const y = start.y + (end.y - start.y) * t
-      const vertical = Math.abs(end.y - start.y) >= Math.abs(end.x - start.x)
-      if (vertical) {
-        const faceX = Math.round(x)
-        const cellY = Math.floor(y)
-        if (faceX < 0 || faceX > grid.width || cellY < 0 || cellY >= grid.height) continue
-        const index = cellY * (grid.width + 1) + faceX
-        model.wallX[index] = 1
-        model.crestX[index] = crestElevation(grid, feature, x, y)
-        model.qFactorX[index] = Math.max(0, feature.qFactor)
-        faces.push({ axis: 'x', index, x: faceX, y: cellY + 0.5 })
-      } else {
-        const faceY = Math.round(y)
-        const cellX = Math.floor(x)
-        if (cellX < 0 || cellX >= grid.width || faceY < 0 || faceY > grid.height) continue
-        const index = faceY * grid.width + cellX
-        model.wallY[index] = 1
-        model.crestY[index] = crestElevation(grid, feature, x, y)
-        model.qFactorY[index] = Math.max(0, feature.qFactor)
-        faces.push({ axis: 'y', index, x: cellX + 0.5, y: faceY })
-      }
-    }
+    rasterizeLeveeSegment(grid, model, feature, start, end, faces)
   }
   return uniqueFaces(faces)
+}
+
+function rasterizeLeveeSegment(
+  grid: DensePreviewGrid,
+  model: PreviewHydraulicModel,
+  feature: LeveeFeature,
+  start: DensePoint,
+  end: DensePoint,
+  faces: FaceRef[],
+) {
+  let x = Math.round(start.x)
+  let y = Math.round(start.y)
+  const targetX = Math.round(end.x)
+  const targetY = Math.round(end.y)
+  const stepX = Math.sign(targetX - x)
+  const stepY = Math.sign(targetY - y)
+  const distanceX = Math.abs(targetX - x)
+  const distanceY = Math.abs(targetY - y)
+  let movedX = 0
+  let movedY = 0
+  const pathLength = distanceX + distanceY
+
+  while (x !== targetX || y !== targetY) {
+    const pathProgress = (movedX + movedY + 0.5) / pathLength
+    const sampleX = start.x + (end.x - start.x) * pathProgress
+    const sampleY = start.y + (end.y - start.y) * pathProgress
+    const nextX = stepX === 0 ? Infinity : (movedX + 0.5) / distanceX
+    const nextY = stepY === 0 ? Infinity : (movedY + 0.5) / distanceY
+    if (nextX <= nextY) {
+      const cellX = Math.min(x, x + stepX)
+      if (y >= 0 && y <= grid.height && cellX >= 0 && cellX < grid.width) {
+        const index = y * grid.width + cellX
+        model.wallY[index] = 1
+        model.crestY[index] = crestElevation(grid, feature, sampleX, sampleY)
+        model.qFactorY[index] = Math.max(0, feature.qFactor)
+        faces.push({ axis: 'y', index, x: cellX + 0.5, y })
+      }
+      x += stepX
+      movedX += 1
+    } else {
+      const cellY = Math.min(y, y + stepY)
+      if (x >= 0 && x <= grid.width && cellY >= 0 && cellY < grid.height) {
+        const index = cellY * (grid.width + 1) + x
+        model.wallX[index] = 1
+        model.crestX[index] = crestElevation(grid, feature, sampleX, sampleY)
+        model.qFactorX[index] = Math.max(0, feature.qFactor)
+        faces.push({ axis: 'x', index, x, y: cellY + 0.5 })
+      }
+      y += stepY
+      movedY += 1
+    }
+  }
 }
 
 function compileOutlet(
@@ -194,8 +220,25 @@ function crestElevation(
   const cellX = Math.min(grid.width - 1, Math.max(0, Math.floor(x)))
   const cellY = Math.min(grid.height - 1, Math.max(0, Math.floor(y)))
   const cell = cellY * grid.width + cellX
-  return (Number.isFinite(grid.elevationM[cell]) ? grid.elevationM[cell] : 0)
-    + (feature.heightAboveGroundM ?? 0)
+  const terrain = Number.isFinite(grid.elevationM[cell])
+    ? grid.elevationM[cell]
+    : nearestFiniteElevation(grid, x, y)
+  return terrain + (feature.heightAboveGroundM ?? 0)
+}
+
+function nearestFiniteElevation(grid: DensePreviewGrid, x: number, y: number): number {
+  let nearest = 0
+  let nearestDistance = Infinity
+  forEachActiveCell(grid, (cell, cellX, cellY) => {
+    const elevation = grid.elevationM[cell]
+    if (!Number.isFinite(elevation)) return
+    const distance = Math.hypot(cellX + 0.5 - x, cellY + 0.5 - y)
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearest = elevation
+    }
+  })
+  return nearest
 }
 
 function forEachActiveCell(
@@ -228,6 +271,8 @@ function toDensePoint(grid: DensePreviewGrid, position: Position): DensePoint | 
   const height = northWest[1] - southWest[1]
   if (Math.abs(width) < 1e-12 || Math.abs(height) < 1e-12) return null
   const u = (position[0] - northWest[0]) / width
+  // Solver y increases northward; DEM rows and geographic north-to-south
+  // fractions increase in the opposite direction.
   const northToSouth = (northWest[1] - position[1]) / height
   return { x: u * grid.width, y: (1 - northToSouth) * grid.height }
 }
@@ -235,13 +280,13 @@ function toDensePoint(grid: DensePreviewGrid, position: Position): DensePoint | 
 function denseCellCenter(grid: DensePreviewGrid, x: number, y: number): Position {
   const [northWest, northEast, southWest, southEast] = grid.corners
   const u = (x + 0.5) / grid.width
-  const denseSouthWeight = 1 - (y + 0.5) / grid.height
+  const denseNorthWeight = (y + 0.5) / grid.height
   return [
-    northWest[0] * (1 - u) * denseSouthWeight
-      + northEast[0] * u * denseSouthWeight
-      + southWest[0] * (1 - u) * (1 - denseSouthWeight)
-      + southEast[0] * u * (1 - denseSouthWeight),
-    northWest[1] * denseSouthWeight + southWest[1] * (1 - denseSouthWeight),
+    northWest[0] * (1 - u) * denseNorthWeight
+      + northEast[0] * u * denseNorthWeight
+      + southWest[0] * (1 - u) * (1 - denseNorthWeight)
+      + southEast[0] * u * (1 - denseNorthWeight),
+    northWest[1] * denseNorthWeight + southWest[1] * (1 - denseNorthWeight),
   ]
 }
 
