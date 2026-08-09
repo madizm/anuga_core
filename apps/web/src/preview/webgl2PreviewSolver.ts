@@ -19,6 +19,14 @@ uniform sampler2D u_terrain;
 uniform sampler2D u_friction;
 uniform sampler2D u_mask;
 uniform sampler2D u_source;
+uniform sampler2D u_outletCapacity;
+uniform sampler2D u_outletFullDepth;
+uniform sampler2D u_wallX;
+uniform sampler2D u_wallY;
+uniform sampler2D u_crestX;
+uniform sampler2D u_crestY;
+uniform sampler2D u_qFactorX;
+uniform sampler2D u_qFactorY;
 uniform float u_dt;
 uniform float u_rain;
 uniform float u_dx;
@@ -62,6 +70,15 @@ vec3 wallFlux(vec3 state, int axis) {
 vec3 transmissiveFlux(vec3 state, int axis) {
   return physicalFlux(state, axis);
 }
+vec3 crestFlux(vec3 left, vec3 right, float leftTerrain, float rightTerrain, int axis, float crest, float qFactor, bool hereIsLeft) {
+  float leftStage = left.x + leftTerrain;
+  float rightStage = right.x + rightTerrain;
+  float head = max(0.0, max(leftStage, rightStage) - crest);
+  if (head <= 0.0) return wallFlux(hereIsLeft ? left : right, axis);
+  float discharge = sign(leftStage - rightStage) * max(qFactor, 0.0) * 0.6 * pow(head, 1.5);
+  float momentum = discharge * sqrt(u_gravity * head);
+  return axis == 0 ? vec3(discharge, momentum, 0.0) : vec3(discharge, 0.0, momentum);
+}
 vec3 rusanov(vec3 left, vec3 right, int axis) {
   vec3 leftFlux = physicalFlux(left, axis);
   vec3 rightFlux = physicalFlux(right, axis);
@@ -92,15 +109,29 @@ vec3 hydrostaticFlux(
 }
 vec3 interfaceFlux(ivec2 pixel, ivec2 neighbour, vec3 here, int axis, int direction) {
   ivec2 size = textureSize(u_state, 0);
+  ivec2 face = axis == 0
+    ? ivec2(direction > 0 ? pixel.x + 1 : pixel.x, pixel.y)
+    : ivec2(pixel.x, direction > 0 ? pixel.y + 1 : pixel.y);
+  float wall = axis == 0
+    ? texelFetch(u_wallX, face, 0).r : texelFetch(u_wallY, face, 0).r;
+  float crest = axis == 0
+    ? texelFetch(u_crestX, face, 0).r : texelFetch(u_crestY, face, 0).r;
+  float qFactor = axis == 0
+    ? texelFetch(u_qFactorX, face, 0).r : texelFetch(u_qFactorY, face, 0).r;
   if (neighbour.x < 0 || neighbour.y < 0 || neighbour.x >= size.x || neighbour.y >= size.y) {
-    return transmissiveFlux(here, axis);
+    return wall > 0.5 ? wallFlux(here, axis) : transmissiveFlux(here, axis);
   }
   float neighbourMask = readMask(neighbour);
   if (neighbourMask < -0.5) return wallFlux(here, axis);
-  if (neighbourMask < 0.5) return transmissiveFlux(here, axis);
+  if (neighbourMask < 0.5) return wall > 0.5 ? wallFlux(here, axis) : transmissiveFlux(here, axis);
   vec3 neighbourState = readState(neighbour).xyz;
   float hereTerrain = readTerrain(pixel, 0.0);
   float neighbourTerrain = readTerrain(neighbour, hereTerrain);
+  if (wall > 0.5) {
+    return direction < 0
+      ? crestFlux(neighbourState, here, neighbourTerrain, hereTerrain, axis, crest, qFactor, false)
+      : crestFlux(here, neighbourState, hereTerrain, neighbourTerrain, axis, crest, qFactor, true);
+  }
   return direction < 0
     ? hydrostaticFlux(neighbourState, here, neighbourTerrain, hereTerrain, axis, false)
     : hydrostaticFlux(here, neighbourState, hereTerrain, neighbourTerrain, axis, true);
@@ -125,6 +156,12 @@ void main() {
 
   vec3 source = texelFetch(u_source, pixel, 0).rgb;
   h = max(0.0, h + u_dt * (source.r + u_rain));
+  float outletCapacity = texelFetch(u_outletCapacity, pixel, 0).r;
+  if (outletCapacity > 0.0 && h > 0.0) {
+    float fullDepth = texelFetch(u_outletFullDepth, pixel, 0).r;
+    float depthFactor = fullDepth > 0.0 ? min(1.0, h / fullDepth) : 1.0;
+    h = max(0.0, h - u_dt * outletCapacity * depthFactor / (u_dx * u_dx));
+  }
   qx += u_dt * source.g;
   qy += u_dt * source.b;
 
@@ -149,6 +186,14 @@ interface TextureSet {
   friction: WebGLTexture
   mask: WebGLTexture
   source: WebGLTexture
+  outletCapacity: WebGLTexture
+  outletFullDepth: WebGLTexture
+  wallX: WebGLTexture
+  wallY: WebGLTexture
+  crestX: WebGLTexture
+  crestY: WebGLTexture
+  qFactorX: WebGLTexture
+  qFactorY: WebGLTexture
 }
 
 interface GpuResources {
@@ -220,6 +265,14 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     bindTexture(gl, resources.inputs.friction, 2, resources.uniforms.u_friction)
     bindTexture(gl, resources.inputs.mask, 3, resources.uniforms.u_mask)
     bindTexture(gl, resources.inputs.source, 4, resources.uniforms.u_source)
+    bindTexture(gl, resources.inputs.outletCapacity, 5, resources.uniforms.u_outletCapacity)
+    bindTexture(gl, resources.inputs.outletFullDepth, 6, resources.uniforms.u_outletFullDepth)
+    bindTexture(gl, resources.inputs.wallX, 7, resources.uniforms.u_wallX)
+    bindTexture(gl, resources.inputs.wallY, 8, resources.uniforms.u_wallY)
+    bindTexture(gl, resources.inputs.crestX, 9, resources.uniforms.u_crestX)
+    bindTexture(gl, resources.inputs.crestY, 10, resources.uniforms.u_crestY)
+    bindTexture(gl, resources.inputs.qFactorX, 11, resources.uniforms.u_qFactorX)
+    bindTexture(gl, resources.inputs.qFactorY, 12, resources.uniforms.u_qFactorY)
     gl.drawArrays(gl.TRIANGLES, 0, 6)
     gl.bindVertexArray(null)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -264,6 +317,14 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     gl.deleteTexture(resources.inputs.friction)
     gl.deleteTexture(resources.inputs.mask)
     gl.deleteTexture(resources.inputs.source)
+    gl.deleteTexture(resources.inputs.outletCapacity)
+    gl.deleteTexture(resources.inputs.outletFullDepth)
+    gl.deleteTexture(resources.inputs.wallX)
+    gl.deleteTexture(resources.inputs.wallY)
+    gl.deleteTexture(resources.inputs.crestX)
+    gl.deleteTexture(resources.inputs.crestY)
+    gl.deleteTexture(resources.inputs.qFactorX)
+    gl.deleteTexture(resources.inputs.qFactorY)
     gl.deleteFramebuffer(resources.framebuffer)
     gl.deleteVertexArray(resources.quad)
     gl.deleteProgram(resources.program)
@@ -277,10 +338,42 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     const framebuffer = required(gl.createFramebuffer(), '预览帧缓冲')
     const read = createFloatTexture(gl, this.grid.width, this.grid.height, this.grid.initialState)
     const write = createFloatTexture(gl, this.grid.width, this.grid.height, null)
-    const terrain = createScalarTexture(gl, this.grid.width, this.grid.height, this.grid.elevationM)
-    const friction = createScalarTexture(gl, this.grid.width, this.grid.height, this.grid.manningN)
+    const hydraulics = this.grid.hydraulics
+    const cellZeros = new Float32Array(this.grid.width * this.grid.height)
+    const wallXValues = hydraulics?.wallX ?? new Float32Array((this.grid.width + 1) * this.grid.height)
+    const wallYValues = hydraulics?.wallY ?? new Float32Array(this.grid.width * (this.grid.height + 1))
+    const terrain = createScalarTexture(
+      gl, this.grid.width, this.grid.height, hydraulics?.bedElevationM ?? this.grid.elevationM,
+    )
+    const friction = createScalarTexture(
+      gl, this.grid.width, this.grid.height, hydraulics?.manningN ?? this.grid.manningN,
+    )
     const mask = createScalarTexture(gl, this.grid.width, this.grid.height, this.grid.mask)
     const source = createFloatTexture(gl, this.grid.width, this.grid.height, sourcePixels(this.grid))
+    const outletCapacity = createScalarTexture(
+      gl, this.grid.width, this.grid.height, hydraulics?.outletCapacityM3s ?? cellZeros,
+    )
+    const outletFullDepth = createScalarTexture(
+      gl, this.grid.width, this.grid.height, hydraulics?.outletFullCapacityDepthM ?? cellZeros,
+    )
+    const wallX = createScalarTexture(gl, this.grid.width + 1, this.grid.height, wallXValues)
+    const wallY = createScalarTexture(gl, this.grid.width, this.grid.height + 1, wallYValues)
+    const crestX = createScalarTexture(
+      gl, this.grid.width + 1, this.grid.height,
+      hydraulics?.crestX ?? filledFloat32(wallXValues.length, Number.NaN),
+    )
+    const crestY = createScalarTexture(
+      gl, this.grid.width, this.grid.height + 1,
+      hydraulics?.crestY ?? filledFloat32(wallYValues.length, Number.NaN),
+    )
+    const qFactorX = createScalarTexture(
+      gl, this.grid.width + 1, this.grid.height,
+      hydraulics?.qFactorX ?? filledFloat32(wallXValues.length, 1),
+    )
+    const qFactorY = createScalarTexture(
+      gl, this.grid.width, this.grid.height + 1,
+      hydraulics?.qFactorY ?? filledFloat32(wallYValues.length, 1),
+    )
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, read, 0)
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
@@ -288,12 +381,20 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     const uniforms: Record<string, WebGLUniformLocation | null> = {}
-    for (const name of ['u_state', 'u_terrain', 'u_friction', 'u_mask', 'u_source', 'u_dt', 'u_rain', 'u_dx', 'u_gravity']) {
+    for (const name of [
+      'u_state', 'u_terrain', 'u_friction', 'u_mask', 'u_source',
+      'u_outletCapacity', 'u_outletFullDepth',
+      'u_wallX', 'u_wallY', 'u_crestX', 'u_crestY', 'u_qFactorX', 'u_qFactorY',
+      'u_dt', 'u_rain', 'u_dx', 'u_gravity',
+    ]) {
       uniforms[name] = gl.getUniformLocation(program, name)
     }
     return {
       program, framebuffer, quad, uniforms, read, write,
-      inputs: { state: read, terrain, friction, mask, source },
+      inputs: {
+        state: read, terrain, friction, mask, source, outletCapacity, outletFullDepth,
+        wallX, wallY, crestX, crestY, qFactorX, qFactorY,
+      },
     }
   }
 
@@ -311,11 +412,17 @@ export class WebGL2PreviewSolver implements PreviewSolver {
 function sourcePixels(grid: DensePreviewGrid) {
   const pixels = new Float32Array(grid.width * grid.height * 4)
   for (let cell = 0; cell < grid.width * grid.height; cell += 1) {
-    pixels[cell * 4] = grid.inletDepthRateMps[cell]
+    pixels[cell * 4] = grid.inletDepthRateMps[cell] + (grid.hydraulics?.sourceDepthRateMps[cell] ?? 0)
     pixels[cell * 4 + 1] = grid.inletXMomentumRate[cell]
     pixels[cell * 4 + 2] = grid.inletYMomentumRate[cell]
   }
   return pixels
+}
+
+function filledFloat32(length: number, value: number) {
+  const result = new Float32Array(length)
+  result.fill(value)
+  return result
 }
 
 function createFloatTexture(

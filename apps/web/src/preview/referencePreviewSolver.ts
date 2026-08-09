@@ -1,5 +1,7 @@
 import type { FlowField, FlowGridCorners } from '../api/types'
-import type { DensePreviewGrid, PreviewSnapshot, PreviewSolver } from './types'
+import type {
+  DensePreviewGrid, PreviewHydraulicModel, PreviewSnapshot, PreviewSolver,
+} from './types'
 import { PREVIEW_DRY_DEPTH_M, PREVIEW_GRAVITY_MPS2 } from './types'
 
 const CFL = 0.42
@@ -16,6 +18,7 @@ export class ReferencePreviewSolver implements PreviewSolver {
   readonly grid: DensePreviewGrid
   private state: Float32Array
   private appliedInputVolumeM3 = 0
+  private structureOutflowM3 = 0
 
   constructor(grid: DensePreviewGrid) {
     this.grid = grid
@@ -25,6 +28,7 @@ export class ReferencePreviewSolver implements PreviewSolver {
   reset() {
     this.state.set(this.grid.initialState)
     this.appliedInputVolumeM3 = 0
+    this.structureOutflowM3 = 0
   }
 
   recommendedTimeStepSeconds() {
@@ -57,14 +61,28 @@ export class ReferencePreviewSolver implements PreviewSolver {
         let h = here[0] - timeStepSeconds / dx * (right[0] - left[0] + north[0] - south[0])
         let qx = here[1] - timeStepSeconds / dx * (right[1] - left[1] + north[1] - south[1])
         let qy = here[2] - timeStepSeconds / dx * (right[2] - left[2] + north[2] - south[2])
-        h = Math.max(0, h + timeStepSeconds * (rainfallRateMps + this.grid.inletDepthRateMps[cell]))
+        const hydraulics = this.grid.hydraulics
+        h = Math.max(0, h + timeStepSeconds * (
+          rainfallRateMps + this.grid.inletDepthRateMps[cell]
+          + (hydraulics?.sourceDepthRateMps[cell] ?? 0)
+        ))
+        const outletCapacityM3s = hydraulics?.outletCapacityM3s[cell] ?? 0
+        if (outletCapacityM3s > 0 && h > 0) {
+          const fullDepth = hydraulics?.outletFullCapacityDepthM[cell] ?? 0
+          const depthFactor = fullDepth > 0 ? Math.min(1, h / fullDepth) : 1
+          const requestedOutflow = outletCapacityM3s * depthFactor
+          const availableOutflow = h * dx * dx / timeStepSeconds
+          const outflowM3s = Math.min(requestedOutflow, availableOutflow)
+          h -= outflowM3s * timeStepSeconds / (dx * dx)
+          this.structureOutflowM3 += outflowM3s * timeStepSeconds
+        }
         qx += timeStepSeconds * this.grid.inletXMomentumRate[cell]
         qy += timeStepSeconds * this.grid.inletYMomentumRate[cell]
         if (h < PREVIEW_DRY_DEPTH_M) {
           qx = 0
           qy = 0
         } else {
-          const n = Math.max(0, this.grid.manningN[cell])
+          const n = Math.max(0, this.grid.hydraulics?.manningN[cell] ?? this.grid.manningN[cell])
           const speed = Math.hypot(qx, qy) / h
           const friction = timeStepSeconds * PREVIEW_GRAVITY_MPS2 * n * n * speed
             / Math.max(h ** (4 / 3), EPSILON)
@@ -85,7 +103,10 @@ export class ReferencePreviewSolver implements PreviewSolver {
   }
 
   snapshot(timeSeconds: number): PreviewSnapshot {
-    return makeSnapshot(this.grid, this.state, timeSeconds, this.appliedInputVolumeM3, 0)
+    return makeSnapshot(
+      this.grid, this.state, timeSeconds, this.appliedInputVolumeM3, 0,
+      this.grid.hydraulics?.bedElevationM, this.structureOutflowM3,
+    )
   }
 
   dispose() {
@@ -107,18 +128,40 @@ export class ReferencePreviewSolver implements PreviewSolver {
         : direction === 'north' ? [0, 1] : [0, -1]
     const nx = x + dx
     const ny = y + dy
+    const hydraulicFace = this.grid.hydraulics
+      ? previewFace(this.grid.hydraulics, this.grid.width, x, y, direction)
+      : null
     if (nx < 0 || nx >= this.grid.width || ny < 0 || ny >= this.grid.height) {
+      if (hydraulicFace?.wall) return wallFlux(here, direction)
       return transmissiveBoundaryFlux(here, direction)
     }
     const neighbourCell = ny * this.grid.width + nx
     const mask = this.grid.mask[neighbourCell]
     if (mask < 0) return wallFlux(here, direction)
-    if (mask === 0) return transmissiveBoundaryFlux(here, direction)
+    if (mask === 0) {
+      if (hydraulicFace?.wall) return wallFlux(here, direction)
+      return transmissiveBoundaryFlux(here, direction)
+    }
     const neighbour = readState(this.state, neighbourCell)
     const axis = direction === 'right' || direction === 'left' ? 'x' : 'y'
-    const hereTerrain = finiteTerrain(this.grid.elevationM[y * this.grid.width + x])
-    const neighbourTerrain = finiteTerrain(this.grid.elevationM[neighbourCell])
+    const bedElevationM = this.grid.hydraulics?.bedElevationM ?? this.grid.elevationM
+    const hereTerrain = finiteTerrain(bedElevationM[y * this.grid.width + x])
+    const neighbourTerrain = finiteTerrain(bedElevationM[neighbourCell])
     const hereIsLeft = direction === 'right' || direction === 'north'
+    if (hydraulicFace?.wall) {
+      if (!Number.isFinite(hydraulicFace.crest)) return wallFlux(here, direction)
+      return crestControlledFlux(
+        axis,
+        hereIsLeft ? here : neighbour,
+        hereIsLeft ? neighbour : here,
+        hereIsLeft ? hereTerrain : neighbourTerrain,
+        hereIsLeft ? neighbourTerrain : hereTerrain,
+        hydraulicFace.crest,
+        hydraulicFace.qFactor,
+        hereIsLeft,
+        direction,
+      )
+    }
     return hydrostaticFlux(
       axis,
       hereIsLeft ? here : neighbour,
@@ -176,6 +219,53 @@ function reconstructState(state: Triple, terrain: number, interfaceTerrain: numb
   return [reconstructedDepth, state[1] * scale, state[2] * scale]
 }
 
+function previewFace(
+  model: PreviewHydraulicModel,
+  width: number,
+  x: number,
+  y: number,
+  direction: 'right' | 'left' | 'north' | 'south',
+): { wall: boolean; crest: number; qFactor: number } {
+  if (direction === 'right' || direction === 'left') {
+    const faceX = direction === 'right' ? x + 1 : x
+    const index = y * (width + 1) + faceX
+    return {
+      wall: model.wallX[index] === 1,
+      crest: model.crestX[index],
+      qFactor: model.qFactorX[index],
+    }
+  }
+  const faceY = direction === 'north' ? y + 1 : y
+  const index = faceY * width + x
+  return {
+    wall: model.wallY[index] === 1,
+    crest: model.crestY[index],
+    qFactor: model.qFactorY[index],
+  }
+}
+
+function crestControlledFlux(
+  axis: 'x' | 'y',
+  left: Triple,
+  right: Triple,
+  leftTerrain: number,
+  rightTerrain: number,
+  crest: number,
+  qFactor: number,
+  hereIsLeft: boolean,
+  direction: 'right' | 'left' | 'north' | 'south',
+): Triple {
+  const leftStage = leftTerrain + Math.max(0, left[0])
+  const rightStage = rightTerrain + Math.max(0, right[0])
+  const head = Math.max(0, Math.max(leftStage, rightStage) - crest)
+  if (head <= 0) return wallFlux(hereIsLeft ? left : right, direction)
+  const sign = Math.sign(leftStage - rightStage)
+  const discharge = sign * Math.max(0, qFactor) * 0.6 * head ** 1.5
+  const momentum = discharge * Math.sqrt(PREVIEW_GRAVITY_MPS2 * head)
+  if (axis === 'x') return [discharge, momentum, 0]
+  return [discharge, 0, momentum]
+}
+
 function physicalFlux(axis: 'x' | 'y', state: Triple): Triple {
   const h = Math.max(0, state[0])
   const qx = state[1]
@@ -213,6 +303,8 @@ function makeSnapshot(
   timeSeconds: number,
   appliedInputVolumeM3: number,
   simulatedSecondsPerRealSecond: number,
+  bedElevationM = grid.hydraulics?.bedElevationM ?? grid.elevationM,
+  structureOutflowM3 = 0,
 ): PreviewSnapshot {
   const cellCount = grid.width * grid.height
   const vectors = new Float32Array(cellCount * 2)
@@ -238,7 +330,7 @@ function makeSnapshot(
     texels[textureOffset] = encodeFloat16(vectors[displayCell * 2])
     texels[textureOffset + 1] = encodeFloat16(vectors[displayCell * 2 + 1])
     texels[textureOffset + 2] = encodeFloat16(h >= PREVIEW_DRY_DEPTH_M ? h : -1)
-    texels[textureOffset + 3] = encodeFloat16(finiteTerrain(grid.elevationM[cell]) + h)
+    texels[textureOffset + 3] = encodeFloat16(finiteTerrain(bedElevationM[cell]) + h)
     if (grid.mask[cell] === 1) waterVolumeM3 += h * cellAreaM2
     if (h > maximumDepthM) maximumDepthM = h
     if (speed > maximumSpeedMps) maximumSpeedMps = speed
@@ -270,6 +362,9 @@ function makeSnapshot(
       maximumSpeedMps,
       wetCellCount,
       simulatedSecondsPerRealSecond,
+      structureOutflowM3,
+      massResidualM3: grid.initialWaterVolumeM3 + appliedInputVolumeM3
+        - waterVolumeM3 - structureOutflowM3,
     },
   }
 }

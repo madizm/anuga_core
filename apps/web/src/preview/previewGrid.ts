@@ -1,6 +1,7 @@
 import type { Inlet, ScenarioPayload } from '../api/types'
 import { parseCellId, type SimulationGrid } from '../map/simulationGrid'
 import type { DensePreviewGrid } from './types'
+import { compilePreviewHydraulics } from './previewHydraulics'
 
 const ACTIVE = 1
 const EXTERIOR = 0
@@ -62,6 +63,7 @@ export function buildDensePreviewGrid(
   markExterior(mask, width, height)
 
   const cellAreaM2 = cellSizeM * cellSizeM
+  const initialLevelByDense = new Map<number, number>()
   let inletDischargeM3s = 0
   for (const inlet of scenario.inlets.filter((item) => item.enabled)) {
     const denseCells = inlet.cellIds.map((id) => resolveInletCell(
@@ -76,17 +78,15 @@ export function buildDensePreviewGrid(
       inletXMomentumRate[dense] += depthRate * velocityU
       inletYMomentumRate[dense] += depthRate * velocityV
       if (inlet.initialWaterLevelM != null) {
-        const depth = Math.max(inlet.initialWaterLevelM - elevationM[dense], 0)
-        initialState[dense * 4] = Math.max(initialState[dense * 4], depth)
+        initialLevelByDense.set(
+          dense,
+          Math.max(initialLevelByDense.get(dense) ?? -Infinity, inlet.initialWaterLevelM),
+        )
       }
     }
   }
 
-  let initialWaterVolumeM3 = 0
-  for (let cell = 0; cell < length; cell += 1) {
-    if (mask[cell] === ACTIVE) initialWaterVolumeM3 += initialState[cell * 4] * cellAreaM2
-  }
-  return {
+  const denseGrid: DensePreviewGrid = {
     width,
     height,
     cellSizeM,
@@ -100,9 +100,20 @@ export function buildDensePreviewGrid(
     initialState,
     activeCellCount: source.cellCount,
     activeAreaM2: source.cellCount * cellAreaM2,
-    initialWaterVolumeM3,
+    initialWaterVolumeM3: 0,
     inletDischargeM3s,
   }
+  denseGrid.hydraulics = compilePreviewHydraulics(denseGrid, scenario.hydraulicFeatures)
+  for (const [dense, initialWaterLevelM] of initialLevelByDense) {
+    const bedElevationM = denseGrid.hydraulics.bedElevationM[dense]
+    initialState[dense * 4] = Math.max(initialWaterLevelM - bedElevationM, 0)
+  }
+  for (let cell = 0; cell < length; cell += 1) {
+    if (mask[cell] === ACTIVE) {
+      denseGrid.initialWaterVolumeM3 += initialState[cell * 4] * cellAreaM2
+    }
+  }
+  return denseGrid
 }
 
 function resolveInletCell(

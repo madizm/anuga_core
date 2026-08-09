@@ -14,15 +14,27 @@ export function rainfallRateMps(rainfall: Rainfall, timeSeconds: number): number
 export interface PreviewCompatibility {
   supported: boolean
   ignoredFeatures: HydraulicFeature[]
+  approximatedFeatures: HydraulicFeature[]
+  approximationMessages: string[]
   messages: string[]
 }
 
 /** Phase 4 deliberately exposes unsupported structures instead of ignoring them silently. */
 export function previewCompatibility(scenario: ScenarioPayload): PreviewCompatibility {
-  const ignoredFeatures = scenario.hydraulicFeatures.filter((feature) => feature.enabled)
+  const enabledFeatures = scenario.hydraulicFeatures.filter((feature) => feature.enabled)
+  const approximatedFeatures = enabledFeatures.filter((feature) => (
+    feature.type === 'levee'
+    || feature.type === 'simpleChannel'
+    || feature.type === 'drainageOutlet'
+    || feature.type === 'breach'
+  ))
+  const approximatedIds = new Set(approximatedFeatures.map((feature) => feature.id))
+  const ignoredFeatures = enabledFeatures.filter((feature) => !approximatedIds.has(feature.id))
   return {
     supported: ignoredFeatures.length === 0,
     ignoredFeatures,
+    approximatedFeatures,
+    approximationMessages: approximatedFeatures.map((feature) => `${feature.name}（${featureLabel(feature.type)}）`),
     messages: ignoredFeatures.map((feature) => `${feature.name}（${featureLabel(feature.type)}）`),
   }
 }

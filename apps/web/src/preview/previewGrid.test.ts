@@ -45,6 +45,21 @@ describe('buildDensePreviewGrid', () => {
     expect([...result.mask]).toEqual([1, 1, 1, 1])
   })
 
+  it('attaches the compiled hydraulic model to the dense solver grid', () => {
+    const result = buildDensePreviewGrid(grid(), scenario({
+      hydraulicFeatures: [{
+        id: 'channel-1', name: '河道', enabled: true, type: 'simpleChannel',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[[122, 40.02], [122.02, 40.02], [122.02, 40], [122, 40], [122, 40.02]]],
+        },
+        elevationMode: 'lowerBy', depthM: 1, manningN: 0.03, maxTriangleAreaM2: 10,
+      }],
+    }), 30)
+    expect(result.hydraulics?.bedElevationM[0]).toBeCloseTo(11)
+    expect(result.hydraulics?.manningN[0]).toBeCloseTo(0.03)
+  })
+
   it('converts inlet discharge and bearing into per-cell source terms', () => {
     const result = buildDensePreviewGrid(grid(), scenario({
       inlets: [{

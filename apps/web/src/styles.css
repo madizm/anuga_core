@@ -653,6 +653,16 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .preview-quantity button + button { border-left: 1px solid #3e3622; }
 .preview-quantity small { color: #70674f; font: 8px var(--display); letter-spacing: .08em; }
 .preview-quantity button.active small { color: #c2a855; }
+.preview-legend { margin-top: 10px; padding: 9px 10px 8px; border: 1px solid #3e3622; background: rgba(11, 25, 29, .72); }
+.preview-legend-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.preview-legend-heading span { color: #887448; font: 600 8px var(--display); letter-spacing: .14em; text-transform: uppercase; }
+.preview-legend-heading strong { color: #e4d39c; font: 600 11px var(--display); }
+.preview-legend-heading em { color: #9e8953; font: normal 8px var(--display); }
+.preview-legend > i { display: block; height: 8px; margin-top: 8px; border: 1px solid rgba(255, 255, 255, .12); background: linear-gradient(90deg, #f7fbff, #9ecae1, #4292c6, #08519c); }
+.preview-legend.stage > i { background: linear-gradient(90deg, #440154, #31688e, #35b779, #fde725); }
+.preview-legend.speed > i { background: linear-gradient(90deg, #ffffcc, #feb24c, #f03b20, #800026); }
+.preview-legend-scale { display: flex; justify-content: space-between; margin-top: 3px; color: #9aadb2; font: 8px var(--display); }
+.preview-legend p { margin: 6px 0 0; color: #8f9d99; font-size: 9px; line-height: 1.45; }
 .preview-vitals { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 10px; border: 1px solid #3e3622; }
 .preview-vitals > div { min-width: 0; padding: 8px 6px; border-right: 1px solid #3e3622; }
 .preview-vitals > div:last-child { border-right: 0; }

@@ -2,6 +2,26 @@ import type { ResultQuantity } from '../api/types'
 import type { PreviewCapabilities, PreviewStatus } from './types'
 
 const RATES = [30, 60, 180, 600]
+const LEGENDS: Record<ResultQuantity, {
+  title: string
+  unit: string
+  low: string
+  high: string
+  description: string
+}> = {
+  depth: {
+    title: '水深', unit: 'm', low: '0 m', high: '≥3 m',
+    description: '单元内积水厚度；蓝色越深表示水越深。',
+  },
+  stage: {
+    title: '水位', unit: 'm', low: '0 m', high: '≥30 m',
+    description: '自由水面高程（地面高程 + 水深）；黄绿色表示更高水位。',
+  },
+  speed: {
+    title: '流速', unit: 'm/s', low: '0 m/s', high: '≥3 m/s',
+    description: '水流速度大小；由浅黄到红色表示流速增强。',
+  },
+}
 const QUANTITIES: Array<[ResultQuantity, string]> = [
   ['depth', '水深'], ['stage', '水位'], ['speed', '流速'],
 ]
@@ -11,6 +31,7 @@ export function PreviewPanel({
   capabilities,
   quantity,
   flowEnabled,
+  approximationNames,
   onStart,
   onPause,
   onReset,
@@ -24,6 +45,7 @@ export function PreviewPanel({
   capabilities: PreviewCapabilities
   quantity: ResultQuantity
   flowEnabled: boolean
+  approximationNames: string[]
   onStart: () => void
   onPause: () => void
   onReset: () => void
@@ -37,6 +59,7 @@ export function PreviewPanel({
   const running = status?.phase === 'running'
   const stale = status?.phase === 'stale'
   const diagnostic = status?.snapshot?.diagnostics
+  const legend = LEGENDS[quantity]
   return (
     <section className={`preview-panel ${active ? 'active' : ''}`} aria-label="快速预览控制">
       <div className="preview-panel-heading">
@@ -52,6 +75,11 @@ export function PreviewPanel({
         </div>
       )}
       {status?.error && <div className="preview-warning error" role="alert"><b>预览暂停</b><span>{status.error}</span></div>}
+      {approximationNames.length > 0 && (
+        <div className="preview-warning" role="status">
+          <b>水工要素采用栅格近似</b><span>{approximationNames.join('、')}</span>
+        </div>
+      )}
       <div className="preview-time">
         <div><span>SIMULATION TIME</span><strong>T+{Math.round(status?.timeSeconds ?? 0)}s</strong><small>/ {status?.durationSeconds ?? 0}s</small></div>
         <i className={running ? 'running' : ''} />
@@ -70,6 +98,12 @@ export function PreviewPanel({
       <div className="preview-quantity" role="group" aria-label="预览显示量">
         {QUANTITIES.map(([value, label]) => <button key={value} className={quantity === value ? 'active' : ''} onClick={() => onQuantity(value)}>{label}<small>{value.toUpperCase()}</small></button>)}
         <button className={flowEnabled ? 'active' : ''} onClick={() => onFlow(!flowEnabled)}>流向<small>{flowEnabled ? 'ON' : 'OFF'}</small></button>
+      </div>
+      <div className={`preview-legend ${quantity}`} aria-label={`${legend.title}颜色图例`}>
+        <div className="preview-legend-heading"><span>颜色图例</span><strong>{legend.title} <em>· {legend.unit}</em></strong></div>
+        <i aria-hidden="true" />
+        <div className="preview-legend-scale"><span>{legend.low}</span><span>{legend.high}</span></div>
+        <p>{legend.description}</p>
       </div>
       <div className="preview-vitals">
         <div><span>MAX DEPTH</span><strong>{diagnostic ? diagnostic.maximumDepthM.toFixed(2) : '—'}<em> m</em></strong></div>

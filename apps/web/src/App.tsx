@@ -63,6 +63,7 @@ export default function App() {
   const [previewQuantity, setPreviewQuantity] = useState<ResultQuantity>('depth')
   const [previewFlowEnabled, setPreviewFlowEnabled] = useState(true)
   const [previewCompatibilityNames, setPreviewCompatibilityNames] = useState<string[] | null>(null)
+  const [previewApproximationNames, setPreviewApproximationNames] = useState<string[]>([])
   const [previewFingerprint, setPreviewFingerprint] = useState<string | null>(null)
   const previewCapabilities = useMemo(() => detectPreviewCapabilities(), [])
   const closePreview = useCallback(() => {
@@ -71,6 +72,7 @@ export default function App() {
     setPreviewStatus(null)
     setPreviewFingerprint(null)
     setPreviewCompatibilityNames(null)
+    setPreviewApproximationNames([])
   }, [])
   useEffect(() => closePreview, [closePreview])
   const clearAllSelections = useInletStore((state) => state.clearAllSelections)
@@ -296,6 +298,7 @@ export default function App() {
       controller.subscribe(setPreviewStatus)
       setPreviewFingerprint(currentPayloadFingerprint)
       setPreviewCompatibilityNames(null)
+      setPreviewApproximationNames(compatibility.approximationMessages)
       controller.start()
     } catch (error) {
       closePreview()
@@ -429,6 +432,7 @@ export default function App() {
               capabilities={previewCapabilities}
               quantity={previewQuantity}
               flowEnabled={previewFlowEnabled}
+              approximationNames={previewApproximationNames}
               onStart={() => previewControllerRef.current?.start()}
               onPause={() => previewControllerRef.current?.pause()}
               onReset={() => previewControllerRef.current?.reset()}
