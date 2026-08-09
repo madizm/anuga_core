@@ -34,6 +34,14 @@ services:
       --derived-dem-target /workspace/OUTPUT/model/web/elevation_10m_cog.tif
       --derived-model-inputs-target /workspace/OUTPUT/model/web/model_inputs_10m_cog.tif
       --manifest-target /workspace/OUTPUT/model/dem-products.json
+      --additional-source /data/byq-5m.tif
+      --additional-dem-target /workspace/OUTPUT/model/web/elevation_5m_cog.tif
+      --additional-model-inputs-target /workspace/OUTPUT/model/web/model_inputs_5m_cog.tif
+      --additional-product-id bayuquan-dem-5m-v1
+      --additional-product-name "鲅鱼圈原始 DEM · 5 m"
+      --additional-resolution 5
+      --additional-max-cells 500000
+      --additional-resource-queue high-resource
       --vertical-datum "WGS 84 ellipsoidal height"
       --s3-endpoint-url http://minio:9000
       --s3-bucket model-products
@@ -42,6 +50,7 @@ services:
     working_dir: /opt/model-assets
     volumes:
       - ./bayuquan/elevation.tif:/data/elevation.tif:ro
+      - ./byq-5m.tif:/data/byq-5m.tif:ro
       - ./OUTPUT:/workspace/OUTPUT
     depends_on:
       minio:

@@ -19,7 +19,11 @@ from rasterio.shutil import copy as copy_raster
 from rasterio.transform import Affine
 from rasterio.windows import bounds as window_bounds
 from rasterio.windows import transform as window_transform
-from rasterio.warp import Resampling, reproject
+from rasterio.warp import (
+    Resampling,
+    calculate_default_transform,
+    reproject,
+)
 
 
 MODEL_INPUT_ALGORITHM = "building-supersample-3m-v1"
@@ -39,6 +43,7 @@ MODEL_NODATA = -9999.0
 DERIVED_SCALE = 3
 DERIVED_DEM_ALGORITHM = "bilinear-30m-to-aligned-10m-v1"
 DERIVED_INPUT_ALGORITHM = "nearest-replicate-30m-to-aligned-10m-v1"
+REPROJECTED_DEM_ALGORITHM = "reprojected-dem-v1"
 
 
 def is_current_cog(source: Path, target: Path) -> bool:
@@ -101,6 +106,94 @@ def build_dem_cog(source: Path, target: Path, *, force: bool = False) -> Path:
         os.replace(temporary_path, target)
     finally:
         temporary_path.unlink(missing_ok=True)
+    return target
+
+
+def build_reprojected_dem(
+    source: Path,
+    target: Path,
+    *,
+    target_crs: str,
+    resolution_m: float,
+    force: bool = False,
+) -> Path:
+    """Reproject a source DEM to the model CRS at a metric resolution."""
+    source = source.resolve()
+    target = target.resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"DEM source not found: {source}")
+    if not force and is_current_cog(source, target):
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(source) as source_dem:
+        if source_dem.crs is None:
+            raise ValueError("DEM source has no CRS")
+        transform, width, height = calculate_default_transform(
+            source_dem.crs,
+            target_crs,
+            source_dem.width,
+            source_dem.height,
+            *source_dem.bounds,
+            resolution=(resolution_m, resolution_m),
+        )
+        profile = source_dem.profile.copy()
+        profile.update(
+            driver="GTiff",
+            width=width,
+            height=height,
+            crs=target_crs,
+            transform=transform,
+            dtype="float32",
+            nodata=MODEL_NODATA,
+            compress="DEFLATE",
+            predictor=3,
+            tiled=True,
+            blockxsize=512,
+            blockysize=512,
+            BIGTIFF="IF_SAFER",
+        )
+        with NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.stem}-source-",
+            suffix=".tif", delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        with NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.stem}-cog-",
+            suffix=".tif", delete=False,
+        ) as cog_temporary:
+            cog_path = Path(cog_temporary.name)
+        try:
+            with rasterio.open(temporary_path, "w", **profile) as output:
+                reproject(
+                    source=rasterio.band(source_dem, 1),
+                    destination=rasterio.band(output, 1),
+                    src_transform=source_dem.transform,
+                    src_crs=source_dem.crs,
+                    src_nodata=source_dem.nodata,
+                    dst_transform=transform,
+                    dst_crs=target_crs,
+                    dst_nodata=MODEL_NODATA,
+                    resampling=Resampling.bilinear,
+                    num_threads=2,
+                )
+                output.update_tags(
+                    DERIVATION_ALGORITHM=REPROJECTED_DEM_ALGORITHM,
+                    SOURCE_CRS=source_dem.crs.to_string(),
+                    SOURCE_RESOLUTION_M=str(resolution_m),
+                    EFFECTIVE_GRID_RESOLUTION_M=str(resolution_m),
+                )
+            copy_raster(
+                temporary_path, cog_path, driver="COG", BLOCKSIZE=512,
+                COMPRESS="DEFLATE", PREDICTOR="YES",
+                OVERVIEW_RESAMPLING="BILINEAR", BIGTIFF="IF_SAFER",
+                NUM_THREADS="ALL_CPUS",
+            )
+            cog_path.chmod(0o644)
+            os.replace(cog_path, target)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+            cog_path.unlink(missing_ok=True)
     return target
 
 
@@ -182,10 +275,8 @@ def _write_model_input_source(
         )
         if building_crs != dem.crs:
             raise ValueError("building footprints are not aligned with DEM CRS")
-        if not np.isclose(abs(dem.transform.a), 30) or not np.isclose(
-            abs(dem.transform.e), 30
-        ):
-            raise ValueError("model-input builder requires a 30 m DEM")
+        if not np.isclose(abs(dem.transform.a), abs(dem.transform.e)):
+            raise ValueError("model-input builder requires square DEM cells")
 
         profile = dem.profile.copy()
         tiled = dem.width >= 16 and dem.height >= 16
@@ -441,6 +532,7 @@ def write_product_manifest(
     *,
     vertical_datum: str,
     object_uris: dict[Path, str] | None = None,
+    additional_products: tuple[dict, ...] = (),
 ) -> Path:
     """Write the administrator registration manifest after asset creation."""
     paths = (original_dem, original_inputs, derived_dem, derived_inputs)
@@ -467,6 +559,27 @@ def write_product_manifest(
             inputs_uri=object_uris.get(derived_inputs),
         ),
     ]
+    for product in additional_products:
+        dem = Path(product["dem"])
+        inputs = Path(product["inputs"])
+        if not dem.is_file() or not inputs.is_file():
+            raise FileNotFoundError(
+                f"DEM product assets must exist: {dem}, {inputs}"
+            )
+        products.append(_manifest_product(
+            product["id"], product["name"], dem, inputs, crs,
+            vertical_datum,
+            cell_size=product["cell_size"],
+            source_resolution=product.get(
+                "source_resolution", product["cell_size"]
+            ),
+            method=product.get("method", "original"),
+            max_cells=product["max_cells"],
+            queue=product["queue"],
+            default=product.get("default", False),
+            dem_uri=object_uris.get(dem),
+            inputs_uri=object_uris.get(inputs),
+        ))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(
         {"products": products}, ensure_ascii=False, indent=2
@@ -598,6 +711,14 @@ def main() -> None:
     parser.add_argument("--s3-access-key")
     parser.add_argument("--s3-secret-key")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--additional-source", type=Path)
+    parser.add_argument("--additional-dem-target", type=Path)
+    parser.add_argument("--additional-model-inputs-target", type=Path)
+    parser.add_argument("--additional-product-id")
+    parser.add_argument("--additional-product-name")
+    parser.add_argument("--additional-resolution", type=float)
+    parser.add_argument("--additional-max-cells", type=int)
+    parser.add_argument("--additional-resource-queue")
     args = parser.parse_args()
     result = build_dem_cog(args.source, args.target, force=args.force)
     print(result)
@@ -634,6 +755,51 @@ def main() -> None:
             )
             print(derived_dem)
             print(derived_inputs)
+            additional_options = (
+                args.additional_source,
+                args.additional_dem_target,
+                args.additional_model_inputs_target,
+                args.additional_product_id,
+                args.additional_product_name,
+                args.additional_resolution,
+                args.additional_max_cells,
+                args.additional_resource_queue,
+            )
+            if any(additional_options) and not all(additional_options):
+                parser.error(
+                    "additional DEM source, targets, product metadata, and "
+                    "resolution must be provided together"
+                )
+            additional_product = None
+            additional_paths = ()
+            if all(additional_options):
+                with rasterio.open(result) as primary_dem:
+                    target_crs = primary_dem.crs.to_string()
+                additional_dem = build_reprojected_dem(
+                    args.additional_source,
+                    args.additional_dem_target,
+                    target_crs=target_crs,
+                    resolution_m=args.additional_resolution,
+                    force=args.force,
+                )
+                additional_inputs = build_model_inputs_cog(
+                    additional_dem,
+                    args.buildings,
+                    args.additional_model_inputs_target,
+                    force=args.force,
+                )
+                print(additional_dem)
+                print(additional_inputs)
+                additional_product = {
+                    "id": args.additional_product_id,
+                    "name": args.additional_product_name,
+                    "dem": additional_dem,
+                    "inputs": additional_inputs,
+                    "cell_size": args.additional_resolution,
+                    "max_cells": args.additional_max_cells,
+                    "queue": args.additional_resource_queue,
+                }
+                additional_paths = (additional_dem, additional_inputs)
             object_options = (
                 args.s3_endpoint_url, args.s3_bucket,
                 args.s3_access_key, args.s3_secret_key,
@@ -643,7 +809,8 @@ def main() -> None:
             object_uris = None
             if all(object_options):
                 object_uris = publish_product_assets(
-                    (result, model_inputs, derived_dem, derived_inputs),
+                    (result, model_inputs, derived_dem, derived_inputs)
+                    + additional_paths,
                     endpoint_url=args.s3_endpoint_url,
                     bucket=args.s3_bucket,
                     access_key=args.s3_access_key,
@@ -657,6 +824,9 @@ def main() -> None:
                 derived_inputs,
                 vertical_datum=args.vertical_datum,
                 object_uris=object_uris,
+                additional_products=(
+                    (additional_product,) if additional_product else ()
+                ),
             ))
 
 

@@ -17,14 +17,21 @@ uv run --extra data python bayuquan/build_web_map_assets.py \
   --model-inputs-target OUTPUT/model/web/model_inputs_cog.tif \
   --derived-dem-target OUTPUT/model/web/elevation_10m_cog.tif \
   --derived-model-inputs-target OUTPUT/model/web/model_inputs_10m_cog.tif \
+  --additional-source byq-5m.tif \
+  --additional-dem-target OUTPUT/model/web/elevation_5m_cog.tif \
+  --additional-model-inputs-target OUTPUT/model/web/model_inputs_5m_cog.tif \
+  --additional-product-id bayuquan-dem-5m-v1 \
+  --additional-product-name '鲅鱼圈原始 DEM · 5 m' \
+  --additional-resolution 5 --additional-max-cells 500000 \
+  --additional-resource-queue high-resource \
   --manifest-target OUTPUT/model/dem-products.json \
   --vertical-datum 'WGS 84 ellipsoidal height' --force
 ```
 
-The Compose asset build creates the original 30 m product and a strictly
-nested, bilinear 10 m product. Ancillary building and Manning cells are copied
-nearest-neighbour into each 3 × 3 block. The 10 m grid remains explicitly
-labelled as having 30 m source information resolution. Products are registered
+The Compose asset build creates the original 30 m product, a strictly nested
+bilinear 10 m product, and a reprojected 5 m product from `byq-5m.tif`.
+Ancillary building and Manning cells are copied nearest-neighbour into each
+3 × 3 block for the 10 m product. Products are registered
 from `OUTPUT/model/dem-products.json`, stored in MinIO under content-addressed
 immutable keys, and exposed through product-scoped
 `/api/dem-products/{productId}/...` endpoints. TiTiler smooths overview tiles;

@@ -26,3 +26,5 @@ bayuquan/*.tif.aux.xml
 **/dist/
 **/test-results/
 **/playwright-report/
+byq-5m.tif
+byq-5m.tif.aux.xml

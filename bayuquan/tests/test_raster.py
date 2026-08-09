@@ -17,6 +17,7 @@ from bayuquan.build_web_map_assets import (
     build_aligned_derived_inputs,
     build_dem_cog,
     build_model_inputs_cog,
+    build_reprojected_dem,
     write_product_manifest,
 )
 
@@ -142,6 +143,38 @@ def test_dry_pixels_keep_values_but_are_excluded_from_display_mask():
     assert result.wet_area_m2 == 0
 
 
+def test_reprojected_dem_uses_model_crs_and_metric_resolution(tmp_path):
+    source = tmp_path / "byq-5m.tif"
+    target = tmp_path / "web" / "elevation_5m_cog.tif"
+    with rasterio.open(
+        source,
+        "w",
+        driver="GTiff",
+        width=64,
+        height=64,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4490",
+        transform=from_origin(122, 40.01, 0.00005, 0.00005),
+        nodata=-32767,
+    ) as dataset:
+        dataset.write(np.ones((64, 64), dtype="float32"), 1)
+
+    result = build_reprojected_dem(
+        source,
+        target,
+        target_crs="EPSG:32651",
+        resolution_m=5,
+    )
+
+    assert result == target.resolve()
+    with rasterio.open(target) as dataset:
+        assert dataset.crs.to_string() == "EPSG:32651"
+        assert np.isclose(abs(dataset.transform.a), 5)
+        assert np.isclose(abs(dataset.transform.e), 5)
+        assert dataset.tags()["SOURCE_CRS"] == "EPSG:4490"
+
+
 def test_model_input_builder_treats_outside_building_coverage_as_zero(
     tmp_path,
 ):
@@ -228,9 +261,38 @@ def test_derived_product_is_nested_and_preserves_30m_input_cells(tmp_path):
     derived_inputs = build_aligned_derived_inputs(
         inputs, tmp_path / "inputs-10m.tif"
     )
+    fine_dem = tmp_path / "dem-5m.tif"
+    fine_inputs = tmp_path / "inputs-5m.tif"
+    fine_transform = from_origin(100, 220, 5, 5)
+    with rasterio.open(
+        fine_dem, "w", driver="GTiff", width=12, height=12, count=1,
+        dtype="float32", crs="EPSG:32651", transform=fine_transform,
+        nodata=-9999,
+    ) as dataset:
+        dataset.write(np.ones((12, 12), dtype="float32"), 1)
+    with rasterio.open(
+        fine_inputs, "w", driver="GTiff", width=12, height=12, count=5,
+        dtype="float32", crs="EPSG:32651", transform=fine_transform,
+        nodata=-9999,
+    ) as dataset:
+        dataset.descriptions = (
+            "building_fraction", "building_density_class", "manning_low",
+            "manning_middle", "manning_high",
+        )
+        dataset.write(np.ones((5, 12, 12), dtype="float32"))
+
     manifest = write_product_manifest(
         tmp_path / "products.json", dem, inputs,
         derived_dem, derived_inputs, vertical_datum="TEST-DATUM",
+        additional_products=({
+            "id": "bayuquan-dem-5m-v1",
+            "name": "鲅鱼圈原始 DEM · 5 m",
+            "dem": fine_dem,
+            "inputs": fine_inputs,
+            "cell_size": 5,
+            "max_cells": 500_000,
+            "queue": "high-resource",
+        },),
     )
 
     with rasterio.open(derived_dem) as dataset:
@@ -252,12 +314,15 @@ def test_derived_product_is_nested_and_preserves_30m_input_cells(tmp_path):
     assert document["products"][1]["isDefault"] is True
     assert document["products"][1]["maxCells"] == 125_000
     assert document["products"][1]["sourceResolutionM"] == 30
+    assert document["products"][2]["id"] == "bayuquan-dem-5m-v1"
+    assert document["products"][2]["maxCells"] == 500_000
     database = Database(f"sqlite:///{tmp_path / 'products.sqlite'}")
     database.create_schema()
     register_manifest(database, manifest)
     catalog = DemProductCatalog(database, tmp_path / "areas")
     assert catalog.default().id == "bayuquan-dem-10m-bilinear-v1"
     assert catalog.default().max_cells == 125_000
+    assert catalog.get("bayuquan-dem-5m-v1").cell_size_m == 5
 
 
 def test_local_rasterizer_aggregates_two_triangles_per_selected_cell():

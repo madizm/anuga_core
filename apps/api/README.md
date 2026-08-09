@@ -2,11 +2,12 @@
 
 ## Start the phase-C services
 
-The one-shot `model-assets` service creates immutable 30 m and aligned 10 m
-DEM products, their building/Manning COGs, and the administrator registration
+The one-shot `model-assets` service creates immutable 30 m, aligned 10 m, and
+5 m DEM products (the latter from `byq-5m.tif`), their building/Manning COGs,
+and the administrator registration
 manifest. The COGs are uploaded under content-addressed keys in the
 `model-products` MinIO bucket; the database stores their immutable S3 URIs and
-checksums. Both products use WGS 84 ellipsoidal height as their vertical
+checksums. All products use WGS 84 ellipsoidal height as their vertical
 reference. API startup applies migrations and registers the manifest before
 accepting traffic:
 
@@ -115,7 +116,8 @@ The geometry is WGS84 GeoJSON. The resolver projects it to EPSG:32651, selects
 valid DEM cells by centre point, rejects any extent/NoData violation and
 holes/disconnected masks, and enforces the selected product's cell limit. It
 then caches a deterministic two-triangle-per-cell mesh by area hash. The 30 m
-product allows 25,000 cells; the default 10 m product allows 125,000 cells.
+product allows 25,000 cells; the default 10 m product allows 125,000 cells;
+the 5 m product allows 500,000 cells on the high-resource queue.
 Load only that area's grid from the returned `gridUrl`. The response is the
 immutable BQSG v1 binary format: a 100-byte little-endian header containing
 dimensions, window and four WGS84 grid corners, followed by seven typed planes
