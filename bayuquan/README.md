@@ -42,8 +42,9 @@ MapLibre uses this source for optional 3D terrain. The editor defaults to a 2D
 orthographic view, while desktop result maps default to 3D. Both workspaces
 offer 1.0×, 1.5×, and 2.0× vertical exaggeration and optional hillshade.
 After a Simulation Area is resolved, the editor derives 5 m vector contours
-from its selected DEM cells. Every 25 m contour is emphasized and labelled;
-contours never interpolate across cells outside the Simulation Area.
+from its selected DEM cells. Every contour carries an elevation label, while
+each 25 m contour is emphasized; contours never interpolate across cells
+outside the Simulation Area.
 
 ## 2. Define a scenario
 
@@ -202,9 +203,10 @@ uv run --with pytest pytest -q bayuquan/tests
 or simple polygon into a four-neighbour-connected mask of valid full-DEM cells.
 `SimulationAreaCatalog` caches compact canonical metadata, typed NumPy grid
 planes (`grid.npz`), and the deterministic ANUGA mesh under the configured
-shared simulation-area store. The grid API publishes immutable BQSG binary
-payloads; the browser renders and picks regular cells directly without
-expanding every cell into GeoJSON polygons.
+shared simulation-area store. The grid interface publishes a manifest plus
+immutable BQGT topology and field tiles. The browser loads visible topology,
+fetches elevation/building/Manning fields only for active consumers, and picks
+regular cells directly without expanding every cell into GeoJSON polygons.
 
 Each selected cell is split along the southwest–northeast diagonal into two
 equal-area triangles. A flat-water ANUGA regression verifies

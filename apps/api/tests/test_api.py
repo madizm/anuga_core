@@ -26,51 +26,6 @@ def test_legacy_job_snapshot_without_area_has_no_map_bounds():
     assert _simulation_area_bounds({"name": "legacy"}) is None
 
 
-class FakeCatalog:
-    version_id = "abcd1234"
-    grid_geojson = {"type": "FeatureCollection", "features": []}
-
-    def __init__(self):
-        self.mapping = GridTriangleMapping(
-            triangle_cell_index=np.arange(6, dtype=np.int32),
-            triangle_area_m2=np.full(6, 450.0),
-            nrows=2,
-            ncols=3,
-            cellsize=30,
-            xllcorner=100,
-            yllcorner=200,
-            mesh_sha256="a" * 64,
-        )
-        self.cells = {
-            f"r{row:04d}-c{column:04d}": {
-                "cell_id": f"r{row:04d}-c{column:04d}",
-                "elevation_m": "5",
-                "building_fraction": "0.1",
-                "manning_low": "0.03",
-                "manning_middle": "0.05",
-                "manning_high": "0.08",
-            }
-            for row in range(2)
-            for column in range(3)
-        }
-
-    def metadata(self):
-        return {
-            "version": self.version_id,
-            "crs": "EPSG:32651",
-            "gridRows": 2,
-            "gridColumns": 3,
-            "cellSizeM": 30,
-            "selectableCellCount": 6,
-            "gridUrl": "/api/model/grid",
-            "demTilejsonUrl": "/api/model/dem/tilejson",
-            "boundaryCondition": "transmissive",
-            "meshSha256": self.mapping.mesh_sha256,
-        }
-
-    def cell(self, cell_id):
-        return self.cells.get(cell_id)
-
 
 class FakeAreaCatalog:
     def metadata(self):
@@ -159,10 +114,34 @@ class FakeAreaCatalog:
             "manning": {"minimum": 0.04, "maximum": 0.04},
         }
 
-    def grid_binary(self, area_hash):
+    def grid_manifest(self, area_hash):
         if area_hash != "b" * 64:
             raise KeyError(area_hash)
-        return b"BQSG-test-grid"
+        return {
+            "version": 1,
+            "tileSize": 256,
+            "demRows": 2,
+            "demColumns": 3,
+            "rowStart": 10,
+            "rowStop": 12,
+            "columnStart": 20,
+            "columnStop": 23,
+            "corners": [[122, 41], [122.03, 41], [122, 40.98], [122.03, 40.98]],
+            "fields": ["elevation", "buildingFraction", "manningLow", "manningMiddle", "manningHigh"],
+            "tiles": [{
+                "id": "r00000-c00000",
+                "rowStart": 10, "rowStop": 12,
+                "columnStart": 20, "columnStop": 23,
+                "cellCount": 6,
+            }],
+        }
+
+    def grid_tile_binary(self, area_hash, tile_id, field):
+        if area_hash != "b" * 64 or tile_id != "r00000-c00000":
+            raise KeyError(area_hash)
+        if field not in {"topology", "elevation"}:
+            raise KeyError(field)
+        return b"BQGT-test-tile"
 
     def cell_values(self, area_hash, cell_ids, field):
         if area_hash != "b" * 64:
@@ -251,7 +230,13 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
         restored = test_client.get(
             f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}"
         )
-        grid = test_client.get(
+        manifest = test_client.get(
+            f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/grid/manifest"
+        )
+        tile = test_client.get(
+            f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/grid/tiles/r00000-c00000/elevation"
+        )
+        legacy = test_client.get(
             f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/grid"
         )
         selection = test_client.post(
@@ -259,7 +244,7 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
             json={"cellIds": ["r0010-c0020"], "frictionScenario": "middle"},
         )
         missing = test_client.get(
-            f"/api/dem-products/dem-test/simulation-areas/{'c' * 64}/grid"
+            f"/api/dem-products/dem-test/simulation-areas/{'c' * 64}/grid/manifest"
         )
 
     assert resolved.status_code == 201, resolved.text
@@ -278,17 +263,21 @@ def test_simulation_area_is_resolved_before_its_local_grid_is_loaded(tmp_path):
         "window": {"rowStart": 10, "rowStop": 11,
                    "columnStart": 20, "columnStop": 22},
         "elevationM": {"minimum": 3.0, "maximum": 4.0, "mean": 3.5},
-        "gridUrl": f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/grid",
+        "gridManifestUrl": f"/api/dem-products/dem-test/simulation-areas/{'b' * 64}/grid/manifest",
         "boundaryCondition": "transmissive",
     }
-    assert grid.status_code == 200
+    assert manifest.status_code == 200
+    assert "immutable" in manifest.headers["cache-control"]
     assert selection.status_code == 200
     assert selection.json()["triangleCount"] == 2
-    assert grid.content == b"BQSG-test-grid"
-    assert grid.headers["content-type"].startswith(
-        "application/vnd.bayuquan.simulation-grid"
+    assert manifest.json()["tiles"][0]["fieldUrl"].endswith("/{field}")
+    assert tile.status_code == 200
+    assert legacy.status_code == 404
+    assert tile.content == b"BQGT-test-tile"
+    assert tile.headers["content-type"].startswith(
+        "application/vnd.bayuquan.simulation-grid-tile"
     )
-    assert "immutable" in grid.headers["cache-control"]
+    assert "immutable" in tile.headers["cache-control"]
     assert missing.status_code == 404
 
 

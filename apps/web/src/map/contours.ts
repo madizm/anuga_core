@@ -1,4 +1,5 @@
 import type { Feature, FeatureCollection, LineString } from 'geojson'
+import type { GridTile } from './gridTiles'
 import {
   gridBoundaryLngLat,
   type SimulationGrid,
@@ -29,6 +30,7 @@ export function buildContourFeatures(
     intervalM = DEFAULT_INTERVAL_M,
     majorIntervalM = DEFAULT_MAJOR_INTERVAL_M,
   }: ContourOptions = {},
+  coordinateGrid: SimulationGrid = grid,
 ): FeatureCollection<LineString, ContourProperties> {
   if (!Number.isFinite(intervalM) || intervalM <= 0) {
     throw new Error('等高距必须为正数')
@@ -72,13 +74,40 @@ export function buildContourFeatures(
         geometry: {
           type: 'LineString',
           coordinates: line.map(([row, column]) => (
-            gridBoundaryLngLat(grid, row, column)
+            gridBoundaryLngLat(coordinateGrid, row, column)
           )),
         },
       })
     }
   }
   return { type: 'FeatureCollection', features }
+}
+
+/** Build contours for one loaded tile while projecting in full-area coordinates. */
+export function buildContourFeaturesForTile(
+  tile: GridTile,
+  geometry: SimulationGrid,
+  options: ContourOptions = {},
+): FeatureCollection<LineString, ContourProperties> {
+  const elevationM = tile.fields.elevation
+  if (!elevationM) return { type: 'FeatureCollection', features: [] }
+  const empty = new Float32Array()
+  const tileGrid: SimulationGrid = {
+    ...geometry,
+    cellCount: tile.cellIndices.length,
+    rowStart: tile.descriptor.rowStart,
+    rowStop: tile.descriptor.rowStop,
+    columnStart: tile.descriptor.columnStart,
+    columnStop: tile.descriptor.columnStop,
+    cellIndices: tile.cellIndices,
+    elevationM,
+    buildingFraction: empty,
+    buildingDensityClass: empty,
+    manningLow: empty,
+    manningMiddle: empty,
+    manningHigh: empty,
+  }
+  return buildContourFeatures(tileGrid, options, geometry)
 }
 
 function contourSegments(

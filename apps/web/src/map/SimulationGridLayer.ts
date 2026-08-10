@@ -5,25 +5,43 @@ import {
   type Map,
 } from 'maplibre-gl'
 import type { FrictionScenario } from '../api/types'
-import {
-  gridBoundaryLngLat,
-  parseCellId,
-  type SimulationGrid,
-} from './simulationGrid'
+import type { GridTile, GridViewport } from './gridTiles'
+import { gridViewportRange } from './simulationGrid'
 
-const STRIDE_FLOATS = 10
+const INSTANCE_STRIDE_FLOATS = 10
+const INSTANCE_STRIDE_BYTES = INSTANCE_STRIDE_FLOATS * 4
+const MAX_CACHED_TILE_BUFFERS = 32
+const QUAD = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1])
+
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
 uniform mat4 u_matrix;
-layout(location=0) in vec3 a_position;
-layout(location=1) in float a_building;
-layout(location=2) in vec3 a_manning;
-layout(location=3) in vec3 a_selection;
+uniform vec4 u_grid;
+uniform vec3 u_northwest;
+uniform vec3 u_northeast;
+uniform vec3 u_southwest;
+uniform vec3 u_southeast;
+uniform float u_meter_scale;
+uniform bool u_terrain;
+layout(location=0) in vec2 a_corner;
+layout(location=1) in vec2 a_cell;
+layout(location=2) in float a_elevation;
+layout(location=3) in float a_building;
+layout(location=4) in vec3 a_manning;
+layout(location=5) in vec3 a_selection;
+out vec2 v_corner;
 out float v_building;
 out vec3 v_manning;
 out vec3 v_selection;
 void main() {
-  gl_Position = u_matrix * vec4(a_position, 1.0);
+  float u = (a_cell.y - u_grid.z + a_corner.x) / u_grid.w;
+  float v = (a_cell.x - u_grid.x + a_corner.y) / u_grid.y;
+  vec3 north = mix(u_northwest, u_northeast, u);
+  vec3 south = mix(u_southwest, u_southeast, u);
+  vec3 position = mix(north, south, v);
+  if (u_terrain) position.z += max(a_elevation, 0.0) * u_meter_scale + 0.35 * u_meter_scale;
+  gl_Position = u_matrix * vec4(position, 1.0);
+  v_corner = a_corner;
   v_building = a_building;
   v_manning = a_manning;
   v_selection = a_selection;
@@ -34,7 +52,8 @@ precision highp float;
 uniform int u_mode;
 uniform int u_friction;
 uniform vec2 u_manning_range;
-uniform float u_line_alpha;
+uniform float u_line_width;
+in vec2 v_corner;
 in float v_building;
 in vec3 v_manning;
 in vec3 v_selection;
@@ -58,7 +77,9 @@ void main() {
     float normalized = clamp((value - u_manning_range.x) / (u_manning_range.y - u_manning_range.x), 0.0, 1.0);
     color = vec4(ramp(normalized, vec3(0.14, 0.46, 0.54), vec3(0.83, 0.71, 0.31), vec3(0.9, 0.33, 0.24)), 0.76);
   } else {
-    color = selected ? vec4(0.91, 0.99, 1.0, 0.95) : vec4(0.29, 0.42, 0.46, u_line_alpha);
+    float edge = min(min(v_corner.x, 1.0 - v_corner.x), min(v_corner.y, 1.0 - v_corner.y));
+    if (edge > u_line_width) discard;
+    color = selected ? vec4(0.91, 0.99, 1.0, 0.95) : vec4(0.29, 0.42, 0.46, 0.58);
   }
 }`
 
@@ -66,23 +87,32 @@ const MANNING_RANGES: Record<FrictionScenario, [number, number]> = {
   low: [0.03, 0.1], middle: [0.04, 0.16], high: [0.05, 0.2],
 }
 
-interface GridMesh {
-  vertices: Float32Array
-  triangles: Uint32Array
-  lines: Uint32Array
+interface GridInstances {
+  values: Float32Array
+  count: number
+}
+
+interface TileBuffer {
+  tile: GridTile
+  values: Float32Array
+  count: number
+  buffer: WebGLBuffer | null
+  selectionRevision: number
 }
 
 interface Resources {
   program: WebGLProgram
   vertexArray: WebGLVertexArrayObject
-  vertexBuffer: WebGLBuffer
-  triangleBuffer: WebGLBuffer
-  lineBuffer: WebGLBuffer
+  cornerBuffer: WebGLBuffer
   matrix: WebGLUniformLocation
+  grid: WebGLUniformLocation
+  corners: [WebGLUniformLocation, WebGLUniformLocation, WebGLUniformLocation, WebGLUniformLocation]
+  meterScale: WebGLUniformLocation
+  terrain: WebGLUniformLocation
   mode: WebGLUniformLocation
   friction: WebGLUniformLocation
   manningRange: WebGLUniformLocation
-  lineAlpha: WebGLUniformLocation
+  lineWidth: WebGLUniformLocation
 }
 
 function colorComponents(value: string): [number, number, number] {
@@ -92,53 +122,35 @@ function colorComponents(value: string): [number, number, number] {
   return [((packed >> 16) & 255) / 255, ((packed >> 8) & 255) / 255, (packed & 255) / 255]
 }
 
-export function buildSimulationGridMesh(
-  map: Map, grid: SimulationGrid, terrainEnabled: boolean,
-): GridMesh {
-  const vertices = new Float32Array(grid.cellCount * 4 * STRIDE_FLOATS)
-  const triangles = new Uint32Array(grid.cellCount * 6)
-  const lines = new Uint32Array(grid.cellCount * 8)
-  const projectedVertices = new globalThis.Map<number, [number, number, number]>()
-  for (let position = 0; position < grid.cellCount; position += 1) {
-    const index = grid.cellIndices[position]
-    const row = Math.floor(index / grid.demColumns)
-    const column = index - row * grid.demColumns
-    const points = [
-      gridBoundaryLngLat(grid, row, column),
-      gridBoundaryLngLat(grid, row + 1, column),
-      gridBoundaryLngLat(grid, row, column + 1),
-      gridBoundaryLngLat(grid, row + 1, column + 1),
-    ]
-    for (let corner = 0; corner < 4; corner += 1) {
-      const vertexRow = row + (corner & 1)
-      const vertexColumn = column + (corner >> 1)
-      const vertexKey = vertexRow * (grid.demColumns + 1) + vertexColumn
-      let projected = projectedVertices.get(vertexKey)
-      if (!projected) {
-        const elevation = terrainEnabled
-          ? (map.queryTerrainElevation(points[corner]) ?? grid.elevationM[position]) + 0.35
-          : 0
-        const mercator = MercatorCoordinate.fromLngLat(points[corner], elevation)
-        projected = [mercator.x, mercator.y, mercator.z]
-        projectedVertices.set(vertexKey, projected)
-      }
-      const offset = (position * 4 + corner) * STRIDE_FLOATS
-      vertices[offset] = projected[0]
-      vertices[offset + 1] = projected[1]
-      vertices[offset + 2] = projected[2]
-      vertices[offset + 3] = grid.buildingFraction[position]
-      vertices[offset + 4] = grid.manningLow[position]
-      vertices[offset + 5] = grid.manningMiddle[position]
-      vertices[offset + 6] = grid.manningHigh[position]
-    }
-    const vertex = position * 4
-    triangles.set([vertex, vertex + 2, vertex + 1, vertex + 2, vertex + 3, vertex + 1], position * 6)
-    lines.set([
-      vertex, vertex + 1, vertex + 1, vertex + 3,
-      vertex + 3, vertex + 2, vertex + 2, vertex,
-    ], position * 8)
+/** Pack exactly one topology tile. No viewport-wide scan or sort is needed. */
+export function buildSimulationGridInstances(
+  tile: GridTile,
+  selections: ReadonlyMap<string, string>,
+): GridInstances {
+  const positions: number[] = []
+  const { descriptor, cellIndices, fields } = tile
+  for (let position = 0; position < cellIndices.length; position += 1) {
+    const index = cellIndices[position]
+    const row = Math.floor(index / descriptor.demColumns)
+    const column = index - row * descriptor.demColumns
+    const id = `r${String(row).padStart(4, '0')}-c${String(column).padStart(4, '0')}`
+    const selection = selections.get(id)
+    const rgb = selection ? colorComponents(selection) : [0, 0, 0]
+    positions.push(
+      row,
+      column,
+      fields.elevation?.[position] ?? Number.NaN,
+      fields.buildingFraction?.[position] ?? Number.NaN,
+      fields.manningLow?.[position] ?? Number.NaN,
+      fields.manningMiddle?.[position] ?? Number.NaN,
+      fields.manningHigh?.[position] ?? Number.NaN,
+      rgb[0], rgb[1], rgb[2],
+    )
   }
-  return { vertices, triangles, lines }
+  return {
+    values: Float32Array.from(positions),
+    count: positions.length / INSTANCE_STRIDE_FLOATS,
+  }
 }
 
 export class SimulationGridLayer implements CustomLayerInterface {
@@ -147,12 +159,17 @@ export class SimulationGridLayer implements CustomLayerInterface {
   readonly renderingMode = '3d' as const
   private gl: WebGL2RenderingContext | null = null
   private resources: Resources | null = null
-  private mesh: GridMesh | null = null
-  private grid: SimulationGrid | null = null
+  private viewport: GridViewport | null = null
+  private visibleTileIds: string[] = []
+  private readonly tileBuffers = new globalThis.Map<string, TileBuffer>()
+  private readonly pendingUploads = new Set<string>()
+  private uploadFrame: number | null = null
   private terrainEnabled = false
   private friction: FrictionScenario = 'middle'
   private visibility = { grid: true, buildings: false, manning: false }
   private selections = new globalThis.Map<string, string>()
+  private selectionRevision = 0
+  private readonly refreshVisibleTiles = () => this.updateVisibleTiles()
 
   constructor(private readonly map: Map) {}
 
@@ -161,55 +178,73 @@ export class SimulationGridLayer implements CustomLayerInterface {
     this.gl = context
     const program = createProgram(context, VERTEX_SHADER, FRAGMENT_SHADER)
     const vertexArray = required(context.createVertexArray(), 'vertex array')
-    const vertexBuffer = required(context.createBuffer(), 'vertex buffer')
-    const triangleBuffer = required(context.createBuffer(), 'triangle buffer')
-    const lineBuffer = required(context.createBuffer(), 'line buffer')
+    const cornerBuffer = required(context.createBuffer(), 'corner buffer')
     context.bindVertexArray(vertexArray)
-    context.bindBuffer(context.ARRAY_BUFFER, vertexBuffer)
-    const stride = STRIDE_FLOATS * 4
-    context.enableVertexAttribArray(0); context.vertexAttribPointer(0, 3, context.FLOAT, false, stride, 0)
-    context.enableVertexAttribArray(1); context.vertexAttribPointer(1, 1, context.FLOAT, false, stride, 3 * 4)
-    context.enableVertexAttribArray(2); context.vertexAttribPointer(2, 3, context.FLOAT, false, stride, 4 * 4)
-    context.enableVertexAttribArray(3); context.vertexAttribPointer(3, 3, context.FLOAT, false, stride, 7 * 4)
+    context.bindBuffer(context.ARRAY_BUFFER, cornerBuffer)
+    context.bufferData(context.ARRAY_BUFFER, QUAD, context.STATIC_DRAW)
+    context.enableVertexAttribArray(0)
+    context.vertexAttribPointer(0, 2, context.FLOAT, false, 0, 0)
     this.resources = {
-      program, vertexArray, vertexBuffer, triangleBuffer, lineBuffer,
+      program, vertexArray, cornerBuffer,
       matrix: uniform(context, program, 'u_matrix'),
+      grid: uniform(context, program, 'u_grid'),
+      corners: [
+        uniform(context, program, 'u_northwest'),
+        uniform(context, program, 'u_northeast'),
+        uniform(context, program, 'u_southwest'),
+        uniform(context, program, 'u_southeast'),
+      ],
+      meterScale: uniform(context, program, 'u_meter_scale'),
+      terrain: uniform(context, program, 'u_terrain'),
       mode: uniform(context, program, 'u_mode'),
       friction: uniform(context, program, 'u_friction'),
       manningRange: uniform(context, program, 'u_manning_range'),
-      lineAlpha: uniform(context, program, 'u_line_alpha'),
+      lineWidth: uniform(context, program, 'u_line_width'),
     }
-    if (this.grid) this.uploadMesh()
+    this.map.on('move', this.refreshVisibleTiles)
+    this.map.on('moveend', this.refreshVisibleTiles)
+    this.updateVisibleTiles()
+    this.flushTileUploads()
   }
 
   onRemove() {
+    this.map.off('move', this.refreshVisibleTiles)
+    this.map.off('moveend', this.refreshVisibleTiles)
     const gl = this.gl
     const resources = this.resources
+    if (this.uploadFrame !== null) cancelAnimationFrame(this.uploadFrame)
+    this.uploadFrame = null
+    this.pendingUploads.clear()
     if (gl && resources) {
-      gl.deleteBuffer(resources.vertexBuffer); gl.deleteBuffer(resources.triangleBuffer)
-      gl.deleteBuffer(resources.lineBuffer); gl.deleteVertexArray(resources.vertexArray)
+      for (const tile of this.tileBuffers.values()) {
+        if (tile.buffer) gl.deleteBuffer(tile.buffer)
+      }
+      gl.deleteBuffer(resources.cornerBuffer)
+      gl.deleteVertexArray(resources.vertexArray)
       gl.deleteProgram(resources.program)
     }
+    this.tileBuffers.clear()
     this.resources = null
     this.gl = null
   }
 
-  setGrid(grid: SimulationGrid | null) {
-    this.grid = grid
-    this.uploadMesh()
+  setViewport(viewport: GridViewport | null) {
+    this.viewport = viewport
+    this.updateVisibleTiles()
   }
 
   setTerrainEnabled(enabled: boolean) {
     if (this.terrainEnabled === enabled) return
     this.terrainEnabled = enabled
-    this.uploadMesh()
+    this.map.triggerRepaint()
   }
 
   refreshTerrain() {
-    if (this.terrainEnabled) this.uploadMesh()
+    this.map.triggerRepaint()
   }
 
   setFriction(value: FrictionScenario) {
+    if (this.friction === value) return
     this.friction = value
     this.map.triggerRepaint()
   }
@@ -221,46 +256,85 @@ export class SimulationGridLayer implements CustomLayerInterface {
 
   setSelections(value: globalThis.Map<string, string>) {
     this.selections = value
-    if (!this.mesh || !this.grid) return
-    for (let position = 0; position < this.grid.cellCount; position += 1) {
-      const index = this.grid.cellIndices[position]
-      const row = Math.floor(index / this.grid.demColumns)
-      const id = `r${String(row).padStart(4, '0')}-c${String(index - row * this.grid.demColumns).padStart(4, '0')}`
-      const color = value.get(id)
-      const rgb = color ? colorComponents(color) : [0, 0, 0]
-      for (let corner = 0; corner < 4; corner += 1) {
-        const offset = (position * 4 + corner) * STRIDE_FLOATS + 7
-        this.mesh.vertices[offset] = rgb[0]
-        this.mesh.vertices[offset + 1] = rgb[1]
-        this.mesh.vertices[offset + 2] = rgb[2]
-      }
+    this.selectionRevision += 1
+    this.updateVisibleTiles(true)
+  }
+
+  private updateVisibleTiles(force = false) {
+    const viewport = this.viewport
+    if (!viewport) {
+      this.visibleTileIds = []
+      this.map.triggerRepaint()
+      return
     }
-    const gl = this.gl
-    const resources = this.resources
-    if (gl && resources) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, resources.vertexBuffer)
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.mesh.vertices)
+    const range = gridViewportRange(this.map, viewport.geometry)
+    const nextIds = viewport.tiles.filter((tile) => (
+      tile.descriptor.rowStop > range.rowStart && tile.descriptor.rowStart < range.rowStop
+      && tile.descriptor.columnStop > range.columnStart && tile.descriptor.columnStart < range.columnStop
+    )).map((tile) => tile.descriptor.id)
+    const changed = force || nextIds.length !== this.visibleTileIds.length
+      || nextIds.some((id, index) => id !== this.visibleTileIds[index])
+    this.visibleTileIds = nextIds
+    for (const tile of viewport.tiles) {
+      if (this.visibleTileIds.includes(tile.descriptor.id)) this.ensureTileBuffer(tile)
+    }
+    if (this.tileBuffers.size > MAX_CACHED_TILE_BUFFERS) this.evictTileBuffers()
+    if (changed || force) this.map.triggerRepaint()
+  }
+
+  private ensureTileBuffer(tile: GridTile) {
+    const current = this.tileBuffers.get(tile.descriptor.id)
+    if (current && current.tile === tile && current.selectionRevision === this.selectionRevision) return
+    const instances = buildSimulationGridInstances(tile, this.selections)
+    const next: TileBuffer = {
+      tile,
+      values: instances.values,
+      count: instances.count,
+      buffer: current?.buffer ?? null,
+      selectionRevision: this.selectionRevision,
+    }
+    this.tileBuffers.set(tile.descriptor.id, next)
+    this.scheduleTileUpload(tile.descriptor.id)
+  }
+
+  private scheduleTileUpload(tileId: string) {
+    this.pendingUploads.add(tileId)
+    if (this.uploadFrame !== null) return
+    this.uploadFrame = requestAnimationFrame(() => {
+      this.uploadFrame = null
+      this.flushTileUploads()
+    })
+  }
+
+  private flushTileUploads() {
+    if (this.pendingUploads.size === 0 || !this.gl || !this.resources) return
+    const tileIds = [...this.pendingUploads]
+    this.pendingUploads.clear()
+    for (const tileId of tileIds) {
+      const tile = this.tileBuffers.get(tileId)
+      if (tile) this.uploadTileBuffer(tile)
     }
     this.map.triggerRepaint()
   }
 
-  private uploadMesh() {
-    if (!this.grid) {
-      this.mesh = null
-      this.map.triggerRepaint()
-      return
-    }
-    this.mesh = buildSimulationGridMesh(this.map, this.grid, this.terrainEnabled)
+  private uploadTileBuffer(tile: TileBuffer) {
     const gl = this.gl
     const resources = this.resources
     if (!gl || !resources) return
-    gl.bindBuffer(gl.ARRAY_BUFFER, resources.vertexBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, this.mesh.vertices, gl.DYNAMIC_DRAW)
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.triangleBuffer)
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.mesh.triangles, gl.STATIC_DRAW)
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.lineBuffer)
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.mesh.lines, gl.STATIC_DRAW)
-    this.setSelections(this.selections)
+    if (!tile.buffer) tile.buffer = required(gl.createBuffer(), 'instance buffer')
+    gl.bindBuffer(gl.ARRAY_BUFFER, tile.buffer)
+    gl.bufferData(gl.ARRAY_BUFFER, tile.values, gl.DYNAMIC_DRAW)
+  }
+
+  private evictTileBuffers() {
+    const gl = this.gl
+    const visible = new Set(this.visibleTileIds)
+    for (const [id, tile] of this.tileBuffers) {
+      if (this.tileBuffers.size <= MAX_CACHED_TILE_BUFFERS) break
+      if (visible.has(id)) continue
+      if (gl && tile.buffer) gl.deleteBuffer(tile.buffer)
+      this.tileBuffers.delete(id)
+    }
   }
 
   render(
@@ -269,41 +343,73 @@ export class SimulationGridLayer implements CustomLayerInterface {
   ) {
     const gl = context as WebGL2RenderingContext
     const resources = this.resources
-    const mesh = this.mesh
-    if (!resources || !mesh) return
+    const viewport = this.viewport
+    if (!resources || !viewport || this.visibleTileIds.length === 0) return
     gl.useProgram(resources.program)
     gl.bindVertexArray(resources.vertexArray)
     gl.uniformMatrix4fv(resources.matrix, false, options.defaultProjectionData.mainMatrix)
+    const grid = viewport.geometry
+    gl.uniform4f(
+      resources.grid,
+      grid.rowStart, grid.rowStop - grid.rowStart,
+      grid.columnStart, grid.columnStop - grid.columnStart,
+    )
+    const projected = grid.corners.map((corner) => MercatorCoordinate.fromLngLat(corner as [number, number], 0))
+    projected.forEach((corner, index) => {
+      gl.uniform3f(resources.corners[index], corner.x, corner.y, corner.z)
+    })
+    const center = MercatorCoordinate.fromLngLat([
+      grid.corners.reduce((sum, corner) => sum + corner[0], 0) / 4,
+      grid.corners.reduce((sum, corner) => sum + corner[1], 0) / 4,
+    ])
+    gl.uniform1f(resources.meterScale, center.meterInMercatorCoordinateUnits())
+    gl.uniform1i(resources.terrain, this.terrainEnabled ? 1 : 0)
     gl.uniform1i(resources.friction, this.friction === 'low' ? 0 : this.friction === 'middle' ? 1 : 2)
     const range = MANNING_RANGES[this.friction]
     gl.uniform2f(resources.manningRange, range[0], range[1])
-    gl.uniform1f(resources.lineAlpha, Math.max(0.15, Math.min(0.75, (this.map.getZoom() - 13) / 3 * 0.5 + 0.25)))
+    gl.uniform1f(resources.lineWidth, Math.max(0.012, 0.055 / 2 ** Math.max(0, this.map.getZoom() - 13)))
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
     gl.enable(gl.DEPTH_TEST)
     gl.depthFunc(gl.LEQUAL)
     gl.depthMask(false)
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.triangleBuffer)
-    if (this.visibility.manning) this.draw(gl, resources, 2, mesh.triangles.length, gl.TRIANGLES)
-    if (this.visibility.buildings) this.draw(gl, resources, 1, mesh.triangles.length, gl.TRIANGLES)
-    if (this.visibility.grid) {
-      this.draw(gl, resources, 0, mesh.triangles.length, gl.TRIANGLES)
-      if (this.map.getZoom() >= 13) {
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.lineBuffer)
-        this.draw(gl, resources, 3, mesh.lines.length, gl.LINES)
+    for (const tileId of this.visibleTileIds) {
+      const tile = this.tileBuffers.get(tileId)
+      if (!tile?.buffer || tile.count === 0) continue
+      this.bindInstanceAttributes(gl, tile.buffer)
+      if (this.visibility.manning) this.draw(gl, resources, tile.count, 2)
+      if (this.visibility.buildings) this.draw(gl, resources, tile.count, 1)
+      if (this.visibility.grid) {
+        this.draw(gl, resources, tile.count, 0)
+        if (this.map.getZoom() >= 13) this.draw(gl, resources, tile.count, 3)
       }
     }
     gl.depthMask(true)
     gl.bindVertexArray(null)
   }
 
-  private draw(
-    gl: WebGL2RenderingContext, resources: Resources, mode: number,
-    count: number, primitive: number,
-  ) {
-    gl.uniform1i(resources.mode, mode)
-    gl.drawElements(primitive, count, gl.UNSIGNED_INT, 0)
+  private bindInstanceAttributes(gl: WebGL2RenderingContext, buffer: WebGLBuffer) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    attribute(gl, 1, 2, INSTANCE_STRIDE_BYTES, 0)
+    attribute(gl, 2, 1, INSTANCE_STRIDE_BYTES, 2 * 4)
+    attribute(gl, 3, 1, INSTANCE_STRIDE_BYTES, 3 * 4)
+    attribute(gl, 4, 3, INSTANCE_STRIDE_BYTES, 4 * 4)
+    attribute(gl, 5, 3, INSTANCE_STRIDE_BYTES, 7 * 4)
   }
+
+  private draw(gl: WebGL2RenderingContext, resources: Resources, count: number, mode: number) {
+    gl.uniform1i(resources.mode, mode)
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count)
+  }
+}
+
+function attribute(
+  gl: WebGL2RenderingContext, location: number, size: number,
+  stride: number, offset: number,
+) {
+  gl.enableVertexAttribArray(location)
+  gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset)
+  gl.vertexAttribDivisor(location, 1)
 }
 
 function required<T>(value: T | null, name: string): T {
@@ -318,24 +424,29 @@ function uniform(gl: WebGL2RenderingContext, program: WebGLProgram, name: string
 function createProgram(gl: WebGL2RenderingContext, vertexSource: string, fragmentSource: string) {
   const compile = (type: number, source: string) => {
     const shader = required(gl.createShader(type), 'shader')
-    gl.shaderSource(shader, source); gl.compileShader(shader)
+    gl.shaderSource(shader, source)
+    gl.compileShader(shader)
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
       const message = gl.getShaderInfoLog(shader) || 'unknown shader error'
-      gl.deleteShader(shader); throw new Error(message)
+      gl.deleteShader(shader)
+      throw new Error(message)
     }
     return shader
   }
   const vertex = compile(gl.VERTEX_SHADER, vertexSource)
   const fragment = compile(gl.FRAGMENT_SHADER, fragmentSource)
   const program = required(gl.createProgram(), 'program')
-  gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program)
-  gl.deleteShader(vertex); gl.deleteShader(fragment)
+  gl.attachShader(program, vertex)
+  gl.attachShader(program, fragment)
+  gl.linkProgram(program)
+  gl.deleteShader(vertex)
+  gl.deleteShader(fragment)
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     const message = gl.getProgramInfoLog(program) || 'unknown link error'
-    gl.deleteProgram(program); throw new Error(message)
+    gl.deleteProgram(program)
+    throw new Error(message)
   }
   return program
 }
 
-// Retained as a named export for tests and selection adapters.
-export { parseCellId }
+export { parseCellId } from './simulationGrid'

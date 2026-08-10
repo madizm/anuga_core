@@ -9,7 +9,7 @@ const area: SimulationArea = {
   id: 'a', areaHash: 'a', demProductId: 'dem', datasetVersion: 'v1',
   crs: 'EPSG:32651', cellCount: 100, areaM2: 90_000, cellSizeM: 30,
   triangleCount: 200, window: { rowStart: 0, rowStop: 10, columnStart: 0, columnStop: 10 },
-  elevationM: { minimum: 1, maximum: 8, mean: 4 }, gridUrl: '',
+  elevationM: { minimum: 1, maximum: 8, mean: 4 }, gridManifestUrl: '',
   boundaryCondition: 'transmissive',
 }
 const line: LineString = {

@@ -18,6 +18,32 @@ from .area import SimulationArea, SimulationAreaResolver, build_local_mesh
 from .grid_mapping import GridTriangleMapping
 
 
+GRID_TILE_SIZE = 256
+GRID_FIELDS = (
+    "elevation",
+    "buildingFraction",
+    "manningLow",
+    "manningMiddle",
+    "manningHigh",
+)
+_GRID_FIELD_ARRAYS = {
+    "elevation": "elevation_m",
+    "buildingFraction": "building_fraction",
+    "manningLow": "manning_low",
+    "manningMiddle": "manning_middle",
+    "manningHigh": "manning_high",
+}
+_GRID_FIELD_CODES = {
+    "topology": 0,
+    **{
+        field: index + 1
+        for index, field in enumerate(GRID_FIELDS)
+    },
+}
+_GRID_TILE_HEADER = "<4sHH6I"
+_GRID_TILE_HEADER_BYTES = struct.calcsize(_GRID_TILE_HEADER)
+
+
 class SimulationAreaCatalog:
     """Resolve areas and atomically cache their grid and mesh artifacts."""
 
@@ -109,41 +135,100 @@ class SimulationAreaCatalog:
             raise KeyError(f"stale simulation area: {area_hash}")
         return metadata
 
-    def grid_binary(self, area_hash: str) -> bytes:
-        """Return the compact BQSG v1 browser payload for an area grid."""
-        area = self.area(area_hash)
-        arrays = self._grid_arrays(area_hash)
-        row_start, row_stop, column_start, column_stop = area.window
-        a, _, c, _, e, f = area.transform
-        projected_corners = (
-            (c + column_start * a, f + row_start * e),
-            (c + column_stop * a, f + row_start * e),
-            (c + column_start * a, f + row_stop * e),
-            (c + column_stop * a, f + row_stop * e),
+    def grid_manifest(self, area_hash: str) -> dict:
+        """Return the immutable tile manifest for one simulation area."""
+        target = self.cache_directory / area_hash
+        manifest_path = target / "grid-tiles" / "manifest.json"
+        if manifest_path.is_file():
+            self.snapshot(area_hash)
+        else:
+            area = self.area(area_hash)
+            arrays = self._grid_arrays(area_hash)
+            self._write_grid_tiles(target, area, arrays)
+        return json.loads(manifest_path.read_text())
+
+    def grid_tile_binary(
+        self, area_hash: str, tile_id: str, field: str
+    ) -> bytes:
+        """Return one immutable topology or field tile."""
+        if field not in _GRID_FIELD_CODES:
+            raise KeyError(f"unknown grid tile field: {field}")
+        manifest = self.grid_manifest(area_hash)
+        tile = next(
+            (item for item in manifest["tiles"] if item["id"] == tile_id),
+            None,
         )
-        to_wgs84 = Transformer.from_crs(
-            area.crs, "OGC:CRS84", always_xy=True
+        if tile is None:
+            raise KeyError(f"unknown simulation grid tile: {tile_id}")
+        path = (
+            self.cache_directory / area_hash / "grid-tiles"
+            / tile_id / f"{field}.bin"
         )
-        corners = tuple(
-            coordinate
-            for point in projected_corners
-            for coordinate in to_wgs84.transform(*point)
-        )
-        header = struct.pack(
-            "<4sHH7I8d",
-            b"BQSG", 1, 100, area.cell_count, area.nrows, area.ncols,
-            row_start, row_stop, column_start, column_stop, *corners,
-        )
-        planes = (
-            np.asarray(arrays["cell_indices"], dtype="<u4"),
-            np.asarray(arrays["elevation_m"], dtype="<f4"),
-            np.asarray(arrays["building_fraction"], dtype="<f4"),
-            np.asarray(arrays["building_density_class"], dtype="<f4"),
-            np.asarray(arrays["manning_low"], dtype="<f4"),
-            np.asarray(arrays["manning_middle"], dtype="<f4"),
-            np.asarray(arrays["manning_high"], dtype="<f4"),
-        )
-        return header + b"".join(plane.tobytes() for plane in planes)
+        if not path.is_file():
+            raise KeyError(f"unknown simulation grid tile: {tile_id}")
+        return path.read_bytes()
+
+    def _write_grid_tiles(
+        self,
+        target: Path,
+        area: SimulationArea,
+        arrays: dict[str, np.ndarray],
+    ) -> None:
+        """Materialize immutable tile artifacts from canonical grid arrays."""
+        tile_target = target / "grid-tiles"
+        if tile_target.exists():
+            return
+        temporary = Path(tempfile.mkdtemp(
+            prefix=".grid-tiles-", dir=target
+        ))
+        try:
+            descriptors = _grid_tile_descriptors(
+                area, arrays["cell_indices"]
+            )
+            manifest = {
+                "version": 1,
+                "tileSize": GRID_TILE_SIZE,
+                "demRows": area.nrows,
+                "demColumns": area.ncols,
+                "rowStart": area.window[0],
+                "rowStop": area.window[1],
+                "columnStart": area.window[2],
+                "columnStop": area.window[3],
+                "corners": _grid_corners(area),
+                "fields": list(GRID_FIELDS),
+                "tiles": descriptors,
+            }
+            for descriptor in descriptors:
+                tile_dir = temporary / descriptor["id"]
+                tile_dir.mkdir(parents=True)
+                positions = _tile_positions(
+                    arrays["cell_indices"], descriptor, area.ncols
+                )
+                descriptor["cellCount"] = len(positions)
+                (tile_dir / "topology.bin").write_bytes(
+                    _topology_tile_binary(
+                        descriptor, positions, arrays["cell_indices"],
+                        area.ncols,
+                    )
+                )
+                for field in GRID_FIELDS:
+                    (tile_dir / f"{field}.bin").write_bytes(
+                        _field_tile_binary(
+                            descriptor, positions, field,
+                            arrays[_GRID_FIELD_ARRAYS[field]],
+                        )
+                    )
+            _write_json(temporary / "manifest.json", manifest)
+            try:
+                os.replace(temporary, tile_target)
+            except OSError:
+                if not tile_target.is_dir():
+                    raise
+                shutil.rmtree(temporary)
+        except BaseException:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+            raise
 
     def _grid_arrays(self, area_hash: str) -> dict[str, np.ndarray]:
         path = self.cache_directory / area_hash / "grid.npz"
@@ -271,10 +356,11 @@ class SimulationAreaCatalog:
                 "boundaryCondition": "transmissive",
             }
             _write_json(temporary / "area.json", metadata)
-            np.savez_compressed(
-                temporary / "grid.npz",
-                **_grid_arrays(area, self.dem_path, self.model_inputs_path),
+            arrays = _grid_arrays(
+                area, self.dem_path, self.model_inputs_path
             )
+            np.savez_compressed(temporary / "grid.npz", **arrays)
+            self._write_grid_tiles(temporary, area, arrays)
 
             mesh = build_local_mesh(area)
             boundary_items = sorted(mesh.boundary)
@@ -303,6 +389,108 @@ class SimulationAreaCatalog:
             if temporary.exists():
                 shutil.rmtree(temporary)
             raise
+
+
+def _grid_corners(area: SimulationArea) -> list[list[float]]:
+    row_start, row_stop, column_start, column_stop = area.window
+    a, _, c, _, e, f = area.transform
+    projected_corners = (
+        (c + column_start * a, f + row_start * e),
+        (c + column_stop * a, f + row_start * e),
+        (c + column_start * a, f + row_stop * e),
+        (c + column_stop * a, f + row_stop * e),
+    )
+    to_wgs84 = Transformer.from_crs(
+        area.crs, "OGC:CRS84", always_xy=True
+    )
+    return [
+        list(to_wgs84.transform(*point)) for point in projected_corners
+    ]
+
+
+def _grid_tile_descriptors(
+    area: SimulationArea, cell_indices: np.ndarray
+) -> list[dict]:
+    tile_keys = sorted({
+        (
+            int(index) // area.ncols // GRID_TILE_SIZE,
+            int(index) % area.ncols // GRID_TILE_SIZE,
+        )
+        for index in cell_indices
+    })
+    descriptors = []
+    for tile_row, tile_column in tile_keys:
+        row_start = max(area.window[0], tile_row * GRID_TILE_SIZE)
+        row_stop = min(area.window[1], (tile_row + 1) * GRID_TILE_SIZE)
+        column_start = max(area.window[2], tile_column * GRID_TILE_SIZE)
+        column_stop = min(
+            area.window[3], (tile_column + 1) * GRID_TILE_SIZE
+        )
+        descriptors.append({
+            "id": f"r{tile_row:05d}-c{tile_column:05d}",
+            "demColumns": area.ncols,
+            "rowStart": row_start,
+            "rowStop": row_stop,
+            "columnStart": column_start,
+            "columnStop": column_stop,
+        })
+    return descriptors
+
+
+def _tile_positions(
+    cell_indices: np.ndarray, descriptor: dict, dem_columns: int
+) -> np.ndarray:
+    rows = cell_indices // dem_columns
+    columns = cell_indices % dem_columns
+    return np.flatnonzero(
+        (rows >= descriptor["rowStart"])
+        & (rows < descriptor["rowStop"])
+        & (columns >= descriptor["columnStart"])
+        & (columns < descriptor["columnStop"])
+    )
+
+
+def _topology_tile_binary(
+    descriptor: dict,
+    positions: np.ndarray,
+    cell_indices: np.ndarray,
+    dem_columns: int,
+) -> bytes:
+    rows = descriptor["rowStop"] - descriptor["rowStart"]
+    columns = descriptor["columnStop"] - descriptor["columnStart"]
+    mask = bytearray((rows * columns + 7) // 8)
+    for index in cell_indices[positions]:
+        global_row, global_column = divmod(int(index), dem_columns)
+        local = (
+            (global_row - descriptor["rowStart"]) * columns
+            + global_column - descriptor["columnStart"]
+        )
+        mask[local >> 3] |= 1 << (local & 7)
+    header = struct.pack(
+        _GRID_TILE_HEADER,
+        b"BQGT", 1, _GRID_TILE_HEADER_BYTES, 0,
+        descriptor["rowStart"], descriptor["columnStart"],
+        rows, columns, len(positions),
+    )
+    return header + bytes(mask)
+
+
+def _field_tile_binary(
+    descriptor: dict,
+    positions: np.ndarray,
+    field: str,
+    values: np.ndarray,
+) -> bytes:
+    selected = np.asarray(values[positions], dtype="<f4")
+    header = struct.pack(
+        _GRID_TILE_HEADER,
+        b"BQGT", 1, _GRID_TILE_HEADER_BYTES, _GRID_FIELD_CODES[field],
+        descriptor["rowStart"], descriptor["columnStart"],
+        descriptor["rowStop"] - descriptor["rowStart"],
+        descriptor["columnStop"] - descriptor["columnStart"],
+        len(selected),
+    )
+    return header + selected.tobytes()
 
 
 def _grid_arrays(

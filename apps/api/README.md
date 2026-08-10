@@ -65,7 +65,8 @@ GET  /api/scenarios/{id}
 GET  /api/dem-products
 POST /api/dem-products/{productId}/simulation-areas/resolve
 GET  /api/dem-products/{productId}/simulation-areas/{id}
-GET  /api/dem-products/{productId}/simulation-areas/{id}/grid
+GET  /api/dem-products/{productId}/simulation-areas/{id}/grid/manifest
+GET  /api/dem-products/{productId}/simulation-areas/{id}/grid/tiles/{tileId}/{field}
 POST /api/scenarios/{id}/validate
 POST /api/scenarios/{id}/jobs
 GET  /api/jobs/{id}
@@ -118,11 +119,14 @@ holes/disconnected masks, and enforces the selected product's cell limit. It
 then caches a deterministic two-triangle-per-cell mesh by area hash. The 30 m
 product allows 25,000 cells; the 10 m product allows 125,000 cells; the
 default 5 m product allows 500,000 cells on the high-resource queue.
-Load only that area's grid from the returned `gridUrl`. The response is the
-immutable BQSG v1 binary format: a 100-byte little-endian header containing
-dimensions, window and four WGS84 grid corners, followed by seven typed planes
-(`cell_index`, elevation, building fields and three Manning fields). Canonical
-server-side values are stored in compressed `grid.npz`, not per-cell GeoJSON.
+Load the area's `gridManifestUrl` after resolving it. The manifest describes
+immutable 256×256-cell tiles. Fetch topology tiles (`topology`) for cell picking and
+rendering, then fetch only the field tiles needed by the visible layers or the
+browser preview (`elevation`, `buildingFraction`, and the three Manning
+scenarios). Each tile uses the BQGT v1 binary format: a 32-byte little-endian
+header followed by a topology bitmask or a compact float32 plane containing
+only active cells. Tile resources are independently cacheable and canonical
+server-side values remain in `grid.npz`, not per-cell GeoJSON.
 
 Scenario and Job snapshots retain both the product ID and immutable area hash. The worker loads the
 cached local mesh, assigns DEM/Manning values from the versioned full-domain

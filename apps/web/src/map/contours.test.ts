@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { buildContourFeatures } from './contours'
+import { buildContourFeatures, buildContourFeaturesForTile } from './contours'
+import type { GridTile } from './gridTiles'
 import type { SimulationGrid } from './simulationGrid'
 
 function gridWithSlope(): SimulationGrid {
@@ -53,5 +54,22 @@ describe('vector contour generation', () => {
     grid.elevationM = new Float32Array([0, 8, 16, 0, 16, 0, 8, 16])
 
     expect(buildContourFeatures(grid).features).toEqual([])
+  })
+  test('projects contours from a tile in full-area coordinates', () => {
+    const geometry = gridWithSlope()
+    const tile: GridTile = {
+      descriptor: {
+        id: 'r00000-c00000', rowStart: 0, rowStop: 3,
+        columnStart: 0, columnStop: 3, cellCount: 9, demColumns: 3,
+        topologyUrl: '/topology', fieldUrl: '/fields/{field}',
+      },
+      cellIndices: geometry.cellIndices,
+      fields: { elevation: geometry.elevationM },
+    }
+    const contours = buildContourFeaturesForTile(tile, geometry, {
+      intervalM: 5, majorIntervalM: 10,
+    })
+    expect(contours.features).toHaveLength(3)
+    expect(contours.features[1].geometry.coordinates[0][0]).toBeCloseTo(1.25)
   })
 })

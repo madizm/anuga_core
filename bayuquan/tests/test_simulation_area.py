@@ -270,24 +270,37 @@ def test_area_catalog_caches_resolved_grid_and_mesh_by_hash(tmp_path):
     second = catalog.resolve(
         polygon(100, 290, 160, 320), geometry_crs="EPSG:32651"
     )
-    grid = catalog.grid_binary(first.area_hash)
+    manifest = catalog.grid_manifest(first.area_hash)
 
     assert second.area_hash == first.area_hash
-    assert first.cell_count == 2
-    header = struct.unpack("<4sHH7I8d", grid[:100])
-    assert header[:10] == (
-        b"BQSG", 1, 100, 2, 1, 2, 0, 1, 0, 2,
+    assert manifest["version"] == 1
+    assert manifest["tileSize"] == 256
+    assert manifest["fields"] == [
+        "elevation", "buildingFraction", "manningLow",
+        "manningMiddle", "manningHigh",
+    ]
+    assert len(manifest["tiles"]) == 1
+    tile = manifest["tiles"][0]
+    assert tile["cellCount"] == 2
+    assert tile["rowStart"] == 0
+    assert tile["columnStart"] == 0
+
+    topology = catalog.grid_tile_binary(
+        first.area_hash, tile["id"], "topology"
     )
-    to_wgs84 = Transformer.from_crs(
-        "EPSG:32651", "OGC:CRS84", always_xy=True
+    header = struct.unpack("<4sHH6I", topology[:32])
+    assert header == (b"BQGT", 1, 32, 0, 0, 0, 1, 2, 2)
+    assert topology[32] & 0b11 == 0b11
+
+    elevation = catalog.grid_tile_binary(
+        first.area_hash, tile["id"], "elevation"
     )
-    expected_corners = tuple(
-        value
-        for point in ((100, 320), (160, 320), (100, 290), (160, 290))
-        for value in to_wgs84.transform(*point)
+    field_header = struct.unpack("<4sHH6I", elevation[:32])
+    assert field_header == (b"BQGT", 1, 32, 1, 0, 0, 1, 2, 2)
+    np.testing.assert_allclose(
+        np.frombuffer(elevation, dtype="<f4", offset=32), [1, 1]
     )
-    assert header[10:] == pytest.approx(expected_corners)
-    assert len(grid) == 100 + first.cell_count * 7 * 4
+
     with np.load(
         tmp_path / "areas" / first.area_hash / "grid.npz",
         allow_pickle=False,
@@ -306,7 +319,7 @@ def test_area_catalog_caches_resolved_grid_and_mesh_by_hash(tmp_path):
         "maximum": 0.08,
     })
     assert (tmp_path / "areas" / first.area_hash / "area.json").is_file()
-    assert not (tmp_path / "areas" / first.area_hash / "grid.geojson").exists()
+    assert (tmp_path / "areas" / first.area_hash / "grid-tiles").is_dir()
     with np.load(
         tmp_path / "areas" / first.area_hash / "mesh.npz",
         allow_pickle=False,

@@ -26,7 +26,9 @@ Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
 - continuous brush selection;
 - rectangular selection;
 - default 5 m DEM COG tiles with terrain legend and visibility control;
-- 5 m vector contours with 25 m major lines and MapLibre elevation labels;
+- 5 m vector contours with 25 m major lines and MapLibre elevation labels on every contour;
+- viewport-scoped topology and field tiles; tile-local instanced buffers are cached and reused during zoom;
+- contours are generated per loaded tile during idle time and hidden below the detail zoom threshold;
 - building-coverage overlay and scenario-aware Manning surface layer;
 - multiple independently colored inlets;
 - overlap prevention and four-neighbour connectivity status;

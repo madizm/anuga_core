@@ -29,6 +29,9 @@ import { DISABLED_RAINFALL, hasEffectiveRainfall, rainfallIntervals, rainfallVal
 import { PreviewCompatibilityDialog, PreviewPanel } from './preview/PreviewPanel'
 import { PreviewController } from './preview/PreviewController'
 import { buildDensePreviewGrid } from './preview/previewGrid'
+import type { GridField, GridViewport } from './map/gridTiles'
+import { GridTileStore } from './map/gridTiles'
+import type { GridRange } from './map/simulationGrid'
 import { detectPreviewCapabilities } from './preview/previewCapabilities'
 import { previewCompatibility } from './preview/previewScenario'
 import type { PreviewStatus } from './preview/types'
@@ -60,6 +63,7 @@ export default function App() {
   const [jobsOpen, setJobsOpen] = useState(false)
   const previewControllerRef = useRef<PreviewController | null>(null)
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
   const [previewQuantity, setPreviewQuantity] = useState<ResultQuantity>('depth')
   const [previewFlowEnabled, setPreviewFlowEnabled] = useState(true)
   const [previewCompatibilityNames, setPreviewCompatibilityNames] = useState<string[] | null>(null)
@@ -103,9 +107,41 @@ export default function App() {
   })
   const grid = useQuery({
     queryKey: ['simulation-area-grid', demProductId, area?.areaHash],
-    queryFn: () => api.simulationAreaGrid(demProductId, area!.areaHash),
+    queryFn: async () => {
+      const manifest = await api.simulationAreaGridManifest(
+        area!.gridManifestUrl,
+      )
+      const resource = new GridTileStore(manifest, api.simulationAreaGridTile)
+      return { resource }
+    },
     enabled: Boolean(area),
+    staleTime: Infinity,
+    gcTime: 30 * 60 * 1000,
   })
+  const [displayViewport, setDisplayViewport] = useState<GridViewport | null>(null)
+  const gridRequestRef = useRef(0)
+  useEffect(() => {
+    gridRequestRef.current += 1
+    setDisplayViewport(grid.data?.resource.emptyViewport() ?? null)
+  }, [grid.data])
+  const requestGridViewport = useCallback(async (
+    range: GridRange, fields: readonly GridField[],
+  ) => {
+    const resource = grid.data?.resource
+    if (!resource) return
+    const request = ++gridRequestRef.current
+    try {
+      const loaded = await resource.loadViewport(
+        range.rowStart, range.rowStop,
+        range.columnStart, range.columnStop, fields,
+      )
+      if (request === gridRequestRef.current) setDisplayViewport(loaded)
+    } catch (error) {
+      if (request === gridRequestRef.current) {
+        setMessage((error as Error).message || '无法加载局部网格 tile')
+      }
+    }
+  }, [grid.data])
 
   const areaMutation = useMutation({
     mutationFn: (geometry: Polygon) => api.resolveSimulationArea(
@@ -270,8 +306,8 @@ export default function App() {
   const localReady = Boolean(area) && rainfallValid && (inletsReady || rainfallReady)
   const currentPayloadFingerprint = JSON.stringify(currentPayload)
 
-  const launchPreview = (ignoreCompatibility = false) => {
-    if (!grid.data || !demProduct || !localReady) {
+  const launchPreview = async (ignoreCompatibility = false) => {
+    if (!grid.data || !displayViewport || displayViewport.cellCount === 0 || !demProduct || !localReady) {
       setMessage('请先完成计算区域和水源配置')
       return
     }
@@ -285,9 +321,16 @@ export default function App() {
       return
     }
     closePreview()
+    setPreviewLoading(true)
     try {
+      const manningField: GridField = currentPayload.frictionScenario === 'low'
+        ? 'manningLow'
+        : currentPayload.frictionScenario === 'middle' ? 'manningMiddle' : 'manningHigh'
+      const previewGrid = await grid.data.resource.loadAll([
+        'elevation', manningField,
+      ])
       const denseGrid = buildDensePreviewGrid(
-        grid.data, currentPayload, demProduct.cellSizeM,
+        previewGrid, currentPayload, demProduct.cellSizeM,
         previewCapabilities.maxTextureSize,
       )
       const controller = new PreviewController({
@@ -303,6 +346,8 @@ export default function App() {
     } catch (error) {
       closePreview()
       setMessage((error as Error).message || '快速预览初始化失败')
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -362,9 +407,9 @@ export default function App() {
           </button>
           <button
             className="preview-button"
-            disabled={!localReady || !grid.data || !previewCapabilities.supported}
-            onClick={() => launchPreview()}
-          ><span>◇</span> {previewStatus ? '重新预览' : '快速预览'}</button>
+            disabled={!localReady || !displayViewport || displayViewport.cellCount === 0 || previewLoading || !previewCapabilities.supported}
+            onClick={() => { void launchPreview() }}
+          ><span>◇</span> {previewLoading ? '装载预演数据' : previewStatus ? '重新预览' : '快速预览'}</button>
           <button className="run-button" disabled={!localReady} onClick={validateAndOpen}>
             <span>▶</span> 运行模拟
           </button>
@@ -384,7 +429,9 @@ export default function App() {
           ) : (
             <ModelMap
               key={demProductId}
-              grid={grid.data}
+              gridViewport={displayViewport ?? undefined}
+              gridResource={grid.data?.resource}
+              onGridViewportRequested={requestGridViewport}
               demTilejsonUrl={demProduct?.demTilejsonUrl}
               terrainTilejsonUrl={demProduct?.terrainTilejsonUrl}
               cellSizeM={demProduct?.cellSizeM}

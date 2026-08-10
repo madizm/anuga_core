@@ -23,64 +23,6 @@ export interface SimulationGrid {
   manningHigh: Float32Array
 }
 
-const HEADER_BYTES = 100
-const PLANE_COUNT = 7
-
-export function parseSimulationGrid(buffer: ArrayBuffer): SimulationGrid {
-  if (buffer.byteLength < HEADER_BYTES) throw new Error('局部网格数据不完整')
-  const view = new DataView(buffer)
-  const magic = String.fromCharCode(
-    view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3),
-  )
-  const version = view.getUint16(4, true)
-  const headerBytes = view.getUint16(6, true)
-  const cellCount = view.getUint32(8, true)
-  if (magic !== 'BQSG' || version !== 1 || headerBytes !== HEADER_BYTES || cellCount === 0) {
-    throw new Error('局部网格格式不受支持')
-  }
-  const expectedBytes = headerBytes + cellCount * PLANE_COUNT * 4
-  if (buffer.byteLength !== expectedBytes) throw new Error('局部网格数据不完整')
-  const values = Array.from({ length: 8 }, (_, index) => view.getFloat64(36 + index * 8, true))
-  if (!values.every(Number.isFinite)) throw new Error('局部网格坐标无效')
-  const planes: Array<Uint32Array | Float32Array> = []
-  for (let plane = 0; plane < PLANE_COUNT; plane += 1) {
-    const start = headerBytes + plane * cellCount * 4
-    const bytes = buffer.slice(start, start + cellCount * 4)
-    planes.push(plane === 0 ? new Uint32Array(bytes) : new Float32Array(bytes))
-  }
-  const grid: SimulationGrid = {
-    cellCount,
-    demRows: view.getUint32(12, true),
-    demColumns: view.getUint32(16, true),
-    rowStart: view.getUint32(20, true),
-    rowStop: view.getUint32(24, true),
-    columnStart: view.getUint32(28, true),
-    columnStop: view.getUint32(32, true),
-    corners: [
-      [values[0], values[1]], [values[2], values[3]],
-      [values[4], values[5]], [values[6], values[7]],
-    ],
-    cellIndices: planes[0] as Uint32Array,
-    elevationM: planes[1] as Float32Array,
-    buildingFraction: planes[2] as Float32Array,
-    buildingDensityClass: planes[3] as Float32Array,
-    manningLow: planes[4] as Float32Array,
-    manningMiddle: planes[5] as Float32Array,
-    manningHigh: planes[6] as Float32Array,
-  }
-  if (
-    grid.demRows === 0 || grid.demColumns === 0
-    || grid.rowStart >= grid.rowStop || grid.columnStart >= grid.columnStop
-    || grid.rowStop > grid.demRows || grid.columnStop > grid.demColumns
-  ) throw new Error('局部网格范围无效')
-  for (let index = 0; index < cellCount; index += 1) {
-    const cell = grid.cellIndices[index]
-    if (cell >= grid.demRows * grid.demColumns || (index > 0 && cell <= grid.cellIndices[index - 1])) {
-      throw new Error('局部网格索引无效')
-    }
-  }
-  return grid
-}
 
 export function gridUvToLngLat(grid: SimulationGrid, u: number, v: number): [number, number] {
   const [nw, ne, sw, se] = grid.corners
@@ -144,6 +86,35 @@ export function cellId(row: number, column: number): string {
 export function parseCellId(value: string): [number, number] | null {
   const match = /^r(\d{4,})-c(\d{4,})$/.exec(value)
   return match ? [Number(match[1]), Number(match[2])] : null
+}
+
+export interface GridRange {
+  rowStart: number
+  rowStop: number
+  columnStart: number
+  columnStop: number
+}
+
+export function gridViewportRange(map: Map, grid: SimulationGrid): GridRange {
+  const bounds = map.getBounds()
+  const points = [
+    bounds.getNorthWest(), bounds.getNorthEast(),
+    bounds.getSouthWest(), bounds.getSouthEast(),
+  ].map((point) => lngLatToGridUv(grid, point.lng, point.lat)).filter(
+    (value): value is [number, number] => value != null,
+  )
+  if (points.length === 0) return {
+    rowStart: grid.rowStart, rowStop: grid.rowStop,
+    columnStart: grid.columnStart, columnStop: grid.columnStop,
+  }
+  const rows = points.map((point) => grid.rowStart + point[1] * (grid.rowStop - grid.rowStart))
+  const columns = points.map((point) => grid.columnStart + point[0] * (grid.columnStop - grid.columnStart))
+  return {
+    rowStart: Math.max(grid.rowStart, Math.floor(Math.min(...rows)) - 1),
+    rowStop: Math.min(grid.rowStop, Math.ceil(Math.max(...rows)) + 1),
+    columnStart: Math.max(grid.columnStart, Math.floor(Math.min(...columns)) - 1),
+    columnStop: Math.min(grid.columnStop, Math.ceil(Math.max(...columns)) + 1),
+  }
 }
 
 export function cellAtLngLat(

@@ -1,5 +1,5 @@
 import type { FeatureCollection, LineString, Point, Polygon } from 'geojson'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import maplibregl, { type GeoJSONSource, type Map, type MapMouseEvent } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type {
@@ -21,18 +21,19 @@ import {
 } from './terrain'
 import { useTerrainStore } from './terrainStore'
 import { SimulationGridLayer } from './SimulationGridLayer'
-import { buildContourFeatures } from './contours'
+import { buildContourFeaturesForTile } from './contours'
+import type { GridField, GridTileStore, GridViewport } from './gridTiles'
 import { PreviewMapLayer } from '../preview/PreviewMapLayer'
 import type { PreviewSnapshot } from '../preview/types'
 import {
-  cellAtLngLat,
-  cellBounds,
-  cellsInScreenBox,
-  type SimulationGrid,
+  gridViewportRange,
+  type GridRange,
 } from './simulationGrid'
 
 interface ModelMapProps {
-  grid?: SimulationGrid
+  gridViewport?: GridViewport
+  gridResource?: GridTileStore
+  onGridViewportRequested?: (range: GridRange, fields: readonly GridField[]) => void
   demTilejsonUrl?: string
   terrainTilejsonUrl?: string
   cellSizeM?: number
@@ -79,6 +80,22 @@ function raiseHydraulicLayers(map: Map) {
   ])
 }
 
+const CONTOUR_MIN_ZOOM = 13
+const GRID_REQUEST_DEBOUNCE_MS = 80
+
+function scheduleIdle(callback: () => void): () => void {
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (task: () => void, options?: { timeout: number }) => number
+    cancelIdleCallback?: (id: number) => void
+  }
+  if (idleWindow.requestIdleCallback) {
+    const id = idleWindow.requestIdleCallback(callback, { timeout: 500 })
+    return () => idleWindow.cancelIdleCallback?.(id)
+  }
+  const timer = window.setTimeout(callback, 0)
+  return () => window.clearTimeout(timer)
+}
+
 const MANNING_RANGES: Record<FrictionScenario, [number, number]> = {
   low: [0.03, 0.1],
   middle: [0.04, 0.16],
@@ -86,7 +103,9 @@ const MANNING_RANGES: Record<FrictionScenario, [number, number]> = {
 }
 
 export function ModelMap({
-  grid,
+  gridViewport,
+  gridResource,
+  onGridViewportRequested,
   demTilejsonUrl,
   terrainTilejsonUrl,
   cellSizeM,
@@ -105,6 +124,7 @@ export function ModelMap({
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
   const gridLayerRef = useRef<SimulationGridLayer | null>(null)
+  const gridFitted = useRef(false)
   const previewLayerRef = useRef<PreviewMapLayer | null>(null)
   const brushVisited = useRef(new Set<string>())
   const boxStart = useRef<MapMouseEvent['point'] | null>(null)
@@ -114,6 +134,7 @@ export function ModelMap({
   const [box, setBox] = useState<React.CSSProperties | null>(null)
   const [demReady, setDemReady] = useState(false)
   const [gridReady, setGridReady] = useState(false)
+  const [mapReady, setMapReady] = useState(false)
   const [terrainReady, setTerrainReady] = useState(false)
   const [terrainError, setTerrainError] = useState<string | null>(null)
   const [terrainRetry, setTerrainRetry] = useState(0)
@@ -137,6 +158,38 @@ export function ModelMap({
   const effectiveTerrain = terrainEnabled && !editingInTwoDimensions
     && !terrainError
   const demSurfaceVisible = baseFailed || (demVisible && !effectiveTerrain)
+  const gridGeometry = useMemo(
+    () => gridResource?.emptyGrid() ?? null,
+    [gridResource],
+  )
+  useEffect(() => {
+    const map = mapRef.current
+    if (!mapReady || !map || !gridGeometry || !gridResource || !onGridViewportRequested) return
+    const request = () => {
+      const fields: GridField[] = []
+      if (effectiveTerrain || contoursVisible) fields.push('elevation')
+      if (buildingsVisible) fields.push('buildingFraction')
+      if (manningVisible) fields.push(
+        frictionScenario === 'low' ? 'manningLow'
+          : frictionScenario === 'middle' ? 'manningMiddle' : 'manningHigh',
+      )
+      void onGridViewportRequested(gridViewportRange(map, gridGeometry), fields)
+    }
+    let timer: number | null = null
+    const schedule = () => {
+      if (timer !== null) window.clearTimeout(timer)
+      timer = window.setTimeout(request, GRID_REQUEST_DEBOUNCE_MS)
+    }
+    map.on('moveend', schedule)
+    schedule()
+    return () => {
+      map.off('moveend', schedule)
+      if (timer !== null) window.clearTimeout(timer)
+    }
+  }, [
+    buildingsVisible, effectiveTerrain, frictionScenario, gridGeometry, mapReady,
+    contoursVisible, gridResource, manningVisible, onGridViewportRequested,
+  ])
 
   useEffect(() => {
     if (!container.current || mapRef.current) return
@@ -171,7 +224,9 @@ export function ModelMap({
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left')
     mapRef.current = map
+    setMapReady(true)
     return () => {
+      setMapReady(false)
       previewLayerRef.current?.destroy()
       previewLayerRef.current = null
       map.remove()
@@ -246,18 +301,17 @@ export function ModelMap({
         id: CONTOUR_LABEL,
         type: 'symbol',
         source: CONTOUR_SOURCE,
-        filter: ['==', ['get', 'isMajor'], true],
         layout: {
           'symbol-placement': 'line',
           'symbol-spacing': 260,
           'text-field': ['get', 'label'],
           'text-font': ['Open Sans Regular'],
-          'text-size': 11,
+          'text-size': ['case', ['get', 'isMajor'], 11, 10],
           'text-keep-upright': true,
           'text-padding': 3,
         },
         paint: {
-          'text-color': '#f7e2a5',
+          'text-color': ['case', ['get', 'isMajor'], '#f7e2a5', '#dfca91'],
           'text-halo-color': '#142329',
           'text-halo-width': 1.5,
           'text-halo-blur': 0.2,
@@ -357,25 +411,47 @@ export function ModelMap({
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
+    let cancelIdle = () => {}
+    const empty = { type: 'FeatureCollection' as const, features: [] }
     const update = () => {
-      const source = map.getSource(CONTOUR_SOURCE) as GeoJSONSource | undefined
-      const contours = grid ? buildContourFeatures(grid) : {
-        type: 'FeatureCollection' as const, features: [],
-      }
-      source?.setData(contours)
-      const visibility = contoursVisible ? 'visible' : 'none'
+      cancelIdle()
+      const visible = contoursVisible && map.getZoom() >= CONTOUR_MIN_ZOOM
+      const visibility = visible ? 'visible' : 'none'
       if (map.getLayer(CONTOUR_LINE)) map.setLayoutProperty(CONTOUR_LINE, 'visibility', visibility)
       if (map.getLayer(CONTOUR_LABEL)) map.setLayoutProperty(CONTOUR_LABEL, 'visibility', visibility)
-      if (container.current) {
-        container.current.dataset.contourCount = String(contours.features.length)
-        container.current.dataset.contourLabelCount = String(
-          contours.features.filter((feature) => feature.properties?.isMajor).length,
-        )
-        container.current.dataset.contoursVisible = String(contoursVisible)
+      if (!visible || !gridViewport) {
+        (map.getSource(CONTOUR_SOURCE) as GeoJSONSource | undefined)?.setData(empty)
+        if (container.current) {
+          container.current.dataset.contourCount = '0'
+          container.current.dataset.contourLabelCount = '0'
+          container.current.dataset.contoursVisible = 'false'
+        }
+        return
       }
+      cancelIdle = scheduleIdle(() => {
+        const features = gridViewport.tiles.flatMap((tile) => (
+          buildContourFeaturesForTile(tile, gridViewport.geometry).features
+        ))
+        const featureCollection = { type: 'FeatureCollection' as const, features }
+        const source = map.getSource(CONTOUR_SOURCE) as GeoJSONSource | undefined
+        source?.setData(featureCollection)
+        if (container.current) {
+          container.current.dataset.contourCount = String(features.length)
+          container.current.dataset.contourLabelCount = String(features.length)
+          container.current.dataset.contoursVisible = 'true'
+        }
+      })
     }
-    return syncWhenMapSourceReady(map, CONTOUR_SOURCE, update)
-  }, [contoursVisible, grid])
+    const readyCleanup = syncWhenMapSourceReady(map, CONTOUR_SOURCE, update)
+    map.on('moveend', update)
+    map.on('zoomend', update)
+    return () => {
+      readyCleanup()
+      map.off('moveend', update)
+      map.off('zoomend', update)
+      cancelIdle()
+    }
+  }, [contoursVisible, gridViewport])
 
   useEffect(() => {
     const map = mapRef.current
@@ -672,9 +748,10 @@ export function ModelMap({
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    if (!grid) {
-      gridLayerRef.current?.setGrid(null)
+    if (!gridViewport) {
+      gridLayerRef.current?.setViewport(null)
       setGridReady(false)
+      gridFitted.current = false
       return
     }
     const install = () => {
@@ -685,16 +762,20 @@ export function ModelMap({
         map.addLayer(layer)
         raiseHydraulicLayers(map)
       }
-      layer.setGrid(grid)
-      setGridReady(true)
-      const bounds = cellBounds(grid, [
-        `r${String(grid.rowStart).padStart(4, '0')}-c${String(grid.columnStart).padStart(4, '0')}`,
-        `r${String(grid.rowStop - 1).padStart(4, '0')}-c${String(grid.columnStop - 1).padStart(4, '0')}`,
-      ])
-      if (bounds) map.fitBounds(bounds, { padding: 54, duration: 900 })
+      layer.setViewport(gridViewport)
+      setGridReady(gridViewport.cellCount > 0)
+      if (!gridFitted.current) {
+        const longitudes = gridViewport.geometry.corners.map((corner) => corner[0])
+        const latitudes = gridViewport.geometry.corners.map((corner) => corner[1])
+        map.fitBounds([
+          [Math.min(...longitudes), Math.min(...latitudes)],
+          [Math.max(...longitudes), Math.max(...latitudes)],
+        ], { padding: 54, duration: 900 })
+        gridFitted.current = true
+      }
     }
     return syncWhenMapSourceReady(map, 'base-map', install)
-  }, [grid])
+  }, [gridViewport])
 
   useEffect(() => {
     const layer = gridLayerRef.current
@@ -722,17 +803,17 @@ export function ModelMap({
     const refresh = () => layer.refreshTerrain()
     if (effectiveTerrain) map.once('idle', refresh)
     return () => { map.off('idle', refresh) }
-  }, [effectiveTerrain, grid, terrainExaggeration])
+  }, [effectiveTerrain, gridViewport, terrainExaggeration])
 
   useEffect(() => {
     const locate = (event: Event) => {
-      if (!grid || !mapRef.current) return
-      const bounds = cellBounds(grid, (event as CustomEvent<string[]>).detail)
+      if (!gridViewport || !mapRef.current) return
+      const bounds = gridViewport.cellBounds((event as CustomEvent<string[]>).detail)
       if (bounds) mapRef.current.fitBounds(bounds, { padding: 110, maxZoom: 17 })
     }
     window.addEventListener('locate-inlet', locate)
     return () => window.removeEventListener('locate-inlet', locate)
-  }, [grid])
+  }, [gridViewport])
 
   useEffect(() => {
     const next = new globalThis.Map<string, string>()
@@ -740,13 +821,13 @@ export function ModelMap({
       for (const id of inlet.cellIds) next.set(id, inlet.displayColor)
     }
     gridLayerRef.current?.setSelections(next)
-  }, [inlets, grid])
+  }, [inlets, gridViewport])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !grid || areaDrawMode || featureDrawMode) return
+    if (!map || !gridViewport || areaDrawMode || featureDrawMode) return
     const cellAt = (event: MapMouseEvent) => gridVisible
-      ? cellAtLngLat(grid, event.lngLat.lng, event.lngLat.lat)
+      ? gridViewport.cellAtLngLat(event.lngLat.lng, event.lngLat.lat)
       : null
     const operation = (event: MouseEvent) => (event.altKey ? 'remove' : event.shiftKey ? 'add' : 'toggle')
     const onClick = (event: MapMouseEvent & { originalEvent: MouseEvent }) => {
@@ -792,7 +873,7 @@ export function ModelMap({
       if (selectionMode !== 'box' || !boxStart.current) return
       const start = boxStart.current
       selectCells(
-        cellsInScreenBox(map, grid, start, event.point),
+        gridViewport.cellsInScreenBox(map, start, event.point),
         event.originalEvent.altKey ? 'remove' : 'add',
       )
       boxStart.current = null
@@ -809,7 +890,7 @@ export function ModelMap({
       map.off('mousemove', onMouseMove)
       map.off('mouseup', onMouseUp)
     }
-  }, [activeId, areaDrawMode, featureDrawMode, grid, gridVisible, selectionMode, selectCells])
+  }, [activeId, areaDrawMode, featureDrawMode, gridViewport, gridVisible, selectionMode, selectCells])
 
   const retryTerrain = () => {
     const map = mapRef.current

@@ -823,7 +823,7 @@ GET /api/model/grid/{cellId}
   "gridColumns": 75,
   "cellSizeM": 30,
   "selectableCellCount": 4087,
-  "gridUrl": "/api/model/grid",
+  "gridManifestUrl": "/api/dem-products/{productId}/simulation-areas/{areaHash}/grid/manifest",
   "boundaryCondition": "transmissive"
 }
 ```

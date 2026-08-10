@@ -165,9 +165,9 @@ def create_app(
         return product_or_404(product_id).response()
 
     def simulation_area_response(product_id: str, area) -> dict:
-        grid_url = (
+        grid_manifest_url = (
             f"/api/dem-products/{product_id}/simulation-areas/"
-            f"{area.area_hash}/grid"
+            f"{area.area_hash}/grid/manifest"
         )
         return {
             "id": area.area_hash,
@@ -186,7 +186,7 @@ def create_app(
                 "columnStop": area.window[3],
             },
             "elevationM": area.elevation_m,
-            "gridUrl": grid_url,
+            "gridManifestUrl": grid_manifest_url,
             "boundaryCondition": "transmissive",
         }
 
@@ -218,22 +218,64 @@ def create_app(
         return simulation_area_response(product_id, area)
 
     @app.get(
-        "/api/dem-products/{product_id}/simulation-areas/{area_hash}/grid"
+        "/api/dem-products/{product_id}/simulation-areas/"
+        "{area_hash}/grid/manifest"
     )
-    def simulation_area_grid(
+    def simulation_area_grid_manifest(
         product_id: str, area_hash: str
-    ) -> Response:
+    ) -> JSONResponse:
         catalog = catalog_or_404(product_id)
         try:
-            grid = catalog.grid_binary(area_hash)
+            manifest = catalog.grid_manifest(area_hash)
         except KeyError as error:
             raise HTTPException(
                 status_code=404, detail="simulation area not found"
             ) from error
+        payload = {
+            **manifest,
+            "tiles": [
+                {
+                    **tile,
+                    "topologyUrl": (
+                        f"/api/dem-products/{product_id}/simulation-areas/"
+                        f"{area_hash}/grid/tiles/{tile['id']}/topology"
+                    ),
+                    "fieldUrl": (
+                        f"/api/dem-products/{product_id}/simulation-areas/"
+                        f"{area_hash}/grid/tiles/{tile['id']}/{{field}}"
+                    ),
+                }
+                for tile in manifest["tiles"]
+            ],
+        }
+
+        return JSONResponse(
+            payload,
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+            },
+        )
+
+    @app.get(
+        "/api/dem-products/{product_id}/simulation-areas/"
+        "{area_hash}/grid/tiles/{tile_id}/{field}"
+    )
+    def simulation_area_grid_tile(
+        product_id: str, area_hash: str, tile_id: str, field: str
+    ) -> Response:
+        catalog = catalog_or_404(product_id)
+        try:
+            tile = catalog.grid_tile_binary(area_hash, tile_id, field)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=404, detail="simulation grid tile not found"
+            ) from error
         return Response(
-            grid,
-            media_type="application/vnd.bayuquan.simulation-grid",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            tile,
+            media_type="application/vnd.bayuquan.simulation-grid-tile",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+            },
         )
 
     @app.post(

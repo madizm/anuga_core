@@ -287,7 +287,7 @@ export interface SimulationArea {
     columnStop: number
   }
   elevationM: { minimum: number; maximum: number; mean: number }
-  gridUrl: string
+  gridManifestUrl: string
   boundaryCondition: string
 }
 
