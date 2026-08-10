@@ -63,6 +63,7 @@ export function LayerPanel({ frictionScenario, areaReady, areaCellCount, cellSiz
         <h3>模型图层</h3>
         <LayerRow label="影像底图" detail="星图地球 · 影像" checked={layers.base} onChange={(visible) => layers.setLayer('base', visible)} swatch="base" />
         <LayerRow label="DEM 高程" detail={`${cellSizeM ?? '—'} m · terrain`} checked={layers.dem} onChange={(visible) => layers.setLayer('dem', visible)} swatch="dem" />
+        <LayerRow label="等高线与标注" detail="5 m · major 25 m" checked={layers.contours} disabled={!areaReady} onChange={(visible) => layers.setLayer('contours', visible)} swatch="contours" />
         <LayerRow label={`${cellSizeM ?? '—'} m 局部网格`} detail={areaReady ? `${areaCellCount.toLocaleString()} cells` : '选择区域后生成'} checked={layers.grid} disabled={!areaReady} onChange={(visible) => layers.setLayer('grid', visible)} swatch="grid" />
         <LayerRow label="建筑覆盖率" detail="0–100% · 局部区域" checked={layers.buildings} disabled={!areaReady} onChange={(visible) => layers.setLayer('buildings', visible)} swatch="building" />
         <LayerRow label="曼宁糙率" detail={`${frictionScenario} · coefficient`} checked={layers.manning} disabled={!areaReady} onChange={(visible) => layers.setLayer('manning', visible)} swatch="friction" />

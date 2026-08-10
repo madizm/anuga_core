@@ -21,6 +21,7 @@ import {
 } from './terrain'
 import { useTerrainStore } from './terrainStore'
 import { SimulationGridLayer } from './SimulationGridLayer'
+import { buildContourFeatures } from './contours'
 import { PreviewMapLayer } from '../preview/PreviewMapLayer'
 import type { PreviewSnapshot } from '../preview/types'
 import {
@@ -51,6 +52,9 @@ interface ModelMapProps {
 
 const DEM_SOURCE = 'model-dem'
 const DEM_LAYER = 'model-dem-raster'
+const CONTOUR_SOURCE = 'model-contours'
+const CONTOUR_LINE = 'model-contours-line'
+const CONTOUR_LABEL = 'model-contours-label'
 const GRID_LAYER = 'model-grid'
 const AREA_SOURCE = 'simulation-area-draft'
 const AREA_FILL = 'simulation-area-draft-fill'
@@ -124,6 +128,7 @@ export function ModelMap({
   const demVisible = useLayerStore((state) => state.dem)
   const gridVisible = useLayerStore((state) => state.grid)
   const manningVisible = useLayerStore((state) => state.manning)
+  const contoursVisible = useLayerStore((state) => state.contours)
   const terrainEnabled = useTerrainStore((state) => state.modelEnabled)
   const terrainExaggeration = useTerrainStore((state) => state.exaggeration)
   const hillshade = useTerrainStore((state) => state.hillshade)
@@ -144,6 +149,7 @@ export function ModelMap({
       attributionControl: false,
       style: {
         version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         sources: {
           'base-map': {
             type: 'raster',
@@ -220,6 +226,41 @@ export function ModelMap({
           'line-color': '#65f1ff',
           'line-width': 2,
           'line-dasharray': [2, 1],
+        },
+      })
+      map.addSource(CONTOUR_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: CONTOUR_LINE,
+        type: 'line',
+        source: CONTOUR_SOURCE,
+        paint: {
+          'line-color': ['case', ['get', 'isMajor'], '#f6d98c', '#d6bd79'],
+          'line-width': ['case', ['get', 'isMajor'], 1.8, 0.85],
+          'line-opacity': ['case', ['get', 'isMajor'], 0.95, 0.62],
+        },
+      })
+      map.addLayer({
+        id: CONTOUR_LABEL,
+        type: 'symbol',
+        source: CONTOUR_SOURCE,
+        filter: ['==', ['get', 'isMajor'], true],
+        layout: {
+          'symbol-placement': 'line',
+          'symbol-spacing': 260,
+          'text-field': ['get', 'label'],
+          'text-font': ['Open Sans Regular'],
+          'text-size': 11,
+          'text-keep-upright': true,
+          'text-padding': 3,
+        },
+        paint: {
+          'text-color': '#f7e2a5',
+          'text-halo-color': '#142329',
+          'text-halo-width': 1.5,
+          'text-halo-blur': 0.2,
         },
       })
       map.addSource(FEATURE_SOURCE, {
@@ -312,6 +353,29 @@ export function ModelMap({
     else map.once('load', install)
     return () => { map.off('load', install) }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const update = () => {
+      const source = map.getSource(CONTOUR_SOURCE) as GeoJSONSource | undefined
+      const contours = grid ? buildContourFeatures(grid) : {
+        type: 'FeatureCollection' as const, features: [],
+      }
+      source?.setData(contours)
+      const visibility = contoursVisible ? 'visible' : 'none'
+      if (map.getLayer(CONTOUR_LINE)) map.setLayoutProperty(CONTOUR_LINE, 'visibility', visibility)
+      if (map.getLayer(CONTOUR_LABEL)) map.setLayoutProperty(CONTOUR_LABEL, 'visibility', visibility)
+      if (container.current) {
+        container.current.dataset.contourCount = String(contours.features.length)
+        container.current.dataset.contourLabelCount = String(
+          contours.features.filter((feature) => feature.properties?.isMajor).length,
+        )
+        container.current.dataset.contoursVisible = String(contoursVisible)
+      }
+    }
+    return syncWhenMapSourceReady(map, CONTOUR_SOURCE, update)
+  }, [contoursVisible, grid])
 
   useEffect(() => {
     const map = mapRef.current
@@ -776,6 +840,9 @@ export function ModelMap({
         data-dem-ready={demReady}
         data-grid-ready={gridReady}
         data-hydraulic-source-count="0"
+        data-contour-count="0"
+        data-contour-label-count="0"
+        data-contours-visible="true"
         data-cross-section-count="0"
         data-active-cross-section=""
       />

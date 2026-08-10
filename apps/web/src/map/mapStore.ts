@@ -6,7 +6,8 @@ interface LayerState {
   dem: boolean
   grid: boolean
   manning: boolean
-  setLayer: (layer: 'base' | 'buildings' | 'dem' | 'grid' | 'manning', visible: boolean) => void
+  contours: boolean
+  setLayer: (layer: 'base' | 'buildings' | 'dem' | 'grid' | 'manning' | 'contours', visible: boolean) => void
 }
 
 export const useLayerStore = create<LayerState>((set) => ({
@@ -15,6 +16,7 @@ export const useLayerStore = create<LayerState>((set) => ({
   dem: true,
   grid: true,
   manning: false,
+  contours: true,
   setLayer: (layer, visible) => set(
     layer === 'dem' && visible
       ? { dem: true, manning: false }

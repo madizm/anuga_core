@@ -541,6 +541,12 @@ def write_product_manifest(
     with rasterio.open(original_dem) as original:
         crs = original.crs.to_string()
     object_uris = object_uris or {}
+    additional_default_count = sum(
+        bool(product.get("default", False))
+        for product in additional_products
+    )
+    if additional_default_count > 1:
+        raise ValueError("only one additional DEM product can be default")
     products = [
         _manifest_product(
             "bayuquan-dem-30m-v1", "鲅鱼圈原始 DEM · 30 m",
@@ -554,7 +560,8 @@ def write_product_manifest(
             "bayuquan-dem-10m-bilinear-v1", "鲅鱼圈插值 DEM · 10 m",
             derived_dem, derived_inputs, crs, vertical_datum,
             cell_size=10, source_resolution=30, method="bilinear",
-            max_cells=125_000, queue="high-resource", default=True,
+            max_cells=125_000, queue="high-resource",
+            default=additional_default_count == 0,
             dem_uri=object_uris.get(derived_dem),
             inputs_uri=object_uris.get(derived_inputs),
         ),
@@ -798,6 +805,7 @@ def main() -> None:
                     "cell_size": args.additional_resolution,
                     "max_cells": args.additional_max_cells,
                     "queue": args.additional_resource_queue,
+                    "default": True,
                 }
                 additional_paths = (additional_dem, additional_inputs)
             object_options = (

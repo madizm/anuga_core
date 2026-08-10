@@ -29,7 +29,8 @@ uv run --extra data python bayuquan/build_web_map_assets.py \
 ```
 
 The Compose asset build creates the original 30 m product, a strictly nested
-bilinear 10 m product, and a reprojected 5 m product from `byq-5m.tif`.
+bilinear 10 m product, and the default reprojected 5 m product from
+`byq-5m.tif`.
 Ancillary building and Manning cells are copied nearest-neighbour into each
 3 × 3 block for the 10 m product. Products are registered
 from `OUTPUT/model/dem-products.json`, stored in MinIO under content-addressed
@@ -40,6 +41,9 @@ the editor displays exact grid boundaries at editing zooms.
 MapLibre uses this source for optional 3D terrain. The editor defaults to a 2D
 orthographic view, while desktop result maps default to 3D. Both workspaces
 offer 1.0×, 1.5×, and 2.0× vertical exaggeration and optional hillshade.
+After a Simulation Area is resolved, the editor derives 5 m vector contours
+from its selected DEM cells. Every 25 m contour is emphasized and labelled;
+contours never interpolate across cells outside the Simulation Area.
 
 ## 2. Define a scenario
 

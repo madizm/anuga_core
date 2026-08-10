@@ -292,6 +292,7 @@ def test_derived_product_is_nested_and_preserves_30m_input_cells(tmp_path):
             "cell_size": 5,
             "max_cells": 500_000,
             "queue": "high-resource",
+            "default": True,
         },),
     )
 
@@ -311,7 +312,7 @@ def test_derived_product_is_nested_and_preserves_30m_input_cells(tmp_path):
         ))
         assert np.all(data[:, 3:, 3:] == -9999)
     document = json.loads(manifest.read_text())
-    assert document["products"][1]["isDefault"] is True
+    assert document["products"][1]["isDefault"] is False
     assert document["products"][1]["maxCells"] == 125_000
     assert document["products"][1]["sourceResolutionM"] == 30
     assert document["products"][2]["id"] == "bayuquan-dem-5m-v1"
@@ -320,8 +321,8 @@ def test_derived_product_is_nested_and_preserves_30m_input_cells(tmp_path):
     database.create_schema()
     register_manifest(database, manifest)
     catalog = DemProductCatalog(database, tmp_path / "areas")
-    assert catalog.default().id == "bayuquan-dem-10m-bilinear-v1"
-    assert catalog.default().max_cells == 125_000
+    assert catalog.default().id == "bayuquan-dem-5m-v1"
+    assert catalog.default().max_cells == 500_000
     assert catalog.get("bayuquan-dem-5m-v1").cell_size_m == 5
 
 

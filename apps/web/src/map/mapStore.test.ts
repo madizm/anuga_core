@@ -8,6 +8,7 @@ beforeEach(() => {
     dem: true,
     grid: true,
     manning: false,
+    contours: true,
   })
 })
 
@@ -28,6 +29,13 @@ describe('model layer visibility', () => {
     useLayerStore.getState().setLayer('buildings', true)
 
     expect(useLayerStore.getState().buildings).toBe(true)
+    expect(useLayerStore.getState().dem).toBe(true)
+  })
+
+  test('contours are an independent overlay', () => {
+    useLayerStore.getState().setLayer('contours', false)
+
+    expect(useLayerStore.getState().contours).toBe(false)
     expect(useLayerStore.getState().dem).toBe(true)
   })
 })

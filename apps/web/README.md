@@ -20,12 +20,13 @@ Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
 ## Supported editor interactions
 
 - rectangle or simple-polygon local simulation-area selection;
-- server-resolved, area-hashed local 30 m computational grid;
+- server-resolved, area-hashed local 5 m computational grid;
 - single-cell toggle;
 - Shift-add and Alt-remove;
 - continuous brush selection;
 - rectangular selection;
-- fixed 30 m DEM COG tiles with terrain legend and visibility control;
+- default 5 m DEM COG tiles with terrain legend and visibility control;
+- 5 m vector contours with 25 m major lines and MapLibre elevation labels;
 - building-coverage overlay and scenario-aware Manning surface layer;
 - multiple independently colored inlets;
 - overlap prevention and four-neighbour connectivity status;

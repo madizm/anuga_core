@@ -113,6 +113,7 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .layer-swatch { width: 12px; height: 12px; border: 1px solid #63808a; }
 .layer-swatch.base { background: #263940; }
 .layer-swatch.dem { border-color: #81966e; background: linear-gradient(135deg, #246b70 0 35%, #76a65f 35% 62%, #b99b65 62% 82%, #e5e1d9 82%); }
+.layer-swatch.contours { border-color: #f2d38a; background: repeating-linear-gradient(0deg, transparent 0 3px, #f2d38a 3px 4px); }
 .layer-swatch.grid { border-color: var(--cyan-dim); background: repeating-linear-gradient(45deg, transparent 0 3px, #0098aa 3px 4px); }
 .layer-swatch.building { background: var(--yellow); }
 .layer-swatch.friction { background: linear-gradient(135deg, #24758a, #d4b64f 55%, #e5533d); }
