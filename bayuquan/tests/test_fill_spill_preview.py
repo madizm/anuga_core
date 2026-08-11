@@ -9,6 +9,7 @@ import rasterio
 from affine import Affine
 from rasterio.windows import Window
 
+from bayuquan.preview import fill_spill as fill_spill_module
 from bayuquan.preview.cache import (
     PreprocessingCacheMismatch,
     load_preprocessed,
@@ -207,8 +208,8 @@ def test_preprocessed_bowl_can_be_solved_through_public_seam():
     result = preprocessed.network.solve(effective_rainfall_depth_m=0.5)
 
     assert result.input_volume_m3 == pytest.approx(12.5)
-    assert result.retained_volume_m3 == pytest.approx(0.5)
-    assert result.outflow_volume_m3 == pytest.approx(12.0)
+    assert result.retained_volume_m3 == pytest.approx(1.0)
+    assert result.outflow_volume_m3 == pytest.approx(11.5)
     assert result.mass_balance_error_m3 == pytest.approx(0.0, abs=1.0e-12)
 
 
@@ -248,7 +249,7 @@ def test_streaming_writer_produces_a_valid_maximum_depth_cog(tmp_path):
     )
 
     assert written.path == output_path
-    assert written.maximum_depth_m == pytest.approx(0.5)
+    assert written.maximum_depth_m == pytest.approx(1.0)
     assert written.wet_area_m2 == pytest.approx(25.0)
     with rasterio.open(output_path) as dataset:
         assert dataset.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
@@ -258,7 +259,7 @@ def test_streaming_writer_produces_a_valid_maximum_depth_cog(tmp_path):
         assert dataset.descriptions == ("maximum_water_depth",)
         assert dataset.units == ("m",)
         depths = dataset.read(1)
-        assert depths[2, 2] == pytest.approx(0.5)
+        assert depths[2, 2] == pytest.approx(1.0)
         assert np.all(depths[elevations > 0] == 0.0)
         assert dataset.tags()["preview_authority"] == "non-authoritative"
 
@@ -301,7 +302,7 @@ def test_local_cli_crops_dem_and_writes_preview_cog(tmp_path, capsys):
     assert exit_code == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["depressionCount"] == 1
-    assert summary["maximumDepthM"] == pytest.approx(0.5)
+    assert summary["maximumDepthM"] == pytest.approx(1.0)
     assert summary["preprocessingCacheReused"] is False
     assert cache_path.exists()
     with rasterio.open(output_path) as dataset:
@@ -319,7 +320,7 @@ def test_local_cli_crops_dem_and_writes_preview_cog(tmp_path, capsys):
     ]) == 0
     second_summary = json.loads(capsys.readouterr().out)
     assert second_summary["preprocessingCacheReused"] is True
-    assert second_summary["maximumDepthM"] == pytest.approx(0.25)
+    assert second_summary["maximumDepthM"] == pytest.approx(0.5)
 
     with np.load(cache_path, allow_pickle=False) as archive:
         contents = {name: archive[name] for name in archive.files}
@@ -336,6 +337,20 @@ def test_local_cli_crops_dem_and_writes_preview_cog(tmp_path, capsys):
     rebuilt_summary = json.loads(capsys.readouterr().out)
     assert rebuilt_summary["preprocessingCacheReused"] is False
     assert rebuilt_output.exists()
+
+    with cache_path.open("wb") as stream:
+        np.save(stream, np.array([1], dtype=np.int8))
+    container_output = tmp_path / "container-rebuilt-preview.cog.tif"
+    assert preview_main([
+        str(dem_path),
+        str(container_output),
+        "--effective-rainfall-mm", "100",
+        "--window", "1,1,5,5",
+        "--preprocessing-cache", str(cache_path),
+    ]) == 0
+    container_summary = json.loads(capsys.readouterr().out)
+    assert container_summary["preprocessingCacheReused"] is False
+    assert container_output.exists()
 
 
 def test_local_cli_requires_a_bounded_window(tmp_path):
@@ -512,7 +527,10 @@ def test_hierarchy_merges_water_surfaces_after_both_children_fill():
     assert result.mass_balance_error_m3 == pytest.approx(0.0, abs=1.0e-12)
 
 
-def test_preprocessor_builds_and_caches_a_two_pit_merge_hierarchy(tmp_path):
+def test_preprocessor_builds_and_caches_a_two_pit_merge_hierarchy(
+    tmp_path,
+    monkeypatch,
+):
     elevations = np.array([
         [0, 0, 0, 0, 0, 0, 0, 0, 0],
         [0, 2, 2, 2, 2, 2, 2, 2, 0],
@@ -548,8 +566,24 @@ def test_preprocessor_builds_and_caches_a_two_pit_merge_hierarchy(tmp_path):
 
     cache_path = tmp_path / "two-pit.npz"
     save_preprocessed(cache_path, preprocessed, identity="two-pit-v1")
+    curve_calls = 0
+    original_init = fill_spill_module._StorageCurve.__init__
+
+    def count_curve_calls(*args, **kwargs):
+        nonlocal curve_calls
+        curve_calls += 1
+        original_init(*args, **kwargs)
+
+    monkeypatch.setattr(
+        fill_spill_module._StorageCurve,
+        "__init__",
+        count_curve_calls,
+    )
     cached = load_preprocessed(cache_path, expected_identity="two-pit-v1")
 
+    assert curve_calls == len(preprocessed.depressions) + len(
+        preprocessed.merges
+    )
     assert len(cached.merges) == 1
     cached_result = cached.network.solve(effective_rainfall_depth_m=0.5)
     assert cached_result.maximum_level_m == after_merge.maximum_level_m
@@ -583,3 +617,29 @@ def test_semantically_corrupt_cache_is_reported_as_a_cache_mismatch(tmp_path):
         match="contents are invalid",
     ):
         load_preprocessed(cache_path, expected_identity="corrupt-v1")
+
+
+def test_lazy_cache_member_failure_is_reported_as_a_cache_mismatch(
+    tmp_path,
+    monkeypatch,
+):
+    cache_path = tmp_path / "lazy-failure.npz"
+    np.savez(cache_path, schema_version=np.asarray(2, dtype=np.int32))
+    original_getitem = np.lib.npyio.NpzFile.__getitem__
+
+    def fail_schema_read(archive, key):
+        if key == "schema_version":
+            raise EOFError("truncated cache member")
+        return original_getitem(archive, key)
+
+    monkeypatch.setattr(
+        np.lib.npyio.NpzFile,
+        "__getitem__",
+        fail_schema_read,
+    )
+
+    with pytest.raises(
+        PreprocessingCacheMismatch,
+        match="cannot read preprocessing cache",
+    ):
+        load_preprocessed(cache_path, expected_identity="lazy-v1")

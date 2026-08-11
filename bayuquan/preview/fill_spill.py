@@ -47,6 +47,41 @@ class _RoutingNode:
     downstream_id: int | None
 
 
+def _validated_depressions(
+    depressions: list[Depression] | tuple[Depression, ...],
+) -> dict[int, Depression]:
+    depressions_by_id = {}
+    for depression in depressions:
+        if isinstance(depression.id, bool) or not isinstance(
+            depression.id,
+            int,
+        ):
+            raise TypeError("depression IDs must be integers")
+        if depression.id in depressions_by_id:
+            raise ValueError("depression IDs must be unique")
+        depressions_by_id[depression.id] = depression
+
+    for depression in depressions:
+        if depression.id < 0:
+            raise ValueError("depression IDs must be non-negative")
+        if not math.isfinite(depression.spill_elevation_m):
+            raise ValueError("spill elevations must be finite")
+        if (
+            not math.isfinite(depression.catchment_area_m2)
+            or depression.catchment_area_m2 <= 0.0
+        ):
+            raise ValueError(
+                "catchment areas must be finite and greater than zero"
+            )
+        downstream = depression.downstream_id
+        if downstream is not None and downstream not in depressions_by_id:
+            raise ValueError(
+                f"depression {depression.id} has unknown downstream "
+                f"depression {downstream}"
+            )
+    return depressions_by_id
+
+
 class _StorageCurve:
     """Exact piecewise-linear elevation-volume relation for one depression."""
 
@@ -182,13 +217,10 @@ class DepressionNetwork:
             raise ValueError("a depression network must not be empty")
         self._open_catchment_area_m2 = open_catchment_area_m2
 
-        depressions_by_id = {item.id: item for item in depressions}
-        if len(depressions_by_id) != len(depressions):
-            raise ValueError("depression IDs must be unique")
+        _validated_depressions(depressions)
         self._nodes = {}
         self._curves = {}
         for item in depressions:
-            self._validate_depression(item, depressions_by_id)
             self._nodes[item.id] = _RoutingNode(
                 catchment_area_m2=item.catchment_area_m2,
                 downstream_id=item.downstream_id,
@@ -199,31 +231,6 @@ class DepressionNetwork:
                 cell_area_m2,
             )
         self._order = self._topological_order()
-
-    def _validate_depression(
-        self,
-        depression: Depression,
-        depressions_by_id: dict[int, Depression],
-    ) -> None:
-        if isinstance(depression.id, bool) or not isinstance(depression.id, int):
-            raise TypeError("depression IDs must be integers")
-        if depression.id < 0:
-            raise ValueError("depression IDs must be non-negative")
-        if not math.isfinite(depression.spill_elevation_m):
-            raise ValueError("spill elevations must be finite")
-        if (
-            not math.isfinite(depression.catchment_area_m2)
-            or depression.catchment_area_m2 <= 0.0
-        ):
-            raise ValueError(
-                "catchment areas must be finite and greater than zero"
-            )
-        downstream = depression.downstream_id
-        if downstream is not None and downstream not in depressions_by_id:
-            raise ValueError(
-                f"depression {depression.id} has unknown downstream "
-                f"depression {downstream}"
-            )
 
     def _topological_order(self) -> tuple[int, ...]:
         indegree = {item: 0 for item in self._nodes}
@@ -317,9 +324,9 @@ class DepressionHierarchy:
             raise ValueError("open catchment area must be finite and non-negative")
         self._cell_area_m2 = cell_area_m2
         self._open_catchment_area_m2 = open_catchment_area_m2
-        self._leaves = {item.id: item for item in leaves}
+        self._leaves = _validated_depressions(leaves)
         self._merges = {item.id: item for item in merges}
-        if len(self._leaves) != len(leaves) or len(self._merges) != len(merges):
+        if len(self._merges) != len(merges):
             raise ValueError("hierarchy node IDs must be unique")
         if set(self._leaves) & set(self._merges):
             raise ValueError("leaf and merge IDs must be disjoint")

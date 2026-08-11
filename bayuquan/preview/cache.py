@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -156,12 +157,9 @@ def load_preprocessed(
     """Load and validate a preprocessing cache without enabling pickle."""
     try:
         archive_context = np.load(path, allow_pickle=False)
-    except (OSError, ValueError) as error:
-        raise PreprocessingCacheMismatch(
-            "cannot read preprocessing cache"
-        ) from error
-    with archive_context as archive:
-        try:
+        if not isinstance(archive_context, np.lib.npyio.NpzFile):
+            raise TypeError("preprocessing cache must be an NPZ archive")
+        with archive_context as archive:
             schema = int(archive["schema_version"].item())
             identity = str(archive["identity"].item())
             basin_ids = np.asarray(archive["basin_ids"], dtype=np.int32)
@@ -221,16 +219,19 @@ def load_preprocessed(
                     dtype=np.int32,
                 )
             )
-        except (
-            IndexError,
-            KeyError,
-            OverflowError,
-            TypeError,
-            ValueError,
-        ) as error:
-            raise PreprocessingCacheMismatch(
-                "preprocessing cache is incomplete"
-            ) from error
+    except (
+        EOFError,
+        IndexError,
+        KeyError,
+        OSError,
+        OverflowError,
+        TypeError,
+        ValueError,
+        zipfile.BadZipFile,
+    ) as error:
+        raise PreprocessingCacheMismatch(
+            "cannot read preprocessing cache"
+        ) from error
 
     if schema != SCHEMA_VERSION or identity != expected_identity:
         raise PreprocessingCacheMismatch(
@@ -324,11 +325,6 @@ def load_preprocessed(
             float(np.count_nonzero(valid & (basin_ids < 0))) * cell_area
         )
         if depressions:
-            DepressionNetwork(
-                depressions,
-                cell_area_m2=cell_area,
-                open_catchment_area_m2=open_area,
-            )
             network = DepressionHierarchy(
                 leaves=depressions,
                 merges=merges,
