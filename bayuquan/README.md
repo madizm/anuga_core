@@ -5,6 +5,9 @@ immutable, area-hashed local mesh generated from its selected DEM product.
 See [`WEB_GIS_IMPLEMENTATION_PLAN.md`](WEB_GIS_IMPLEMENTATION_PLAN.md) for the
 full product plan.
 
+For the separate non-authoritative, small-window CPU Fill–Spill preview, see
+[`preview/README.md`](preview/README.md).
+
 ## 1. Build DEM products
 
 Docker Compose runs this step automatically through `model-assets`. To rebuild

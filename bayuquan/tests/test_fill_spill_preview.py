@@ -401,7 +401,10 @@ def test_real_5m_dem_window_runs_full_preview_e2e(tmp_path):
         for area in summary.written_cog.threshold_areas_m2.values()
     )
 
-    with rasterio.open(dem_path) as source, rasterio.open(output_path) as output:
+    with (
+        rasterio.open(dem_path) as source,
+        rasterio.open(output_path) as output,
+    ):
         assert output.shape == (64, 64)
         assert output.transform == source.window_transform(window)
         assert output.crs == source.crs

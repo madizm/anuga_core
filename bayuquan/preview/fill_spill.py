@@ -183,7 +183,9 @@ class FillSpillResult:
         ids = np.asarray(basin_ids)
         elevations = np.asarray(elevations_m)
         if ids.shape != elevations.shape:
-            raise ValueError("basin IDs and elevations must have the same shape")
+            raise ValueError(
+                "basin IDs and elevations must have the same shape"
+            )
 
         known_ids = np.asarray(sorted(self.maximum_level_m), dtype=np.int64)
         known_levels = np.asarray(
@@ -230,7 +232,9 @@ class DepressionNetwork:
             not math.isfinite(open_catchment_area_m2)
             or open_catchment_area_m2 < 0.0
         ):
-            raise ValueError("open catchment area must be finite and non-negative")
+            raise ValueError(
+                "open catchment area must be finite and non-negative"
+            )
         if not depressions and open_catchment_area_m2 == 0.0:
             raise ValueError("a depression network must not be empty")
         self._open_catchment_area_m2 = open_catchment_area_m2
@@ -302,7 +306,7 @@ class _HierarchyState:
 
 
 class DepressionHierarchy:
-    """Fill nested depressions without sharing water before merge activation."""
+    """Fill nested depressions without pre-activation water sharing."""
 
     def __init__(
         self,
@@ -319,7 +323,9 @@ class DepressionHierarchy:
             not math.isfinite(open_catchment_area_m2)
             or open_catchment_area_m2 < 0.0
         ):
-            raise ValueError("open catchment area must be finite and non-negative")
+            raise ValueError(
+                "open catchment area must be finite and non-negative"
+            )
         self._cell_area_m2 = cell_area_m2
         self._open_catchment_area_m2 = open_catchment_area_m2
         self._leaves, _ = _validated_depressions(leaves)
@@ -354,21 +360,29 @@ class DepressionHierarchy:
         parents = {}
         for merge in self._merges.values():
             if len(merge.child_ids) < 2:
-                raise ValueError("a depression merge needs at least two children")
+                raise ValueError(
+                    "a depression merge needs at least two children"
+                )
             if any(item not in all_ids for item in merge.child_ids):
-                raise ValueError("depression merge references an unknown child")
+                raise ValueError(
+                    "depression merge references an unknown child"
+                )
             child_capacity = 0.0
             child_spills = []
             for child_id in merge.child_ids:
                 if child_id in parents:
-                    raise ValueError("a hierarchy node cannot have two parents")
+                    raise ValueError(
+                        "a hierarchy node cannot have two parents"
+                    )
                 parents[child_id] = merge.id
                 child_capacity += self._curves[child_id].capacity_m3
                 child_spills.append(
                     self._spill_elevation(child_id)
                 )
             if not np.allclose(child_spills, child_spills[0]):
-                raise ValueError("merge children must share one saddle elevation")
+                raise ValueError(
+                    "merge children must share one saddle elevation"
+                )
             if self._curves[merge.id].capacity_m3 + 1.0e-12 < child_capacity:
                 raise ValueError("merge storage capacity cannot shrink")
         expected_roots = all_ids - set(parents)

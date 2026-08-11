@@ -31,7 +31,7 @@ def cache_identity(
     window: tuple[int, int, int, int],
     transform: tuple[float, ...],
 ) -> str:
-    """Return a deterministic local identity for immutable preprocessing input."""
+    """Return a deterministic identity for immutable preprocessing input."""
     path = Path(dem_path).resolve()
     stat = path.stat()
     return json.dumps({

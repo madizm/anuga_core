@@ -102,7 +102,6 @@ def _priority_flood(
     return filled, parent
 
 
-
 def _assign_catchments(
     storage_labels: np.ndarray,
     receivers: np.ndarray,
@@ -125,8 +124,6 @@ def _assign_catchments(
             flat_basins[index] = basin_id
             resolved[index] = True
     return basin_ids
-
-
 
 
 def _watershed_seeds_and_receivers(
@@ -372,6 +369,7 @@ def _hierarchy_from_watersheds(
     )
     return depressions, merges, tuple(root_ids), hierarchy
 
+
 def preprocess_dem(
     elevations_m: np.ndarray,
     *,
@@ -395,9 +393,15 @@ def preprocess_dem(
     """
     elevations = np.asarray(elevations_m, dtype=np.float64)
     if elevations.ndim != 2 or 0 in elevations.shape:
-        raise ValueError("elevations must be a non-empty two-dimensional array")
+        raise ValueError(
+            "elevations must be a non-empty two-dimensional array"
+        )
     finite = np.isfinite(elevations)
-    valid = finite if valid_mask is None else np.asarray(valid_mask, dtype=bool)
+    valid = (
+        finite
+        if valid_mask is None
+        else np.asarray(valid_mask, dtype=bool)
+    )
     if valid.shape != elevations.shape:
         raise ValueError("valid mask must match DEM shape")
     valid = valid & finite

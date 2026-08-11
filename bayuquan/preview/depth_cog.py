@@ -79,7 +79,9 @@ def write_maximum_depth_cog(
     if ids.ndim != 2:
         raise ValueError("basin IDs must be a two-dimensional array")
     if any(not np.isfinite(item) or item <= 0.0 for item in thresholds_m):
-        raise ValueError("depth thresholds must be finite and greater than zero")
+        raise ValueError(
+            "depth thresholds must be finite and greater than zero"
+        )
     thresholds = tuple(sorted({float(item) for item in thresholds_m}))
     compression = compression.upper()
     if compression not in {"DEFLATE", "ZSTD"}:
