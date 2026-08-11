@@ -49,7 +49,7 @@ class _RoutingNode:
 
 def _validated_depressions(
     depressions: list[Depression] | tuple[Depression, ...],
-) -> dict[int, Depression]:
+) -> tuple[dict[int, Depression], tuple[int, ...]]:
     depressions_by_id = {}
     for depression in depressions:
         if isinstance(depression.id, bool) or not isinstance(
@@ -79,7 +79,25 @@ def _validated_depressions(
                 f"depression {depression.id} has unknown downstream "
                 f"depression {downstream}"
             )
-    return depressions_by_id
+
+    indegree = {item: 0 for item in depressions_by_id}
+    for depression in depressions:
+        if depression.downstream_id is not None:
+            indegree[depression.downstream_id] += 1
+    ready = [item for item, degree in indegree.items() if degree == 0]
+    heapq.heapify(ready)
+    order = []
+    while ready:
+        current = heapq.heappop(ready)
+        order.append(current)
+        downstream = depressions_by_id[current].downstream_id
+        if downstream is not None:
+            indegree[downstream] -= 1
+            if indegree[downstream] == 0:
+                heapq.heappush(ready, downstream)
+    if len(order) != len(depressions_by_id):
+        raise ValueError("depression spill network contains a cycle")
+    return depressions_by_id, tuple(order)
 
 
 class _StorageCurve:
@@ -217,7 +235,7 @@ class DepressionNetwork:
             raise ValueError("a depression network must not be empty")
         self._open_catchment_area_m2 = open_catchment_area_m2
 
-        _validated_depressions(depressions)
+        _, self._order = _validated_depressions(depressions)
         self._nodes = {}
         self._curves = {}
         for item in depressions:
@@ -230,26 +248,6 @@ class DepressionNetwork:
                 item.spill_elevation_m,
                 cell_area_m2,
             )
-        self._order = self._topological_order()
-
-    def _topological_order(self) -> tuple[int, ...]:
-        indegree = {item: 0 for item in self._nodes}
-        for node in self._nodes.values():
-            if node.downstream_id is not None:
-                indegree[node.downstream_id] += 1
-        ready = sorted(item for item, degree in indegree.items() if degree == 0)
-        order = []
-        while ready:
-            current = heapq.heappop(ready)
-            order.append(current)
-            downstream = self._nodes[current].downstream_id
-            if downstream is not None:
-                indegree[downstream] -= 1
-                if indegree[downstream] == 0:
-                    heapq.heappush(ready, downstream)
-        if len(order) != len(self._nodes):
-            raise ValueError("depression spill network contains a cycle")
-        return tuple(order)
 
     def solve(self, *, effective_rainfall_depth_m: float) -> FillSpillResult:
         """Fill and spill all depressions for one uniform rainfall depth."""
@@ -324,7 +322,7 @@ class DepressionHierarchy:
             raise ValueError("open catchment area must be finite and non-negative")
         self._cell_area_m2 = cell_area_m2
         self._open_catchment_area_m2 = open_catchment_area_m2
-        self._leaves = _validated_depressions(leaves)
+        self._leaves, _ = _validated_depressions(leaves)
         self._merges = {item.id: item for item in merges}
         if len(self._merges) != len(merges):
             raise ValueError("hierarchy node IDs must be unique")

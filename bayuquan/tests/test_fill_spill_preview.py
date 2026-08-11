@@ -592,6 +592,19 @@ def test_preprocessor_builds_and_caches_a_two_pit_merge_hierarchy(
         abs=1.0e-12,
     )
 
+    with np.load(cache_path, allow_pickle=False) as archive:
+        contents = {name: archive[name] for name in archive.files}
+    contents["downstream_ids"] = np.array([1, 0], dtype=np.int32)
+    np.savez_compressed(cache_path, **contents)
+    curve_calls = 0
+
+    with pytest.raises(
+        PreprocessingCacheMismatch,
+        match="contents are invalid",
+    ):
+        load_preprocessed(cache_path, expected_identity="two-pit-v1")
+    assert curve_calls == 0
+
 
 def test_semantically_corrupt_cache_is_reported_as_a_cache_mismatch(tmp_path):
     elevations = np.array([
