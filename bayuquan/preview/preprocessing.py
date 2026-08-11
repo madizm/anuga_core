@@ -9,6 +9,7 @@ preprocessing will require a tiled/external-memory implementation before the
 from __future__ import annotations
 
 import heapq
+import math
 from collections import deque
 from dataclasses import dataclass
 
@@ -195,8 +196,12 @@ def _watershed_seeds_and_receivers(
                         continue
                     neighbour = neighbour_row * columns + neighbour_column
                     if flat_elevations[neighbour] < flat_elevations[index]:
+                        descent = (
+                            float(flat_elevations[index])
+                            - float(flat_elevations[neighbour])
+                        ) / math.hypot(row_offset, column_offset)
                         lower_edges.append((
-                            float(flat_elevations[neighbour]),
+                            -descent,
                             neighbour,
                             index,
                         ))

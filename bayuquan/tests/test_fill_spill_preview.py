@@ -1,13 +1,19 @@
 """Behaviour tests for the experimental fill-spill preview seam."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 import rasterio
 from affine import Affine
+from rasterio.windows import Window
 
-from bayuquan.preview.cache import load_preprocessed, save_preprocessed
+from bayuquan.preview.cache import (
+    PreprocessingCacheMismatch,
+    load_preprocessed,
+    save_preprocessed,
+)
 from bayuquan.preview.depth_cog import write_maximum_depth_cog
 from bayuquan.preview.fill_spill import (
     Depression,
@@ -15,8 +21,14 @@ from bayuquan.preview.fill_spill import (
     DepressionMerge,
     DepressionNetwork,
 )
-from bayuquan.preview.local_preview import main as preview_main
-from bayuquan.preview.preprocessing import preprocess_dem
+from bayuquan.preview.local_preview import (
+    main as preview_main,
+    run_local_preview,
+)
+from bayuquan.preview.preprocessing import (
+    _watershed_seeds_and_receivers,
+    preprocess_dem,
+)
 
 
 def test_finite_rainfall_partially_fills_a_depression():
@@ -142,6 +154,44 @@ def test_priority_flood_preprocesses_a_hand_worked_bowl():
         np.array([depression.id, depression.id]),
     )
     assert np.all(preprocessed.basin_ids[0] == -1)
+
+
+def test_d8_receiver_uses_steepest_distance_normalised_descent():
+    elevations = np.array([
+        [8.0, 20.0, 20.0],
+        [8.5, 10.0, 20.0],
+        [20.0, 20.0, 20.0],
+    ])
+
+    _, receivers, _ = _watershed_seeds_and_receivers(
+        elevations,
+        np.ones(elevations.shape, dtype=bool),
+        np.array([
+            [True, True, True],
+            [True, False, True],
+            [True, True, True],
+        ]),
+    )
+
+    assert receivers[4] == 3
+
+
+def test_d8_receiver_breaks_equal_slope_ties_by_cell_index():
+    elevations = np.array([
+        [20.0, 8.0, 20.0],
+        [8.0, 10.0, 20.0],
+        [20.0, 20.0, 20.0],
+    ])
+    open_boundary = np.ones(elevations.shape, dtype=bool)
+    open_boundary[1, 1] = False
+
+    _, receivers, _ = _watershed_seeds_and_receivers(
+        elevations,
+        np.ones(elevations.shape, dtype=bool),
+        open_boundary,
+    )
+
+    assert receivers[4] == 1
 
 
 def test_preprocessed_bowl_can_be_solved_through_public_seam():
@@ -270,6 +320,111 @@ def test_local_cli_crops_dem_and_writes_preview_cog(tmp_path, capsys):
     second_summary = json.loads(capsys.readouterr().out)
     assert second_summary["preprocessingCacheReused"] is True
     assert second_summary["maximumDepthM"] == pytest.approx(0.25)
+
+    with np.load(cache_path, allow_pickle=False) as archive:
+        contents = {name: archive[name] for name in archive.files}
+    contents["root_ids"] = np.array([999], dtype=np.int32)
+    np.savez_compressed(cache_path, **contents)
+    rebuilt_output = tmp_path / "rebuilt-preview.cog.tif"
+    assert preview_main([
+        str(dem_path),
+        str(rebuilt_output),
+        "--effective-rainfall-mm", "125",
+        "--window", "1,1,5,5",
+        "--preprocessing-cache", str(cache_path),
+    ]) == 0
+    rebuilt_summary = json.loads(capsys.readouterr().out)
+    assert rebuilt_summary["preprocessingCacheReused"] is False
+    assert rebuilt_output.exists()
+
+
+def test_local_cli_requires_a_bounded_window(tmp_path):
+    output_path = tmp_path / "must-not-exist.tif"
+
+    with pytest.raises(SystemExit) as error:
+        preview_main([
+            str(tmp_path / "dem.tif"),
+            str(output_path),
+            "--effective-rainfall-mm", "80",
+        ])
+
+    assert error.value.code == 2
+    assert not output_path.exists()
+
+
+def test_real_5m_dem_window_runs_full_preview_e2e(tmp_path):
+    dem_path = (
+        Path(__file__).resolve().parents[2]
+        / "OUTPUT/model/web/elevation_5m_cog.tif"
+    )
+    if not dem_path.exists():
+        pytest.skip(f"real 5 m DEM is unavailable: {dem_path}")
+
+    window = Window(2413, 1779, 64, 64)
+    output_path = tmp_path / "real-5m-preview.cog.tif"
+    cache_path = tmp_path / "real-5m-preprocessing.npz"
+    summary = run_local_preview(
+        dem_path=dem_path,
+        destination=output_path,
+        effective_rainfall_mm=80.0,
+        window=window,
+        preprocessing_cache=cache_path,
+    )
+
+    assert cache_path.exists()
+    assert summary.preprocessing_cache_reused is False
+    assert summary.input_volume_m3 == pytest.approx(
+        summary.retained_volume_m3 + summary.outflow_volume_m3,
+        rel=1.0e-10,
+        abs=1.0e-8,
+    )
+    assert summary.mass_balance_error_m3 == pytest.approx(0.0, abs=1.0e-8)
+    assert summary.written_cog.maximum_depth_m >= 0.0
+    assert summary.written_cog.wet_area_m2 >= 0.0
+    assert all(
+        area >= 0.0
+        for area in summary.written_cog.threshold_areas_m2.values()
+    )
+
+    with rasterio.open(dem_path) as source, rasterio.open(output_path) as output:
+        assert output.shape == (64, 64)
+        assert output.transform == source.window_transform(window)
+        assert output.crs == source.crs
+        assert output.count == 1
+        assert output.dtypes == ("float32",)
+        assert output.descriptions == ("maximum_water_depth",)
+        assert output.units == ("m",)
+        assert output.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+        tags = output.tags()
+        assert tags["preview_authority"] == "non-authoritative"
+        depths = output.read(1, masked=True)
+        assert np.all(np.isfinite(depths.compressed()))
+        assert np.all(depths.compressed() >= 0.0)
+        assert float(tags["input_volume_m3"]) == pytest.approx(
+            summary.input_volume_m3,
+            rel=1.0e-8,
+        )
+        assert float(tags["mass_balance_error_m3"]) == pytest.approx(
+            0.0,
+            abs=1.0e-8,
+        )
+        for threshold, area in summary.written_cog.threshold_areas_m2.items():
+            key = f"area_ge_{threshold:.2f}_m_m2".replace(".", "_")
+            assert float(tags[key]) == pytest.approx(area, rel=1.0e-8)
+
+    cached_output = tmp_path / "real-5m-preview-cached.cog.tif"
+    cached_summary = run_local_preview(
+        dem_path=dem_path,
+        destination=cached_output,
+        effective_rainfall_mm=40.0,
+        window=window,
+        preprocessing_cache=cache_path,
+    )
+    assert cached_summary.preprocessing_cache_reused is True
+    assert cached_summary.mass_balance_error_m3 == pytest.approx(
+        0.0,
+        abs=1.0e-8,
+    )
 
 
 def test_preprocessing_routes_upslope_rainfall_into_the_pit():
@@ -402,3 +557,29 @@ def test_preprocessor_builds_and_caches_a_two_pit_merge_hierarchy(tmp_path):
         0.0,
         abs=1.0e-12,
     )
+
+
+def test_semantically_corrupt_cache_is_reported_as_a_cache_mismatch(tmp_path):
+    elevations = np.array([
+        [0, 0, 0, 0, 0],
+        [0, 2, 2, 2, 0],
+        [0, 2, 0, 1, 0],
+        [0, 2, 2, 2, 0],
+        [0, 0, 0, 0, 0],
+    ], dtype=np.float32)
+    cache_path = tmp_path / "corrupt.npz"
+    save_preprocessed(
+        cache_path,
+        preprocess_dem(elevations, cell_area_m2=1.0),
+        identity="corrupt-v1",
+    )
+    with np.load(cache_path, allow_pickle=False) as archive:
+        contents = {name: archive[name] for name in archive.files}
+    contents["root_ids"] = np.array([999], dtype=np.int32)
+    np.savez_compressed(cache_path, **contents)
+
+    with pytest.raises(
+        PreprocessingCacheMismatch,
+        match="contents are invalid",
+    ):
+        load_preprocessed(cache_path, expected_identity="corrupt-v1")

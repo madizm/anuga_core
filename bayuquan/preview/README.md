@@ -14,9 +14,9 @@
   --preprocessing-cache /tmp/bayuquan-2413-1779-128.npz
 ```
 
-`--window` 的顺序为 `column_offset,row_offset,width,height`。不指定窗口会处理
-整张 DEM；当前 Python heap 实现仅适合本地验证窗口，禁止用它直接运行 5947 万
-Cell 的全域 5 m DEM。
+`--window` 为必填参数，顺序是 `column_offset,row_offset,width,height`。当前
+Python heap 实现仅适合本地验证窗口，CLI 不允许直接运行 5947 万 Cell 的全域
+5 m DEM。
 
 `--effective-rainfall-mm` 是扣除初损、入渗等损失后的**有效降雨深度**，不是未经
 处理的原始累计降雨。当前输入在窗口内均匀分布。任务完成后，命令向 stdout 输出

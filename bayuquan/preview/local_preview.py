@@ -221,7 +221,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--window",
         type=_parse_window,
-        help="optional pixel window: col_off,row_off,width,height",
+        required=True,
+        help="pixel window: col_off,row_off,width,height",
     )
     parser.add_argument(
         "--preprocessing-cache",

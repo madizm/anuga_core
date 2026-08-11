@@ -221,7 +221,13 @@ def load_preprocessed(
                     dtype=np.int32,
                 )
             )
-        except (KeyError, TypeError, ValueError) as error:
+        except (
+            IndexError,
+            KeyError,
+            OverflowError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise PreprocessingCacheMismatch(
                 "preprocessing cache is incomplete"
             ) from error
@@ -253,57 +259,100 @@ def load_preprocessed(
         and np.all(
             merge_elevation_offsets[1:] >= merge_elevation_offsets[:-1]
         )
+        and np.isfinite(cell_area)
+        and cell_area > 0.0
+        and not np.isinf(filled).any()
+        and len(root_ids) == len(set(root_ids))
     ):
         raise PreprocessingCacheMismatch(
             "preprocessing cache array dimensions are invalid"
         )
 
-    depressions = tuple(
-        Depression(
-            id=int(depression_ids[index]),
-            elevations_m=storage[offsets[index]:offsets[index + 1]],
-            spill_elevation_m=float(spills[index]),
-            catchment_area_m2=float(catchments[index]),
-            downstream_id=(
-                None
-                if downstream[index] < 0
-                else int(downstream[index])
-            ),
+    try:
+        depressions = tuple(
+            Depression(
+                id=int(depression_ids[index]),
+                elevations_m=storage[offsets[index]:offsets[index + 1]],
+                spill_elevation_m=float(spills[index]),
+                catchment_area_m2=float(catchments[index]),
+                downstream_id=(
+                    None
+                    if downstream[index] < 0
+                    else int(downstream[index])
+                ),
+            )
+            for index in range(count)
         )
-        for index in range(count)
-    )
-    merges = tuple(
-        DepressionMerge(
-            id=int(merge_ids[index]),
-            child_ids=tuple(
-                int(item) for item in merge_children[
-                    merge_child_offsets[index]:merge_child_offsets[index + 1]
-                ]
-            ),
-            elevations_m=merge_elevations[
-                merge_elevation_offsets[index]:
-                merge_elevation_offsets[index + 1]
-            ],
-            spill_elevation_m=float(merge_spills[index]),
+        merges = tuple(
+            DepressionMerge(
+                id=int(merge_ids[index]),
+                child_ids=tuple(
+                    int(item) for item in merge_children[
+                        merge_child_offsets[index]:
+                        merge_child_offsets[index + 1]
+                    ]
+                ),
+                elevations_m=merge_elevations[
+                    merge_elevation_offsets[index]:
+                    merge_elevation_offsets[index + 1]
+                ],
+                spill_elevation_m=float(merge_spills[index]),
+            )
+            for index in range(merge_count)
         )
-        for index in range(merge_count)
-    )
-    valid = np.isfinite(filled)
-    open_area = float(np.count_nonzero(valid & (basin_ids < 0))) * cell_area
-    if depressions:
-        network = DepressionHierarchy(
-            leaves=depressions,
-            merges=merges,
-            root_ids=root_ids,
-            cell_area_m2=cell_area,
-            open_catchment_area_m2=open_area,
+        valid = np.isfinite(filled)
+        known_basin = np.isin(basin_ids, depression_ids)
+        if not depressions and (merges or root_ids):
+            raise ValueError("empty terrain cannot contain hierarchy nodes")
+        if np.any(valid & (basin_ids >= 0) & ~known_basin):
+            raise ValueError("basin IDs must reference depression leaves")
+        if np.any(~valid & (basin_ids >= 0)):
+            raise ValueError("invalid DEM cells cannot reference depressions")
+        for depression in depressions:
+            expected_area = (
+                float(np.count_nonzero(basin_ids == depression.id))
+                * cell_area
+            )
+            if not np.isclose(
+                depression.catchment_area_m2,
+                expected_area,
+                rtol=1.0e-9,
+                atol=1.0e-9,
+            ):
+                raise ValueError("catchment area does not match basin cells")
+        open_area = (
+            float(np.count_nonzero(valid & (basin_ids < 0))) * cell_area
         )
-    else:
-        network = DepressionNetwork(
-            depressions,
-            cell_area_m2=cell_area,
-            open_catchment_area_m2=open_area,
-        )
+        if depressions:
+            DepressionNetwork(
+                depressions,
+                cell_area_m2=cell_area,
+                open_catchment_area_m2=open_area,
+            )
+            network = DepressionHierarchy(
+                leaves=depressions,
+                merges=merges,
+                root_ids=root_ids,
+                cell_area_m2=cell_area,
+                open_catchment_area_m2=open_area,
+            )
+        else:
+            network = DepressionNetwork(
+                depressions,
+                cell_area_m2=cell_area,
+                open_catchment_area_m2=open_area,
+            )
+    except (
+        IndexError,
+        KeyError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise PreprocessingCacheMismatch(
+            "preprocessing cache contents are invalid"
+        ) from error
     return PreprocessedDem(
         basin_ids=basin_ids,
         filled_elevations_m=filled,
