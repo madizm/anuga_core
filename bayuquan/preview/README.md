@@ -22,6 +22,22 @@ Python heap 实现仅适合本地验证窗口，CLI 不允许直接运行 5947 �
 处理的原始累计降雨。当前输入在窗口内均匀分布。任务完成后，命令向 stdout 输出
 JSON 摘要。
 
+## 可运行示例
+
+仓库根目录下的
+[`examples/bayuquan_fill_spill_preview.py`](../../examples/bayuquan_fill_spill_preview.py)
+提供聚焦的 5 m DEM 小窗口示例。默认使用上面的 `128 × 128` 窗口、`80 mm`
+有效累计降雨，并把 COG 和预处理缓存写入 `OUTPUT/preview/`：
+
+```bash
+uv run --no-project --with numpy --with rasterio \
+  python -m examples.bayuquan_fill_spill_preview
+```
+
+脚本允许通过 `--dem`、`--window`、`--effective-rainfall-mm`、`--output` 和
+`--preprocessing-cache` 覆盖所有示例输入。它仍只运行有界小窗口；没有
+`OUTPUT/model/web/elevation_5m_cog.tif` 时会明确退出，不会退回全域或合成 DEM。
+
 ## 预处理缓存
 
 指定 `--preprocessing-cache` 后，首次运行会原子写入不含 Python pickle 的 NPZ。
@@ -59,6 +75,30 @@ JSON 摘要。
 - 洼地按有限体积蓄水，到 Spill Elevation 后向父洼地或出口溢流；
 - 没有雨型时输出是静态累计有效降雨对应的潜在最大水深；
 - 不模拟动量、流速、洪峰传播、潮位回水、桥涵、管网、动态排水或建筑阻水。
+
+## 算法文献
+
+本实现采用的算法术语和处理顺序以以下正式文献为基础：
+
+- Barnes、Lehman 与 Mulla（2014）的
+  [Priority-Flood 论文](https://doi.org/10.1016/j.cageo.2013.04.024)
+  （[作者稿 PDF](https://arxiv.org/pdf/1511.04463)）描述基于优先队列的 DEM
+  洼地填充、watershed labeling 和 flow direction 变体；
+- O'Callaghan 与 Mark（1984）的
+  [D8 原始论文](https://doi.org/10.1016/S0734-189X(84)80011-0)
+  是八邻域单流向、按链路距离比较最陡下降方向的基础来源；
+- Barnes、Callaghan 与 Wickert（2020）的
+  [Depression Hierarchy 论文](https://doi.org/10.5194/esurf-8-431-2020)
+  （[开放 PDF](https://esurf.copernicus.org/articles/8/431/2020/esurf-8-431-2020.pdf)）
+  描述嵌套洼地及其拓扑层级；
+- 同一作者团队（2021）的
+  [Fill–Spill–Merge 论文](https://doi.org/10.5194/esurf-9-105-2021)
+  （[开放 PDF](https://esurf.copernicus.org/articles/9/105/2021/esurf-9-105-2021.pdf)）
+  描述 runoff 在 Depression Hierarchy 中蓄积、溢流和合并的过程。
+
+这些论文支持算法家族和术语，不构成对本仓库实现精度、性能或适用性的验证。
+更完整的出处和适用范围见
+[`LITERATURE_RESEARCH.md`](LITERATURE_RESEARCH.md)。
 
 ## 尚未完成的全域生产条件
 
