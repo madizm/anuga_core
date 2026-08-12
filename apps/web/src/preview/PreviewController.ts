@@ -185,6 +185,15 @@ export class PreviewController {
         const nextSnapshotTime = this.statusValue.nextSnapshotTimeSeconds
         const nextRainfallChange = this.nextRainfallChangeAfter(timeSeconds)
         if (
+          nextSnapshotTime != null
+          && nextSnapshotTime - timeSeconds <= TIME_BOUNDARY_EPSILON_SECONDS
+        ) {
+          const boundaryGap = Math.max(nextSnapshotTime - timeSeconds, 0)
+          timeSeconds = nextSnapshotTime
+          this.backlogSeconds = Math.max(this.backlogSeconds - boundaryGap, 0)
+          break
+        }
+        if (
           nextRainfallChange != null
           && nextRainfallChange - timeSeconds <= TIME_BOUNDARY_EPSILON_SECONDS
         ) {

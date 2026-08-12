@@ -153,6 +153,29 @@ describe('PreviewController', () => {
     controller.dispose()
   })
 
+  it('snaps floating-point static snapshot boundaries before readback', () => {
+    let frame: FrameRequestCallback | null = null
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frame = callback
+      return 1
+    }))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const instance = solver(grid())
+    const steps = [1_799.99999995, 1_000]
+    instance.recommendedTimeStepSeconds = () => steps.shift() ?? 1_000
+    instance.snapshot = vi.fn(instance.snapshot)
+    const controller = new PreviewController({
+      grid: instance.grid, scenario: longScenario(), mode: 'static',
+    }, () => instance)
+    controller.start()
+    frame!(performance.now() + 500)
+    expect(controller.status().phase).toBe('running')
+    expect(controller.status().timeSeconds).toBe(1_800)
+    expect(instance.snapshot).toHaveBeenLastCalledWith(1_800)
+    expect(instance.step).toHaveBeenCalledTimes(1)
+    controller.dispose()
+  })
+
   it('retains the last boundary snapshot when static work pauses mid-interval', () => {
     let frame: FrameRequestCallback | null = null
     vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
