@@ -257,13 +257,52 @@ interface GpuResources {
   reductionUniforms: Record<string, WebGLUniformLocation | null>
 }
 
+export class WebGlResourceTracker {
+  private readonly textures = new Set<WebGLTexture>()
+  private readonly programs = new Set<WebGLProgram>()
+  private readonly framebuffers = new Set<WebGLFramebuffer>()
+  private readonly vertexArrays = new Set<WebGLVertexArrayObject>()
+  private readonly shaders = new Set<WebGLShader>()
+
+  constructor(private readonly gl: WebGL2RenderingContext) {}
+
+  texture(value: WebGLTexture) { this.textures.add(value); return value }
+  program(value: WebGLProgram) { this.programs.add(value); return value }
+  framebuffer(value: WebGLFramebuffer) { this.framebuffers.add(value); return value }
+  vertexArray(value: WebGLVertexArrayObject) { this.vertexArrays.add(value); return value }
+  shader(value: WebGLShader) { this.shaders.add(value); return value }
+  forgetShader(value: WebGLShader) { this.shaders.delete(value) }
+  forgetProgram(value: WebGLProgram) { this.programs.delete(value) }
+
+  release() {
+    this.textures.clear()
+    this.programs.clear()
+    this.framebuffers.clear()
+    this.vertexArrays.clear()
+    this.shaders.clear()
+  }
+
+  dispose() {
+    for (const texture of this.textures) this.gl.deleteTexture(texture)
+    for (const program of this.programs) this.gl.deleteProgram(program)
+    for (const framebuffer of this.framebuffers) this.gl.deleteFramebuffer(framebuffer)
+    for (const vertexArray of this.vertexArrays) this.gl.deleteVertexArray(vertexArray)
+    for (const shader of this.shaders) this.gl.deleteShader(shader)
+    this.release()
+  }
+}
+
 export function initializeWebGlResources<T>(
   gl: WebGL2RenderingContext,
-  initialize: () => T,
+  initialize: (tracker: WebGlResourceTracker) => T,
 ): T {
+  const tracker = new WebGlResourceTracker(gl)
   try {
-    return initialize()
+    const result = initialize(tracker)
+    tracker.release()
+    return result
   } catch (error) {
+    tracker.dispose()
     gl.getExtension('WEBGL_lose_context')?.loseContext()
     throw new Error(`快速预览初始化失败：${(error as Error).message}`)
   }
@@ -294,10 +333,10 @@ export class WebGL2PreviewSolver implements PreviewSolver {
       antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false,
     })
     if (!(gl instanceof WebGL2RenderingContext)) throw new Error('快速预览需要 WebGL2')
-    if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('显卡不支持浮点预览纹理')
     this.gl = gl
-    const initialized = initializeWebGlResources(gl, () => {
-      const resources = this.createResources()
+    const initialized = initializeWebGlResources(gl, (tracker) => {
+      if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('显卡不支持浮点预览纹理')
+      const resources = this.createResources(tracker)
       if (gl.getError() !== gl.NO_ERROR) throw new Error('GPU 内存分配失败')
       const statePixels = new Float32Array(grid.initialState)
       const cellCount = grid.width * grid.height
@@ -413,52 +452,52 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     this.statePixels = new Float32Array(0)
   }
 
-  private createResources(): GpuResources {
+  private createResources(tracker: WebGlResourceTracker): GpuResources {
     const gl = this.gl
-    const program = createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER)
-    const quad = required(gl.createVertexArray(), '预览顶点数组')
-    const framebuffer = required(gl.createFramebuffer(), '预览帧缓冲')
-    const read = createFloatTexture(gl, this.grid.width, this.grid.height, this.grid.initialState)
-    const write = createFloatTexture(gl, this.grid.width, this.grid.height, null)
+    const program = createProgram(gl, tracker, VERTEX_SHADER, FRAGMENT_SHADER)
+    const quad = tracker.vertexArray(required(gl.createVertexArray(), '预览顶点数组'))
+    const framebuffer = tracker.framebuffer(required(gl.createFramebuffer(), '预览帧缓冲'))
+    const read = createFloatTexture(gl, tracker, this.grid.width, this.grid.height, this.grid.initialState)
+    const write = createFloatTexture(gl, tracker, this.grid.width, this.grid.height, null)
     const hydraulics = this.grid.hydraulics
     const cellZeros = new Float32Array(this.grid.width * this.grid.height)
     const wallXValues = hydraulics?.wallX ?? new Float32Array((this.grid.width + 1) * this.grid.height)
     const wallYValues = hydraulics?.wallY ?? new Float32Array(this.grid.width * (this.grid.height + 1))
     const terrain = createScalarTexture(
-      gl, this.grid.width, this.grid.height, hydraulics?.bedElevationM ?? this.grid.elevationM,
+      gl, tracker, this.grid.width, this.grid.height, hydraulics?.bedElevationM ?? this.grid.elevationM,
     )
     const friction = createScalarTexture(
-      gl, this.grid.width, this.grid.height, hydraulics?.manningN ?? this.grid.manningN,
+      gl, tracker, this.grid.width, this.grid.height, hydraulics?.manningN ?? this.grid.manningN,
     )
-    const mask = createScalarTexture(gl, this.grid.width, this.grid.height, this.grid.mask)
-    const source = createFloatTexture(gl, this.grid.width, this.grid.height, sourcePixels(this.grid))
+    const mask = createScalarTexture(gl, tracker, this.grid.width, this.grid.height, this.grid.mask)
+    const source = createFloatTexture(gl, tracker, this.grid.width, this.grid.height, sourcePixels(this.grid))
     const outletCapacity = createScalarTexture(
-      gl, this.grid.width, this.grid.height, hydraulics?.outletCapacityM3s ?? cellZeros,
+      gl, tracker, this.grid.width, this.grid.height, hydraulics?.outletCapacityM3s ?? cellZeros,
     )
     const outletFullDepth = createScalarTexture(
-      gl, this.grid.width, this.grid.height, hydraulics?.outletFullCapacityDepthM ?? cellZeros,
+      gl, tracker, this.grid.width, this.grid.height, hydraulics?.outletFullCapacityDepthM ?? cellZeros,
     )
-    const wallX = createScalarTexture(gl, this.grid.width + 1, this.grid.height, wallXValues)
-    const wallY = createScalarTexture(gl, this.grid.width, this.grid.height + 1, wallYValues)
+    const wallX = createScalarTexture(gl, tracker, this.grid.width + 1, this.grid.height, wallXValues)
+    const wallY = createScalarTexture(gl, tracker, this.grid.width, this.grid.height + 1, wallYValues)
     const crestX = createScalarTexture(
-      gl, this.grid.width + 1, this.grid.height,
+      gl, tracker, this.grid.width + 1, this.grid.height,
       hydraulics?.crestX ?? filledFloat32(wallXValues.length, Number.NaN),
     )
     const crestY = createScalarTexture(
-      gl, this.grid.width, this.grid.height + 1,
+      gl, tracker, this.grid.width, this.grid.height + 1,
       hydraulics?.crestY ?? filledFloat32(wallYValues.length, Number.NaN),
     )
     const qFactorX = createScalarTexture(
-      gl, this.grid.width + 1, this.grid.height,
+      gl, tracker, this.grid.width + 1, this.grid.height,
       hydraulics?.qFactorX ?? filledFloat32(wallXValues.length, 1),
     )
     const qFactorY = createScalarTexture(
-      gl, this.grid.width, this.grid.height + 1,
+      gl, tracker, this.grid.width, this.grid.height + 1,
       hydraulics?.qFactorY ?? filledFloat32(wallYValues.length, 1),
     )
-    const initialReductionProgram = createProgram(gl, VERTEX_SHADER, INITIAL_WAVE_REDUCTION_SHADER)
-    const reductionProgram = createProgram(gl, VERTEX_SHADER, WAVE_REDUCTION_SHADER)
-    const reductionLevels = createReductionLevels(gl, this.grid.width, this.grid.height)
+    const initialReductionProgram = createProgram(gl, tracker, VERTEX_SHADER, INITIAL_WAVE_REDUCTION_SHADER)
+    const reductionProgram = createProgram(gl, tracker, VERTEX_SHADER, WAVE_REDUCTION_SHADER)
+    const reductionLevels = createReductionLevels(gl, tracker, this.grid.width, this.grid.height)
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, read, 0)
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
@@ -550,13 +589,15 @@ function filledFloat32(length: number, value: number) {
   return result
 }
 
-function createReductionLevels(gl: WebGL2RenderingContext, width: number, height: number) {
+function createReductionLevels(
+  gl: WebGL2RenderingContext, tracker: WebGlResourceTracker, width: number, height: number,
+) {
   const levels: ReductionLevel[] = []
   let levelWidth = Math.max(1, Math.ceil(width / 2))
   let levelHeight = Math.max(1, Math.ceil(height / 2))
   while (true) {
     levels.push({
-      texture: createScalarTexture(gl, levelWidth, levelHeight, null),
+      texture: createScalarTexture(gl, tracker, levelWidth, levelHeight, null),
       width: levelWidth,
       height: levelHeight,
     })
@@ -568,9 +609,10 @@ function createReductionLevels(gl: WebGL2RenderingContext, width: number, height
 }
 
 function createFloatTexture(
-  gl: WebGL2RenderingContext, width: number, height: number, data: Float32Array | null,
+  gl: WebGL2RenderingContext, tracker: WebGlResourceTracker,
+  width: number, height: number, data: Float32Array | null,
 ) {
-  const texture = required(gl.createTexture(), '预览浮点纹理')
+  const texture = tracker.texture(required(gl.createTexture(), '预览浮点纹理'))
   gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
@@ -581,9 +623,10 @@ function createFloatTexture(
 }
 
 function createScalarTexture(
-  gl: WebGL2RenderingContext, width: number, height: number, data: Float32Array | null,
+  gl: WebGL2RenderingContext, tracker: WebGlResourceTracker,
+  width: number, height: number, data: Float32Array | null,
 ) {
-  const texture = required(gl.createTexture(), '预览标量纹理')
+  const texture = tracker.texture(required(gl.createTexture(), '预览标量纹理'))
   gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
@@ -604,29 +647,36 @@ function bindTexture(
   gl.uniform1i(uniform, unit)
 }
 
-function createProgram(gl: WebGL2RenderingContext, vertexSource: string, fragmentSource: string) {
+function createProgram(
+  gl: WebGL2RenderingContext, tracker: WebGlResourceTracker,
+  vertexSource: string, fragmentSource: string,
+) {
   const compile = (type: number, source: string) => {
-    const shader = required(gl.createShader(type), '预览 shader')
+    const shader = tracker.shader(required(gl.createShader(type), '预览 shader'))
     gl.shaderSource(shader, source)
     gl.compileShader(shader)
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
       const message = gl.getShaderInfoLog(shader) || '未知 shader 错误'
       gl.deleteShader(shader)
+      tracker.forgetShader(shader)
       throw new Error(`预览 shader 编译失败：${message}`)
     }
     return shader
   }
   const vertex = compile(gl.VERTEX_SHADER, vertexSource)
   const fragment = compile(gl.FRAGMENT_SHADER, fragmentSource)
-  const program = required(gl.createProgram(), '预览 shader 程序')
+  const program = tracker.program(required(gl.createProgram(), '预览 shader 程序'))
   gl.attachShader(program, vertex)
   gl.attachShader(program, fragment)
   gl.linkProgram(program)
   gl.deleteShader(vertex)
   gl.deleteShader(fragment)
+  tracker.forgetShader(vertex)
+  tracker.forgetShader(fragment)
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     const message = gl.getProgramInfoLog(program) || '未知链接错误'
     gl.deleteProgram(program)
+    tracker.forgetProgram(program)
     throw new Error(`预览 shader 链接失败：${message}`)
   }
   return program
