@@ -16,7 +16,6 @@ import type {
   ResultQuantity,
 } from './api/types'
 import { InletPanel } from './inlets/InletPanel'
-import { ResultWorkspace } from './jobs/ResultWorkspace'
 import { JobHistory } from './jobs/JobHistory'
 import { ScenarioHistory } from './scenarios/ScenarioHistory'
 import { isFourNeighbourConnected, useInletStore } from './inlets/inletStore'
@@ -55,9 +54,6 @@ export default function App() {
   const [saved, setSaved] = useState<SavedScenario | null>(null)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [showCheck, setShowCheck] = useState(false)
-  const [jobId, setJobId] = useState<string | null>(() => (
-    new URLSearchParams(window.location.search).get('job')
-  ))
   const [message, setMessage] = useState<string | null>(null)
   const [area, setArea] = useState<SimulationArea | null>(null)
   const [areaDrawMode, setAreaDrawMode] = useState<'rectangle' | 'polygon' | null>(null)
@@ -289,7 +285,6 @@ export default function App() {
     onSuccess: (job) => {
       closePreview()
       void queryClient.invalidateQueries({ queryKey: ['jobs'] })
-      setJobId(job.id)
       navigate(`/simulations/${job.id}`)
       setShowCheck(false)
       setMessage(`任务 ${job.id.slice(0, 8)} 已进入队列`)
@@ -374,13 +369,6 @@ export default function App() {
       setMessage((error as Error).message)
     }
   }, [area, featureDrawMode, hydraulicFeatures])
-
-  if (jobId) {
-    return <ResultWorkspace jobId={jobId} onClose={() => {
-      setJobId(null)
-      navigate('/workbench/local')
-    }} />
-  }
 
   return (
     <div className="app-frame">
@@ -549,8 +537,7 @@ export default function App() {
           onClose={() => setJobsOpen(false)}
           onOpen={(id) => {
             setJobsOpen(false)
-            setJobId(id)
-            window.history.replaceState(null, '', `?job=${id}`)
+            navigate(`/simulations/${id}`)
           }}
           onRefresh={() => void jobs.refetch()}
         />

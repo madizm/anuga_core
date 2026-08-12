@@ -16,7 +16,7 @@ from rasterio.transform import from_origin
 from apps.api.config import Settings
 from apps.api.db import Database
 from apps.api.main import _apply_depth_mask, _simulation_area_bounds, create_app
-from apps.api.models import SimulationFrame, SimulationJob
+from apps.api.models import FullPreviewJob, SimulationFrame, SimulationJob
 from bayuquan.preview.cache import (
     cache_identity,
     load_preprocessed,
@@ -872,6 +872,19 @@ def test_full_preview_config_and_job_lifecycle_are_independent(
             json={"rainfallDepthMm": 80},
         )
         listed = test_client.get("/api/full-previews")
+        with database.session_factory.begin() as session:
+            job = session.get(FullPreviewJob, created.json()["id"])
+            job.status = "COMPLETED"
+            job.result_cog_uri = "s3://test/full-previews/result.tif"
+        app.state.s3_client = SimpleNamespace(
+            generate_presigned_url=lambda *args, **kwargs: (
+                "https://objects.example/result.tif?signature=test"
+            )
+        )
+        download = test_client.get(
+            f"/api/full-previews/{created.json()['id']}/result.cog",
+            follow_redirects=False,
+        )
 
     assert config.status_code == 200
     assert config.json()["available"] is True
@@ -888,6 +901,10 @@ def test_full_preview_config_and_job_lifecycle_are_independent(
     assert dispatched == [(created.json()["id"], "full-domain-preview")]
     assert listed.json()[0]["id"] == created.json()["id"]
     assert cache_loads == 1
+    assert download.status_code == 307
+    assert download.headers["location"] == (
+        "https://objects.example/result.tif?signature=test"
+    )
 
 
 def test_full_preview_rejects_submission_when_cache_is_not_ready(tmp_path):

@@ -221,7 +221,4 @@ export const api = {
   ) => request<FullPreviewPoint>(
     `/api/full-previews/${id}/point?longitude=${longitude}&latitude=${latitude}`,
   ),
-  fullPreviewDownload: (id: string) => request<{ url: string }>(
-    `/api/full-previews/${id}/result.cog`,
-  ),
 }

@@ -37,10 +37,6 @@ export function FullPreviewWorkspace({
     ),
     onSuccess: setPoint,
   })
-  const download = useMutation({
-    mutationFn: () => api.fullPreviewDownload(previewId),
-    onSuccess: ({ url }) => window.open(url, '_blank', 'noopener'),
-  })
   const status = useMemo(() => statusLabel(job?.status), [job?.status])
 
   if (!job) {
@@ -82,7 +78,7 @@ export function FullPreviewWorkspace({
             </div>
             <div className="water-balance"><span>WATER BALANCE</span><dl><div><dt>输入</dt><dd>{formatVolume(result.inputVolumeM3)}</dd></div><div><dt>蓄存</dt><dd>{formatVolume(result.retainedVolumeM3)}</dd></div><div><dt>出流</dt><dd>{formatVolume(result.outflowVolumeM3)}</dd></div><div><dt>误差</dt><dd>{result.massBalanceErrorM3.toExponential(2)} m³</dd></div></dl></div>
             <label className="compare-select"><span>场景叠加比较</span><select value={compareId} onChange={(event) => setCompareId(event.target.value)}><option value="">关闭比较</option>{compatibleJobs.map((item) => <option key={item.id} value={item.id}>{item.rainfallDepthMm} mm · {item.id.slice(0, 8)} · {item.compatibilityVersion.slice(0, 8)}</option>)}</select><small>仅列出同数据集、范围、缓存及假设版本的结果。主场景显示蓝色，比较场景显示青绿色叠加。</small></label>
-            <div className="result-actions"><button onClick={() => download.mutate()}>下载 COG</button><button onClick={() => navigate(`/workbench/regional-preview?rainfallMm=${job.rainfallDepthMm}`)}>基于此值再次运行</button></div>
+            <div className="result-actions"><button onClick={() => window.location.assign(result.cogDownloadUrl)}>下载 COG</button><button onClick={() => navigate(`/workbench/regional-preview?rainfallMm=${job.rainfallDepthMm}`)}>基于此值再次运行</button></div>
             <p className="impact-note">非权威地形蓄水快览，不用于工程决策；不包含流速、洪峰传播、排水管网和动态潮位。</p>
           </aside>
         </div>

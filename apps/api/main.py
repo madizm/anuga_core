@@ -21,7 +21,7 @@ import numpy as np
 import rasterio
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from PIL import Image
 from pyproj import Transformer
 from rasterio.enums import Resampling
@@ -1112,7 +1112,10 @@ def create_app(
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=900,
         )
-        return JSONResponse({"url": url})
+        return RedirectResponse(
+            url=url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        )
 
     @app.get("/api/jobs/{job_id}/events")
     async def job_events(job_id: str, request: Request) -> StreamingResponse:
