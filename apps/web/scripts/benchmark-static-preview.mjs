@@ -12,6 +12,15 @@ const executablePath = process.env.CHROME_PATH
 
 const server = await createServer({
   configFile: new URL('../vite.config.ts', import.meta.url).pathname,
+  plugins: [{
+    name: 'static-preview-benchmark-page',
+    configureServer(vite) {
+      vite.middlewares.use('/__preview-benchmark__', (_request, response) => {
+        response.setHeader('Content-Type', 'text/html')
+        response.end('<!doctype html><title>Static preview benchmark</title>')
+      })
+    },
+  }],
   server: { host: '127.0.0.1', port: 0 },
 })
 await server.listen()
@@ -22,7 +31,7 @@ try {
   const page = await browser.newPage()
   // Establish the Vite origin without booting the application and consuming
   // extra WebGL contexts; the benchmark imports only the solver module.
-  await page.goto(new URL('@vite/client', baseUrl).href)
+  await page.goto(new URL('__preview-benchmark__', baseUrl).href)
   const result = await page.evaluate(async ({ width, height }) => {
     const { WebGL2PreviewSolver } = await import('/src/preview/webgl2PreviewSolver.ts')
     const cells = width * height
