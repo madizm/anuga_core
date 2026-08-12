@@ -9,6 +9,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
+    "benchmark:preview": "node scripts/benchmark-static-preview.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {

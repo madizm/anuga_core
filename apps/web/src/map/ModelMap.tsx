@@ -24,7 +24,7 @@ import { SimulationGridLayer } from './SimulationGridLayer'
 import { buildContourFeaturesForTile } from './contours'
 import type { GridField, GridTileStore, GridViewport } from './gridTiles'
 import { PreviewMapLayer } from '../preview/PreviewMapLayer'
-import type { PreviewSnapshot } from '../preview/types'
+import type { PreviewMode, PreviewSnapshot } from '../preview/types'
 import {
   gridViewportRange,
   type GridRange,
@@ -49,6 +49,7 @@ interface ModelMapProps {
   previewSnapshot?: PreviewSnapshot | null
   previewQuantity?: ResultQuantity
   previewFlowEnabled?: boolean
+  previewMode?: PreviewMode
 }
 
 const DEM_SOURCE = 'model-dem'
@@ -120,6 +121,7 @@ export function ModelMap({
   previewSnapshot = null,
   previewQuantity = 'depth',
   previewFlowEnabled = true,
+  previewMode = 'animated',
 }: ModelMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
@@ -252,11 +254,12 @@ export function ModelMap({
   useEffect(() => {
     const layer = previewLayerRef.current
     if (!layer) return
+    layer.setMode(previewMode)
     layer.setSnapshot(previewSnapshot)
     layer.setQuantity(previewQuantity)
     layer.setFlowEnabled(previewFlowEnabled)
     layer.setTerrainExaggeration(effectiveTerrain ? terrainExaggeration : 0)
-  }, [effectiveTerrain, previewFlowEnabled, previewQuantity, previewSnapshot, terrainExaggeration])
+  }, [effectiveTerrain, previewFlowEnabled, previewMode, previewQuantity, previewSnapshot, terrainExaggeration])
 
   useEffect(() => {
     const map = mapRef.current

@@ -34,7 +34,7 @@ import { GridTileStore } from './map/gridTiles'
 import type { GridRange } from './map/simulationGrid'
 import { detectPreviewCapabilities } from './preview/previewCapabilities'
 import { previewCompatibility } from './preview/previewScenario'
-import type { PreviewStatus } from './preview/types'
+import type { PreviewMode, PreviewStatus } from './preview/types'
 
 export default function App() {
   const inlets = useInletStore((state) => state.inlets)
@@ -63,6 +63,7 @@ export default function App() {
   const [jobsOpen, setJobsOpen] = useState(false)
   const previewControllerRef = useRef<PreviewController | null>(null)
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus | null>(null)
+  const [previewMode, setPreviewMode] = useState<PreviewMode>('animated')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewQuantity, setPreviewQuantity] = useState<ResultQuantity>('depth')
   const [previewFlowEnabled, setPreviewFlowEnabled] = useState(true)
@@ -315,6 +316,10 @@ export default function App() {
       setMessage(previewCapabilities.reason ?? '当前设备不支持快速预览')
       return
     }
+    if (previewMode === 'static' && !previewCapabilities.staticSupported) {
+      setMessage(previewCapabilities.staticReason ?? '当前设备不支持 1M Cell 静态快照预览')
+      return
+    }
     const compatibility = previewCompatibility(currentPayload)
     if (!ignoreCompatibility && !compatibility.supported) {
       setPreviewCompatibilityNames(compatibility.messages)
@@ -329,13 +334,14 @@ export default function App() {
       const previewGrid = await grid.data.resource.loadAll([
         'elevation', manningField,
       ])
-      const denseGrid = buildDensePreviewGrid(
-        previewGrid, currentPayload, demProduct.cellSizeM,
-        previewCapabilities.maxTextureSize,
-      )
+      const denseGrid = buildDensePreviewGrid(previewGrid, currentPayload, demProduct.cellSizeM, {
+        mode: previewMode,
+        maxTextureSize: previewCapabilities.maxTextureSize,
+      })
       const controller = new PreviewController({
         grid: denseGrid,
         scenario: currentPayload,
+        mode: previewMode,
       })
       previewControllerRef.current = controller
       controller.subscribe(setPreviewStatus)
@@ -405,6 +411,15 @@ export default function App() {
           <button className="secondary-button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
             {saveMutation.isPending ? '保存中' : '保存场景'}
           </button>
+          <select
+            className="preview-mode-select"
+            aria-label="预览模式"
+            value={previewMode}
+            onChange={(event) => setPreviewMode(event.target.value as PreviewMode)}
+          >
+            <option value="animated">动态预览 · 262K</option>
+            <option value="static" disabled={!previewCapabilities.staticSupported}>静态快照 · 1M</option>
+          </select>
           <button
             className="preview-button"
             disabled={!localReady || !displayViewport || displayViewport.cellCount === 0 || previewLoading || !previewCapabilities.supported}
@@ -446,6 +461,7 @@ export default function App() {
               previewSnapshot={previewStatus?.snapshot ?? null}
               previewQuantity={previewQuantity}
               previewFlowEnabled={previewFlowEnabled}
+              previewMode={previewStatus?.mode ?? previewMode}
             />
           )}
           <AreaControl
@@ -476,6 +492,7 @@ export default function App() {
           {previewStatus && (
             <PreviewPanel
               status={previewStatus}
+              mode={previewStatus.mode}
               capabilities={previewCapabilities}
               quantity={previewQuantity}
               flowEnabled={previewFlowEnabled}

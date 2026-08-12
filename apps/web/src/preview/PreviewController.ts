@@ -1,10 +1,14 @@
 import { rainfallRateMps } from './previewScenario'
 import type {
-  PreviewSessionInput, PreviewSolver, PreviewStatus,
+  PreviewMode, PreviewSessionInput, PreviewSolver, PreviewStatus,
 } from './types'
+import { PREVIEW_MODE_CONFIG } from './types'
 import { WebGL2PreviewSolver } from './webgl2PreviewSolver'
 
 const MAX_STEPS_PER_FRAME = 14
+const MAX_STATIC_STEPS_PER_FRAME = 64
+const STATIC_FRAME_BUDGET_MS = 20
+const STATIC_PROGRESS_INTERVAL_MS = 250
 const MAX_BACKLOG_REAL_SECONDS = 0.5
 const PREVIEW_SNAPSHOT_INTERVAL_MS = 1000 / 15
 const DEFAULT_PLAYBACK_RATE = 60
@@ -21,18 +25,31 @@ export class PreviewController {
   private lastWallTime = 0
   private backlogSeconds = 0
   private lastSnapshotWallTime = 0
+  private lastProgressEmitWallTime = 0
   private disposed = false
+  private readonly mode: PreviewMode
+  private readonly snapshotIntervalSeconds: number
 
   constructor(
     private readonly input: PreviewSessionInput,
     solverFactory: SolverFactory = (grid) => new WebGL2PreviewSolver(grid),
   ) {
+    this.mode = input.mode ?? 'animated'
+    this.snapshotIntervalSeconds = input.snapshotIntervalSeconds
+      ?? PREVIEW_MODE_CONFIG[this.mode].snapshotIntervalSeconds
+    if (this.mode === 'static' && (
+      !Number.isFinite(this.snapshotIntervalSeconds) || this.snapshotIntervalSeconds <= 0
+    )) throw new Error('静态快照间隔必须大于零')
     this.solver = solverFactory(input.grid)
     this.statusValue = {
+      mode: this.mode,
       phase: 'idle',
       timeSeconds: 0,
       durationSeconds: input.scenario.durationSeconds,
-      playbackRate: input.playbackRate ?? DEFAULT_PLAYBACK_RATE,
+      playbackRate: input.playbackRate ?? (this.mode === 'static' ? 3_600 : DEFAULT_PLAYBACK_RATE),
+      gridCellCount: input.grid.width * input.grid.height,
+      snapshotIntervalSeconds: this.snapshotIntervalSeconds,
+      nextSnapshotTimeSeconds: this.nextSnapshotAfter(0),
       snapshot: this.solver.snapshot(0),
       error: null,
     }
@@ -99,6 +116,7 @@ export class PreviewController {
       ...this.statusValue,
       phase: 'paused',
       timeSeconds: 0,
+      nextSnapshotTimeSeconds: this.nextSnapshotAfter(0),
       snapshot: this.solver.snapshot(0),
       error: null,
     }
@@ -135,19 +153,31 @@ export class PreviewController {
       this.backlogSeconds + elapsedRealSeconds * this.statusValue.playbackRate,
       this.statusValue.playbackRate * MAX_BACKLOG_REAL_SECONDS,
     )
+    if (this.mode === 'static') {
+      this.backlogSeconds = Math.max(
+        this.backlogSeconds,
+        Math.min(this.snapshotIntervalSeconds, this.statusValue.durationSeconds - this.statusValue.timeSeconds),
+      )
+    }
     const startedAt = this.statusValue.timeSeconds
     let timeSeconds = startedAt
     let steps = 0
+    const frameStartedAt = performance.now()
     try {
       while (
         this.backlogSeconds > 1e-7
         && timeSeconds < this.statusValue.durationSeconds
-        && steps < MAX_STEPS_PER_FRAME
+        && steps < (this.mode === 'static' ? MAX_STATIC_STEPS_PER_FRAME : MAX_STEPS_PER_FRAME)
+        && (this.mode === 'animated' || steps === 0 || performance.now() - frameStartedAt < STATIC_FRAME_BUDGET_MS)
       ) {
+        const nextSnapshotTime = this.statusValue.nextSnapshotTimeSeconds
+        const nextRainfallChange = this.nextRainfallChangeAfter(timeSeconds)
         const dt = Math.min(
           this.solver.recommendedTimeStepSeconds(),
           this.backlogSeconds,
           this.statusValue.durationSeconds - timeSeconds,
+          nextSnapshotTime == null ? Number.POSITIVE_INFINITY : nextSnapshotTime - timeSeconds,
+          nextRainfallChange == null ? Number.POSITIVE_INFINITY : nextRainfallChange - timeSeconds,
         )
         if (!Number.isFinite(dt) || dt < 1e-5) {
           throw new Error('快速预览时间步过小，当前场景超出稳定范围')
@@ -156,14 +186,18 @@ export class PreviewController {
         timeSeconds += dt
         this.backlogSeconds -= dt
         steps += 1
+        if (this.mode === 'static' && nextSnapshotTime != null && timeSeconds >= nextSnapshotTime) break
       }
       const completed = timeSeconds >= this.statusValue.durationSeconds
       let snapshot = this.statusValue.snapshot
-      if (
-        snapshot == null
-        || completed
-        || wallTime - this.lastSnapshotWallTime >= PREVIEW_SNAPSHOT_INTERVAL_MS
-      ) {
+      const reachedStaticSnapshot = this.mode === 'static'
+        && this.statusValue.nextSnapshotTimeSeconds != null
+        && timeSeconds >= this.statusValue.nextSnapshotTimeSeconds
+      const shouldSnapshot = snapshot == null || completed || reachedStaticSnapshot || (
+        this.mode === 'animated'
+        && wallTime - this.lastSnapshotWallTime >= PREVIEW_SNAPSHOT_INTERVAL_MS
+      )
+      if (shouldSnapshot) {
         snapshot = this.solver.snapshot(timeSeconds)
         snapshot.diagnostics.simulatedSecondsPerRealSecond = elapsedRealSeconds > 0
           ? (timeSeconds - startedAt) / elapsedRealSeconds : 0
@@ -173,9 +207,18 @@ export class PreviewController {
         ...this.statusValue,
         phase: completed ? 'completed' : 'running',
         timeSeconds,
+        nextSnapshotTimeSeconds: reachedStaticSnapshot
+          ? this.nextSnapshotAfter(timeSeconds)
+          : this.statusValue.nextSnapshotTimeSeconds,
         snapshot,
       }
-      this.emit()
+      if (
+        this.mode === 'animated' || shouldSnapshot || completed
+        || wallTime - this.lastProgressEmitWallTime >= STATIC_PROGRESS_INTERVAL_MS
+      ) {
+        this.lastProgressEmitWallTime = wallTime
+        this.emit()
+      }
       if (this.statusValue.phase === 'running') this.schedule()
     } catch (error) {
       this.statusValue = {
@@ -198,6 +241,22 @@ export class PreviewController {
 
   private emit() {
     for (const listener of this.listeners) listener(this.statusValue)
+  }
+
+  private nextSnapshotAfter(timeSeconds: number) {
+    if (this.mode !== 'static' || this.snapshotIntervalSeconds <= 0) return null
+    const next = (Math.floor(timeSeconds / this.snapshotIntervalSeconds) + 1)
+      * this.snapshotIntervalSeconds
+    return next < this.input.scenario.durationSeconds ? next : this.input.scenario.durationSeconds
+  }
+
+  private nextRainfallChangeAfter(timeSeconds: number) {
+    if (!this.input.scenario.rainfall.enabled) return null
+    const epsilon = 1e-7
+    const next = this.input.scenario.rainfall.points.find(
+      (point) => point.timeMinutes * 60 > timeSeconds + epsilon,
+    )
+    return next ? Math.min(next.timeMinutes * 60, this.input.scenario.durationSeconds) : null
   }
 
   private readonly visibilityChanged = () => {

@@ -4,7 +4,7 @@ import type {
 } from './types'
 import { PREVIEW_DRY_DEPTH_M, PREVIEW_GRAVITY_MPS2 } from './types'
 
-const CFL = 0.42
+const CFL = 0.35
 const EPSILON = 1e-6
 
 type Triple = [number, number, number]
@@ -41,7 +41,7 @@ export class ReferencePreviewSolver implements PreviewSolver {
         : 0
       maxWaveSpeed = Math.max(maxWaveSpeed, speed + Math.sqrt(PREVIEW_GRAVITY_MPS2 * h))
     }
-    return Math.min(1, CFL * this.grid.cellSizeM / maxWaveSpeed)
+    return Math.min(30, CFL * this.grid.cellSizeM / Math.max(maxWaveSpeed, 1))
   }
 
   step(timeStepSeconds: number, rainfallRateMps: number) {
@@ -297,6 +297,11 @@ function finiteTerrain(value: number) {
   return Number.isFinite(value) ? value : 0
 }
 
+interface SnapshotBuffers {
+  vectors: Float32Array
+  texels: Uint16Array
+}
+
 function makeSnapshot(
   grid: DensePreviewGrid,
   state: Float32Array,
@@ -305,11 +310,11 @@ function makeSnapshot(
   simulatedSecondsPerRealSecond: number,
   bedElevationM = grid.hydraulics?.bedElevationM ?? grid.elevationM,
   structureOutflowM3 = 0,
+  buffers?: SnapshotBuffers,
 ): PreviewSnapshot {
   const cellCount = grid.width * grid.height
-  const vectors = new Float32Array(cellCount * 2)
-  const depths = new Float32Array(cellCount)
-  const texels = new Uint16Array(cellCount * 4)
+  const vectors = buffers?.vectors ?? new Float32Array(cellCount * 2)
+  const texels = buffers?.texels ?? new Uint16Array(cellCount * 4)
   const cellAreaM2 = grid.cellSizeM ** 2
   let waterVolumeM3 = 0
   let maximumDepthM = 0
@@ -325,7 +330,6 @@ function makeSnapshot(
     const displayCell = (grid.height - 1 - row) * grid.width + column
     vectors[displayCell * 2] = Number.isFinite(speed) ? qx / Math.max(h, PREVIEW_DRY_DEPTH_M) : 0
     vectors[displayCell * 2 + 1] = Number.isFinite(speed) ? qy / Math.max(h, PREVIEW_DRY_DEPTH_M) : 0
-    depths[displayCell] = h >= PREVIEW_DRY_DEPTH_M ? h : Number.NaN
     const textureOffset = displayCell * 4
     texels[textureOffset] = encodeFloat16(vectors[displayCell * 2])
     texels[textureOffset + 1] = encodeFloat16(vectors[displayCell * 2 + 1])

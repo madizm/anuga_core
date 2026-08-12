@@ -76,6 +76,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .preview-button { height: 40px; padding: 0 14px; border: 1px solid #8b6d31; background: #2d281a; color: #f0d78e; cursor: pointer; white-space: nowrap; }
 .preview-button span { margin-right: 5px; color: var(--yellow); }
 .preview-button:hover { border-color: var(--yellow); background: #4a3c1d; }
+.preview-mode-select { height: 40px; max-width: 142px; padding: 0 8px; border: 1px solid #4f452b; background: #101d20; color: #cdbb89; font: 600 10px var(--display); }
 .history-trigger { height: 40px; padding: 0 14px; color: #91aeb5; white-space: nowrap; }
 .history-trigger span { margin-right: 5px; color: var(--cyan); }
 .run-button { height: 40px; padding: 0 19px; border-color: var(--cyan); background: var(--cyan); color: #041014; font-weight: 600; box-shadow: 0 0 24px rgba(0, 229, 255, .14); }
@@ -650,6 +651,7 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .preview-rate button, .preview-quantity button { height: 30px; border: 0; border-left: 1px solid #3e3622; background: #101d20; color: #887d61; cursor: pointer; font: 600 10px var(--display); }
 .preview-rate button.active, .preview-quantity button.active { background: #4b3c1c; color: var(--yellow); }
 .preview-quantity { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 6px; border: 1px solid #3e3622; }
+.preview-quantity.static { grid-template-columns: repeat(3, 1fr); }
 .preview-quantity button { height: 38px; display: grid; place-items: center; gap: 1px; }
 .preview-quantity button + button { border-left: 1px solid #3e3622; }
 .preview-quantity small { color: #70674f; font: 8px var(--display); letter-spacing: .08em; }
@@ -672,6 +674,7 @@ kbd { padding: 2px 4px; border: 1px solid var(--line-bright); background: #14252
 .preview-vitals em { color: #9e8953; font: normal 8px var(--display); }
 .preview-meta { display: flex; justify-content: space-between; gap: 6px; padding: 8px 0; color: #756744; font: 9px var(--display); letter-spacing: .06em; }
 .preview-note { padding: 8px 9px; border-left: 2px solid #8b6b2b; background: rgba(255, 203, 69, .06); color: #9e8d61; font-size: 9px; line-height: 1.5; }
+.preview-note.static { margin-bottom: 6px; border-color: var(--cyan); color: #8fc0c7; }
 .preview-formal { width: 100%; height: 32px; margin-top: 8px; border: 1px solid #2e6875; background: #0b242b; color: #8ee5ed; cursor: pointer; font-size: 10px; text-align: left; padding: 0 10px; }
 .preview-formal span { float: right; color: var(--cyan); font-size: 15px; }
 .preview-formal:hover { border-color: var(--cyan); background: #10333b; }

@@ -1,5 +1,5 @@
 import type { PreviewSnapshot, PreviewSolver, DensePreviewGrid } from './types'
-import { PREVIEW_DRY_DEPTH_M, PREVIEW_GRAVITY_MPS2 } from './types'
+import { PREVIEW_GRAVITY_MPS2 } from './types'
 import { makeSnapshot } from './referencePreviewSolver'
 
 const VERTEX_SHADER = `#version 300 es
@@ -180,6 +180,53 @@ void main() {
 }
 `
 
+const INITIAL_WAVE_REDUCTION_SHADER = `#version 300 es
+precision highp float;
+uniform sampler2D u_state;
+uniform sampler2D u_mask;
+uniform float u_gravity;
+out float outputSpeed;
+void main() {
+  ivec2 target = ivec2(gl_FragCoord.xy);
+  ivec2 size = textureSize(u_state, 0);
+  float maximum = 0.0;
+  for (int offset = 0; offset < 4; offset++) {
+    ivec2 pixel = target * 2 + ivec2(offset & 1, offset >> 1);
+    if (pixel.x >= size.x || pixel.y >= size.y) continue;
+    if (texelFetch(u_mask, pixel, 0).r != 1.0) continue;
+    vec3 state = texelFetch(u_state, pixel, 0).xyz;
+    float h = max(state.x, 0.0);
+    float velocity = h >= 0.01 ? length(state.yz) / max(h, 0.000001) : 0.0;
+    maximum = max(maximum, velocity + sqrt(u_gravity * h));
+  }
+  outputSpeed = maximum;
+}
+`
+
+const WAVE_REDUCTION_SHADER = `#version 300 es
+precision highp float;
+uniform sampler2D u_values;
+out float outputSpeed;
+void main() {
+  ivec2 target = ivec2(gl_FragCoord.xy);
+  ivec2 size = textureSize(u_values, 0);
+  float maximum = 0.0;
+  for (int offset = 0; offset < 4; offset++) {
+    ivec2 pixel = target * 2 + ivec2(offset & 1, offset >> 1);
+    if (pixel.x < size.x && pixel.y < size.y) {
+      maximum = max(maximum, texelFetch(u_values, pixel, 0).r);
+    }
+  }
+  outputSpeed = maximum;
+}
+`
+
+interface ReductionLevel {
+  texture: WebGLTexture
+  width: number
+  height: number
+}
+
 interface TextureSet {
   state: WebGLTexture
   terrain: WebGLTexture
@@ -204,6 +251,10 @@ interface GpuResources {
   read: WebGLTexture
   write: WebGLTexture
   inputs: TextureSet
+  initialReductionProgram: WebGLProgram
+  reductionProgram: WebGLProgram
+  reductionLevels: ReductionLevel[]
+  reductionUniforms: Record<string, WebGLUniformLocation | null>
 }
 
 export class WebGL2PreviewSolver implements PreviewSolver {
@@ -214,6 +265,12 @@ export class WebGL2PreviewSolver implements PreviewSolver {
   private statePixels: Float32Array
   private appliedInputVolumeM3 = 0
   private maxWaveSpeed = 1
+  private readonly waveSpeedPixel = new Float32Array(1)
+  private readonly snapshotBuffers: Array<{
+    vectors: Float32Array
+    texels: Uint16Array
+  }>
+  private snapshotBufferIndex = 0
   private disposed = false
 
   constructor(grid: DensePreviewGrid) {
@@ -227,8 +284,19 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     if (!(gl instanceof WebGL2RenderingContext)) throw new Error('快速预览需要 WebGL2')
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('显卡不支持浮点预览纹理')
     this.gl = gl
-    this.resources = this.createResources()
+    try {
+      this.resources = this.createResources()
+      if (gl.getError() !== gl.NO_ERROR) throw new Error('GPU 内存分配失败')
+    } catch (error) {
+      gl.getExtension('WEBGL_lose_context')?.loseContext()
+      throw new Error(`快速预览初始化失败：${(error as Error).message}`)
+    }
     this.statePixels = new Float32Array(grid.initialState)
+    const cellCount = grid.width * grid.height
+    this.snapshotBuffers = [0, 1].map(() => ({
+      vectors: new Float32Array(cellCount * 2),
+      texels: new Uint16Array(cellCount * 4),
+    }))
     this.uploadState(this.resources.read, this.statePixels)
     this.uploadState(this.resources.write, null)
   }
@@ -243,7 +311,8 @@ export class WebGL2PreviewSolver implements PreviewSolver {
   }
 
   recommendedTimeStepSeconds() {
-    return Math.min(1, 0.42 * this.grid.cellSizeM / Math.max(this.maxWaveSpeed, 1e-6))
+    this.updateMaxWaveSpeed()
+    return Math.min(30, 0.35 * this.grid.cellSizeM / Math.max(this.maxWaveSpeed, 1))
   }
 
   step(timeStepSeconds: number, rainfallRateMps: number) {
@@ -292,16 +361,12 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     gl.readPixels(0, 0, this.grid.width, this.grid.height, gl.RGBA, gl.FLOAT, this.statePixels)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     if (gl.getError() !== gl.NO_ERROR) throw new Error('快速预览无法读取 GPU 状态')
-    let maxWaveSpeed = 1e-6
-    for (let cell = 0; cell < this.grid.mask.length; cell += 1) {
-      if (this.grid.mask[cell] !== 1) continue
-      const h = Math.max(0, this.statePixels[cell * 4])
-      const speed = h >= PREVIEW_DRY_DEPTH_M
-        ? Math.hypot(this.statePixels[cell * 4 + 1], this.statePixels[cell * 4 + 2]) / h : 0
-      maxWaveSpeed = Math.max(maxWaveSpeed, speed + Math.sqrt(PREVIEW_GRAVITY_MPS2 * h))
-    }
-    this.maxWaveSpeed = maxWaveSpeed
-    const result = makeSnapshot(this.grid, this.statePixels, timeSeconds, this.appliedInputVolumeM3, 0)
+    const buffers = this.snapshotBuffers[this.snapshotBufferIndex]
+    this.snapshotBufferIndex = (this.snapshotBufferIndex + 1) % this.snapshotBuffers.length
+    const result = makeSnapshot(
+      this.grid, this.statePixels, timeSeconds, this.appliedInputVolumeM3, 0,
+      undefined, 0, buffers,
+    )
     result.diagnostics.timeStepSeconds = this.recommendedTimeStepSeconds()
     return result
   }
@@ -328,6 +393,9 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     gl.deleteFramebuffer(resources.framebuffer)
     gl.deleteVertexArray(resources.quad)
     gl.deleteProgram(resources.program)
+    gl.deleteProgram(resources.initialReductionProgram)
+    gl.deleteProgram(resources.reductionProgram)
+    for (const level of resources.reductionLevels) gl.deleteTexture(level.texture)
     this.statePixels = new Float32Array(0)
   }
 
@@ -374,6 +442,9 @@ export class WebGL2PreviewSolver implements PreviewSolver {
       gl, this.grid.width, this.grid.height + 1,
       hydraulics?.qFactorY ?? filledFloat32(wallYValues.length, 1),
     )
+    const initialReductionProgram = createProgram(gl, VERTEX_SHADER, INITIAL_WAVE_REDUCTION_SHADER)
+    const reductionProgram = createProgram(gl, VERTEX_SHADER, WAVE_REDUCTION_SHADER)
+    const reductionLevels = createReductionLevels(gl, this.grid.width, this.grid.height)
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, read, 0)
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
@@ -389,8 +460,15 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     ]) {
       uniforms[name] = gl.getUniformLocation(program, name)
     }
+    const reductionUniforms: Record<string, WebGLUniformLocation | null> = {
+      u_state: gl.getUniformLocation(initialReductionProgram, 'u_state'),
+      u_mask: gl.getUniformLocation(initialReductionProgram, 'u_mask'),
+      u_gravity: gl.getUniformLocation(initialReductionProgram, 'u_gravity'),
+      u_values: gl.getUniformLocation(reductionProgram, 'u_values'),
+    }
     return {
       program, framebuffer, quad, uniforms, read, write,
+      initialReductionProgram, reductionProgram, reductionLevels, reductionUniforms,
       inputs: {
         state: read, terrain, friction, mask, source, outletCapacity, outletFullDepth,
         wallX, wallY, crestX, crestY, qFactorX, qFactorY,
@@ -402,6 +480,39 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     const gl = this.gl
     gl.bindTexture(gl.TEXTURE_2D, texture)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.grid.width, this.grid.height, 0, gl.RGBA, gl.FLOAT, data)
+  }
+
+  private updateMaxWaveSpeed() {
+    const { gl, resources } = this
+    const levels = resources.reductionLevels
+    gl.bindFramebuffer(gl.FRAMEBUFFER, resources.framebuffer)
+    gl.bindVertexArray(resources.quad)
+    gl.disable(gl.BLEND)
+    gl.disable(gl.DEPTH_TEST)
+    gl.useProgram(resources.initialReductionProgram)
+    gl.uniform1f(resources.reductionUniforms.u_gravity, PREVIEW_GRAVITY_MPS2)
+    bindTexture(gl, resources.read, 0, resources.reductionUniforms.u_state)
+    bindTexture(gl, resources.inputs.mask, 1, resources.reductionUniforms.u_mask)
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, levels[0].texture, 0)
+    gl.viewport(0, 0, levels[0].width, levels[0].height)
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+    gl.useProgram(resources.reductionProgram)
+    for (let index = 1; index < levels.length; index += 1) {
+      const level = levels[index]
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, level.texture, 0)
+      gl.viewport(0, 0, level.width, level.height)
+      bindTexture(gl, levels[index - 1].texture, 0, resources.reductionUniforms.u_values)
+      gl.drawArrays(gl.TRIANGLES, 0, 6)
+    }
+    const last = levels[levels.length - 1]
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, last.texture, 0)
+    gl.readPixels(0, 0, 1, 1, gl.RED, gl.FLOAT, this.waveSpeedPixel)
+    gl.bindVertexArray(null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    if (gl.getError() !== gl.NO_ERROR || !Number.isFinite(this.waveSpeedPixel[0])) {
+      throw new Error('快速预览无法读取 GPU 稳定性诊断')
+    }
+    this.maxWaveSpeed = Math.max(this.waveSpeedPixel[0], 1e-6)
   }
 
   private assertAlive() {
@@ -425,6 +536,23 @@ function filledFloat32(length: number, value: number) {
   return result
 }
 
+function createReductionLevels(gl: WebGL2RenderingContext, width: number, height: number) {
+  const levels: ReductionLevel[] = []
+  let levelWidth = Math.max(1, Math.ceil(width / 2))
+  let levelHeight = Math.max(1, Math.ceil(height / 2))
+  while (true) {
+    levels.push({
+      texture: createScalarTexture(gl, levelWidth, levelHeight, null),
+      width: levelWidth,
+      height: levelHeight,
+    })
+    if (levelWidth === 1 && levelHeight === 1) break
+    levelWidth = Math.max(1, Math.ceil(levelWidth / 2))
+    levelHeight = Math.max(1, Math.ceil(levelHeight / 2))
+  }
+  return levels
+}
+
 function createFloatTexture(
   gl: WebGL2RenderingContext, width: number, height: number, data: Float32Array | null,
 ) {
@@ -439,7 +567,7 @@ function createFloatTexture(
 }
 
 function createScalarTexture(
-  gl: WebGL2RenderingContext, width: number, height: number, data: Float32Array,
+  gl: WebGL2RenderingContext, width: number, height: number, data: Float32Array | null,
 ) {
   const texture = required(gl.createTexture(), '预览标量纹理')
   gl.bindTexture(gl.TEXTURE_2D, texture)

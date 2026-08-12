@@ -42,6 +42,8 @@ Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
 - first-frame display, follow-latest, scrubber, and 700 ms playback;
 - depth, stage, speed, and synchronized three-map modes;
 - terrain-draped procedural water, with animated flow particles and no independent water/terrain depth mesh;
+- browser-local dynamic preview up to 262,144 dense cells, with 15 Hz GPU-state snapshots;
+- browser-local static snapshot preview up to 1,048,576 dense cells, with exact 30-minute simulated-time snapshots, GPU CFL reduction, and no ripple/particle timers;
 - double-buffered raster sources with a short cross-fade;
 - point sampling of all three quantities;
 - Job deep links (`?job=<uuid>`) that survive page reloads.
@@ -54,6 +56,10 @@ npm test
 npm run lint
 npx playwright test
 ```
+
+Run the real 1M-cell WebGL2 benchmark with `npm run benchmark:preview`; see
+[`docs/static-preview-benchmark.md`](docs/static-preview-benchmark.md) for the
+recorded baseline and interpretation.
 
 The Playwright suite uses installed Google Chrome and expects the complete
 Compose stack. Its live-playback case submits a real 20-second ANUGA job,

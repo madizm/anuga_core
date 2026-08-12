@@ -39,6 +39,14 @@ function solverFor(scenarioValue: ScenarioPayload, size = 3) {
 }
 
 describe('ReferencePreviewSolver', () => {
+  it('uses the CFL limit without the former one-second artificial cap', () => {
+    const solver = solverFor(scenario())
+    expect(solver.recommendedTimeStepSeconds()).toBeCloseTo(10.5)
+    for (let cell = 0; cell < 9; cell += 1) solver.grid.initialState[cell * 4] = 9
+    solver.reset()
+    expect(solver.recommendedTimeStepSeconds()).toBeLessThan(1.2)
+  })
+
   it('keeps flat uniform water still', () => {
     const solver = solverFor(scenario())
     // Remove the tiny inlet source for this static-state assertion and put a
@@ -77,6 +85,21 @@ describe('ReferencePreviewSolver', () => {
     const snapshot = solver.snapshot(10)
     expect(snapshot.diagnostics.waterVolumeM3).toBeCloseTo(rain * 4 * 900 * 10, 2)
     expect(snapshot.diagnostics.appliedInputVolumeM3).toBeCloseTo(rain * 4 * 900 * 10, 2)
+  })
+
+  it('keeps a 24-hour CFL-adaptive rainfall run finite and mass balanced', () => {
+    const solver = solverFor(scenario({ durationSeconds: 86_400 }), 2)
+    const rainfallRateMps = 0.001 / 3_600
+    let timeSeconds = 0
+    while (timeSeconds < 86_400) {
+      const dt = Math.min(solver.recommendedTimeStepSeconds(), 86_400 - timeSeconds)
+      solver.step(dt, rainfallRateMps)
+      timeSeconds += dt
+    }
+    const diagnostics = solver.snapshot(timeSeconds).diagnostics
+    expect(diagnostics.maximumDepthM).toBeCloseTo(0.024, 4)
+    expect(diagnostics.massResidualM3).toBeCloseTo(0, 2)
+    expect(Number.isFinite(diagnostics.maximumSpeedMps)).toBe(true)
   })
 
   it('blocks below-crest flow across a rasterized levee face', () => {

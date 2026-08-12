@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ScenarioPayload } from '../api/types'
 import type { SimulationGrid } from '../map/simulationGrid'
-import { buildDensePreviewGrid } from './previewGrid'
+import { buildDensePreviewGrid, validatePreviewGridSize } from './previewGrid'
 
 function grid(): SimulationGrid {
   return {
@@ -107,7 +107,16 @@ describe('buildDensePreviewGrid', () => {
     input.manningLow = new Float32Array([0.03])
     input.manningMiddle = new Float32Array([0.05])
     input.manningHigh = new Float32Array([0.1])
-    expect(() => buildDensePreviewGrid(input, scenario(), 30, 16_384)).toThrow(/纹理上限/)
+    expect(() => buildDensePreviewGrid(input, scenario(), 30, {
+      mode: 'static', maxTextureSize: 16_384,
+    })).toThrow(/纹理上限/)
     expect(() => buildDensePreviewGrid(input, scenario(), 30)).toThrow(/内存上限/)
   })
+  it('applies separate dense-grid limits to animated and static preview modes', () => {
+    expect(validatePreviewGridSize(512, 512, { mode: 'animated' })).toBe(262_144)
+    expect(() => validatePreviewGridSize(513, 512, { mode: 'animated' })).toThrow(/动态预览/)
+    expect(validatePreviewGridSize(1_024, 1_024, { mode: 'static' })).toBe(1_048_576)
+    expect(() => validatePreviewGridSize(1_025, 1_024, { mode: 'static' })).toThrow(/静态快照预览/)
+  })
+
 })

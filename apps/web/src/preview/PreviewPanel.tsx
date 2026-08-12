@@ -1,5 +1,5 @@
 import type { ResultQuantity } from '../api/types'
-import type { PreviewCapabilities, PreviewStatus } from './types'
+import type { PreviewCapabilities, PreviewMode, PreviewStatus } from './types'
 
 const RATES = [30, 60, 180, 600]
 const LEGENDS: Record<ResultQuantity, {
@@ -28,6 +28,7 @@ const QUANTITIES: Array<[ResultQuantity, string]> = [
 
 export function PreviewPanel({
   status,
+  mode,
   capabilities,
   quantity,
   flowEnabled,
@@ -42,6 +43,7 @@ export function PreviewPanel({
   onFormal,
 }: {
   status: PreviewStatus | null
+  mode: PreviewMode
   capabilities: PreviewCapabilities
   quantity: ResultQuantity
   flowEnabled: boolean
@@ -64,7 +66,7 @@ export function PreviewPanel({
     <section className={`preview-panel ${active ? 'active' : ''}`} aria-label="快速预览控制">
       <div className="preview-panel-heading">
         <div>
-          <span className="eyebrow preview-eyebrow">LOCAL GPU PREVIEW · NON-AUTHORITATIVE</span>
+          <span className="eyebrow preview-eyebrow">{mode === 'static' ? 'STATIC SNAPSHOT' : 'LOCAL GPU PREVIEW'} · NON-AUTHORITATIVE</span>
           <strong>{status?.phase === 'completed' ? '预览已完成' : stale ? '场景已修改，预览失效' : '快速预览'}</strong>
         </div>
         <button className="icon-button" onClick={onClose} aria-label="关闭快速预览">×</button>
@@ -91,13 +93,13 @@ export function PreviewPanel({
         </button>
         <button className="preview-reset" disabled={!active || stale} onClick={onReset}>重置</button>
       </div>
-      <div className="preview-rate" role="group" aria-label="预览速度">
+      {mode === 'animated' && <div className="preview-rate" role="group" aria-label="预览速度">
         <span>SIM SPEED</span>
         {RATES.map((rate) => <button key={rate} className={status?.playbackRate === rate ? 'active' : ''} onClick={() => onRate(rate)}>{rate}×</button>)}
-      </div>
-      <div className="preview-quantity" role="group" aria-label="预览显示量">
+      </div>}
+      <div className={`preview-quantity ${mode}`} role="group" aria-label="预览显示量">
         {QUANTITIES.map(([value, label]) => <button key={value} className={quantity === value ? 'active' : ''} onClick={() => onQuantity(value)}>{label}<small>{value.toUpperCase()}</small></button>)}
-        <button className={flowEnabled ? 'active' : ''} onClick={() => onFlow(!flowEnabled)}>流向<small>{flowEnabled ? 'ON' : 'OFF'}</small></button>
+        {mode === 'animated' && <button className={flowEnabled ? 'active' : ''} onClick={() => onFlow(!flowEnabled)}>流向<small>{flowEnabled ? 'ON' : 'OFF'}</small></button>}
       </div>
       <div className={`preview-legend ${quantity}`} aria-label={`${legend.title}颜色图例`}>
         <div className="preview-legend-heading"><span>颜色图例</span><strong>{legend.title} <em>· {legend.unit}</em></strong></div>
@@ -112,9 +114,11 @@ export function PreviewPanel({
       </div>
       <div className="preview-meta">
         <span>DT {diagnostic ? diagnostic.timeStepSeconds.toFixed(3) : '—'}s</span>
-        <span>CELLS {status?.snapshot?.field.width && status.snapshot.field.height ? status.snapshot.field.width * status.snapshot.field.height : '—'}</span>
+        <span>CELLS {status?.gridCellCount.toLocaleString() ?? '—'}</span>
         <span>GPU {capabilities.maxTextureSize || '—'}</span>
+        {mode === 'static' && <span>NEXT {status?.nextSnapshotTimeSeconds != null ? `T+${status.nextSnapshotTimeSeconds}s` : '—'}</span>}
       </div>
+      {mode === 'static' && <div className="preview-note static">地图每 {status?.snapshotIntervalSeconds ? status.snapshotIntervalSeconds / 60 : 30} 分钟模拟时间更新一次；内部仍使用 CFL 自适应步长。</div>}
       <div className="preview-note">预览只用于方案草绘，不写入 Job、COG 或正式报告。</div>
       <button className="preview-formal" onClick={onFormal}>提交 ANUGA 正式模拟 <span>→</span></button>
     </section>

@@ -2,7 +2,7 @@ import type { Map } from 'maplibre-gl'
 import type { ResultQuantity } from '../api/types'
 import { FlowParticleLayer } from '../jobs/FlowParticleLayer'
 import { TerrainDrapedWaterLayer } from '../jobs/TerrainDrapedWaterLayer'
-import type { PreviewSnapshot } from './types'
+import type { PreviewMode, PreviewSnapshot } from './types'
 
 /** MapLibre adapter for browser-local preview frames. */
 export class PreviewMapLayer {
@@ -11,6 +11,7 @@ export class PreviewMapLayer {
   private snapshot: PreviewSnapshot | null = null
   private quantity: ResultQuantity = 'depth'
   private flowEnabled = true
+  private mode: PreviewMode = 'animated'
   private destroyed = false
 
   constructor(private readonly map: Map) {
@@ -22,6 +23,13 @@ export class PreviewMapLayer {
   setSnapshot(snapshot: PreviewSnapshot | null) {
     if (this.destroyed) return
     this.snapshot = snapshot
+    this.apply()
+  }
+
+  setMode(mode: PreviewMode) {
+    if (this.mode === mode) return
+    this.mode = mode
+    this.water.setAnimated(mode === 'animated')
     this.apply()
   }
 
@@ -55,7 +63,11 @@ export class PreviewMapLayer {
     this.water.setColorize(true)
     this.water.setQuantity(this.quantity)
     this.water.setField(field)
-    this.flow.setField(this.flowEnabled ? field : null, this.snapshot ? Math.floor(this.snapshot.timeSeconds) : null)
+    this.flow.setField(
+      this.mode === 'animated' && this.flowEnabled ? field : null,
+      this.mode === 'animated' && this.flowEnabled && this.snapshot
+        ? Math.floor(this.snapshot.timeSeconds) : null,
+    )
     const container = this.map.getContainer()
     if (this.snapshot) {
       container.dataset.previewTime = this.snapshot.timeSeconds.toFixed(2)
