@@ -12,7 +12,13 @@ from rasterio.transform import from_origin
 from apps.api.config import Settings
 from apps.api.db import Database
 from apps.api.models import FullPreviewJob
-from apps.worker.full_preview_tasks import FullPreviewRunner
+from apps.worker.full_preview_tasks import FullPreviewRunner, run_full_preview
+
+
+def test_full_preview_task_redelivers_after_worker_loss():
+    assert run_full_preview.reject_on_worker_lost is True
+    assert run_full_preview.app.conf.task_acks_late is True
+    assert run_full_preview.app.conf.worker_prefetch_multiplier == 1
 
 
 @pytest.mark.parametrize("interrupted_phase", [

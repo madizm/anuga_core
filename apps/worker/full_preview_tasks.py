@@ -229,7 +229,10 @@ def _geographic_bounds(
 
 
 @celery_app.task(
-    name="bayuquan.run_full_preview", bind=True, max_retries=0
+    name="bayuquan.run_full_preview",
+    bind=True,
+    max_retries=0,
+    reject_on_worker_lost=True,
 )
 def run_full_preview(_task, job_id: str) -> None:
     FullPreviewRunner(Settings.from_environment()).run(job_id)
