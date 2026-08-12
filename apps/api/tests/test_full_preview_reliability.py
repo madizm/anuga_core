@@ -14,9 +14,9 @@ from apps.api.config import Settings
 from apps.api.db import Database
 from apps.api.models import FullPreviewJob, utcnow
 from apps.worker.full_preview_tasks import (
+    MAX_EXECUTION_ATTEMPTS,
     ExecutionLeaseLost,
     FullPreviewRunner,
-    MAX_EXECUTION_ATTEMPTS,
     recover_expired_full_previews,
     run_full_preview,
 )

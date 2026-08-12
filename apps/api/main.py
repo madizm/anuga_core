@@ -37,6 +37,11 @@ from rasterio.io import MemoryFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from bayuquan.preview.cache import (
+    PreprocessingCacheMismatch,
+    cache_identity,
+    load_preprocessed,
+)
 from bayuquan.simulation.area_catalog import (
     SimulationAreaCatalog,
 )
@@ -45,11 +50,6 @@ from bayuquan.simulation.feature_compiler import (
     sample_elevation_profile,
 )
 from bayuquan.simulation.hydraulic_features import HydraulicFeaturesSpec
-from bayuquan.preview.cache import (
-    PreprocessingCacheMismatch,
-    cache_identity,
-    load_preprocessed,
-)
 
 from .config import Settings
 from .db import Database
