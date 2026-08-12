@@ -35,6 +35,16 @@ def upgrade() -> None:
         sa.Column("effective_rainfall_depth_mm", sa.Float(), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("phase", sa.String(length=40), nullable=True),
+        sa.Column(
+            "execution_attempt", sa.Integer(), nullable=False,
+            server_default="0",
+        ),
+        sa.Column("execution_token", sa.String(length=36), nullable=True),
+        sa.Column(
+            "execution_lease_expires_at",
+            sa.DateTime(timezone=True),
+            nullable=True,
+        ),
         sa.Column("cache_hit", sa.Boolean(), nullable=True),
         sa.Column("result_cog_uri", sa.Text(), nullable=True),
         sa.Column("report_uri", sa.Text(), nullable=True),

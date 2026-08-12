@@ -224,6 +224,13 @@ class FullPreviewJob(Base):
     effective_rainfall_depth_mm: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(20), default="QUEUED")
     phase: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    execution_attempt: Mapped[int] = mapped_column(Integer, default=0)
+    execution_token: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     cache_hit: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     result_cog_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     report_uri: Mapped[str | None] = mapped_column(Text, nullable=True)

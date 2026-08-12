@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+import uuid
+from datetime import timedelta
 from pathlib import Path
 
 import rasterio
@@ -12,7 +14,7 @@ from celery.utils.log import get_task_logger
 from pyproj import Transformer
 from rasterio.windows import Window
 from redis import Redis
-from sqlalchemy import select
+from sqlalchemy import func, or_, update
 
 from apps.api.config import Settings
 from apps.api.db import Database
@@ -25,6 +27,12 @@ from .storage import ObjectStorage
 from .tasks import celery_app
 
 logger = get_task_logger(__name__)
+EXECUTION_LEASE = timedelta(hours=6)
+ACTIVE_STATUSES = ("QUEUED", "PREPARING", "SOLVING", "PUBLISHING")
+
+
+class ExecutionLeaseLost(RuntimeError):
+    pass
 
 
 class FullPreviewRunner:
@@ -42,30 +50,12 @@ class FullPreviewRunner:
         )
 
     def run(self, job_id: str) -> None:
-        with self.database.session_factory.begin() as session:
-            job = session.scalar(
-                select(FullPreviewJob)
-                .where(FullPreviewJob.id == job_id)
-                .with_for_update()
-            )
-            if job is None:
-                raise ValueError(f"full preview does not exist: {job_id}")
-            if job.status in {"COMPLETED", "FAILED"}:
-                return
-            if job.status not in {
-                "QUEUED", "PREPARING", "SOLVING", "PUBLISHING",
-            }:
-                raise RuntimeError(
-                    f"full preview {job_id} cannot start from {job.status}"
-                )
-            job.status = "PREPARING"
-            job.phase = "PREPARING"
-            job.started_at = job.started_at or utcnow()
-            job.completed_at = None
-            job.error_code = None
-            job.error_message = None
-            rainfall_depth_m = job.effective_rainfall_depth_mm / 1000.0
-            product_id = job.dem_product_id
+        claimed = self._claim(job_id)
+        if claimed is None:
+            return
+        job, execution_token = claimed
+        rainfall_depth_m = job.effective_rainfall_depth_mm / 1000.0
+        product_id = job.dem_product_id
         self._event(job_id, "preview.status", {"status": "PREPARING"})
 
         try:
@@ -104,12 +94,16 @@ class FullPreviewRunner:
                 raise RuntimeError(
                     "full preview basin shape does not match domain window"
                 )
-            self._status(job_id, "SOLVING", cache_hit=True)
+            self._status(
+                job_id, execution_token, "SOLVING", cache_hit=True
+            )
             result = preprocessed.network.solve(
                 effective_rainfall_depth_m=rainfall_depth_m,
             )
 
-            self._status(job_id, "PUBLISHING", cache_hit=True)
+            self._status(
+                job_id, execution_token, "PUBLISHING", cache_hit=True
+            )
             self.storage.ensure_bucket()
             with tempfile.TemporaryDirectory(
                 prefix=f"bayuquan-full-preview-{job_id}-"
@@ -155,52 +149,139 @@ class FullPreviewRunner:
                     f"full-previews/{job_id}/report.json",
                 )
 
-            with self.database.session_factory.begin() as session:
-                job = session.get(FullPreviewJob, job_id)
-                job.status = "COMPLETED"
-                job.phase = "COMPLETED"
-                job.completed_at = utcnow()
-                job.cache_hit = True
-                job.result_cog_uri = cog.uri
-                job.report_uri = report_object.uri
-                job.bounds = bounds
-                job.maximum_depth_m = written.maximum_depth_m
-                job.wet_area_m2 = written.wet_area_m2
-                job.threshold_areas_m2 = report["thresholdAreasM2"]
-                job.input_volume_m3 = result.input_volume_m3
-                job.retained_volume_m3 = result.retained_volume_m3
-                job.outflow_volume_m3 = result.outflow_volume_m3
-                job.mass_balance_error_m3 = result.mass_balance_error_m3
-            self._event(job_id, "preview.completed", report)
+            completed = self._finish(job_id, execution_token, {
+                "cache_hit": True,
+                "result_cog_uri": cog.uri,
+                "report_uri": report_object.uri,
+                "bounds": bounds,
+                "maximum_depth_m": written.maximum_depth_m,
+                "wet_area_m2": written.wet_area_m2,
+                "threshold_areas_m2": report["thresholdAreasM2"],
+                "input_volume_m3": result.input_volume_m3,
+                "retained_volume_m3": result.retained_volume_m3,
+                "outflow_volume_m3": result.outflow_volume_m3,
+                "mass_balance_error_m3": result.mass_balance_error_m3,
+            })
+            if completed:
+                self._event(job_id, "preview.completed", report)
+        except ExecutionLeaseLost:
+            logger.info("full preview %s execution lease was replaced", job_id)
+            return
         except Exception as error:
             logger.exception("full preview %s failed", job_id)
-            with self.database.session_factory.begin() as session:
-                job = session.get(FullPreviewJob, job_id)
-                if job is not None:
-                    job.status = "FAILED"
-                    job.phase = "FAILED"
-                    job.completed_at = utcnow()
-                    job.error_code = "FULL_PREVIEW_FAILED"
-                    job.error_message = str(error)[:2000]
-            self._event(job_id, "preview.failed", {
-                "errorCode": "FULL_PREVIEW_FAILED",
-                "message": str(error),
-            })
+            if self._fail(job_id, execution_token, error):
+                self._event(job_id, "preview.failed", {
+                    "errorCode": "FULL_PREVIEW_FAILED",
+                    "message": str(error),
+                })
             raise
 
-    def _status(
-        self, job_id: str, phase: str, *, cache_hit: bool | None = None
-    ) -> None:
+    def _claim(self, job_id: str):
+        now = utcnow()
+        token = str(uuid.uuid4())
         with self.database.session_factory.begin() as session:
+            result = session.execute(
+                update(FullPreviewJob)
+                .where(
+                    FullPreviewJob.id == job_id,
+                    FullPreviewJob.status.in_(ACTIVE_STATUSES),
+                    or_(
+                        FullPreviewJob.execution_token.is_(None),
+                        FullPreviewJob.execution_lease_expires_at.is_(None),
+                        FullPreviewJob.execution_lease_expires_at <= now,
+                    ),
+                )
+                .values(
+                    status="PREPARING",
+                    phase="PREPARING",
+                    started_at=func.coalesce(
+                        FullPreviewJob.started_at, now
+                    ),
+                    completed_at=None,
+                    error_code=None,
+                    error_message=None,
+                    execution_attempt=FullPreviewJob.execution_attempt + 1,
+                    execution_token=token,
+                    execution_lease_expires_at=now + EXECUTION_LEASE,
+                )
+            )
+            if result.rowcount == 0:
+                if session.get(FullPreviewJob, job_id) is None:
+                    raise ValueError(
+                        f"full preview does not exist: {job_id}"
+                    )
+                return None
             job = session.get(FullPreviewJob, job_id)
-            job.status = phase
-            job.phase = phase
-            if cache_hit is not None:
-                job.cache_hit = cache_hit
+            return job, token
+
+    def _status(
+        self, job_id: str, token: str, phase: str,
+        *, cache_hit: bool | None = None
+    ) -> None:
+        values = {
+            "status": phase,
+            "phase": phase,
+            "execution_lease_expires_at": utcnow() + EXECUTION_LEASE,
+        }
+        if cache_hit is not None:
+            values["cache_hit"] = cache_hit
+        with self.database.session_factory.begin() as session:
+            result = session.execute(
+                update(FullPreviewJob)
+                .where(
+                    FullPreviewJob.id == job_id,
+                    FullPreviewJob.execution_token == token,
+                    FullPreviewJob.status.in_(ACTIVE_STATUSES),
+                )
+                .values(**values)
+            )
+            if result.rowcount != 1:
+                raise ExecutionLeaseLost(job_id)
         self._event(job_id, "preview.status", {
             "status": phase,
             "cacheHit": cache_hit,
         })
+
+    def _finish(self, job_id: str, token: str, values: dict) -> bool:
+        with self.database.session_factory.begin() as session:
+            result = session.execute(
+                update(FullPreviewJob)
+                .where(
+                    FullPreviewJob.id == job_id,
+                    FullPreviewJob.execution_token == token,
+                    FullPreviewJob.status.in_(ACTIVE_STATUSES),
+                )
+                .values(
+                    **values,
+                    status="COMPLETED",
+                    phase="COMPLETED",
+                    completed_at=utcnow(),
+                    execution_token=None,
+                    execution_lease_expires_at=None,
+                )
+            )
+            return result.rowcount == 1
+
+    def _fail(self, job_id: str, token: str, error: Exception) -> bool:
+        with self.database.session_factory.begin() as session:
+            result = session.execute(
+                update(FullPreviewJob)
+                .where(
+                    FullPreviewJob.id == job_id,
+                    FullPreviewJob.execution_token == token,
+                    FullPreviewJob.status.in_(ACTIVE_STATUSES),
+                )
+                .values(
+                    status="FAILED",
+                    phase="FAILED",
+                    completed_at=utcnow(),
+                    error_code="FULL_PREVIEW_FAILED",
+                    error_message=str(error)[:2000],
+                    execution_token=None,
+                    execution_lease_expires_at=None,
+                )
+            )
+            return result.rowcount == 1
 
     def _event(self, job_id: str, event: str, payload: dict) -> None:
         try:
