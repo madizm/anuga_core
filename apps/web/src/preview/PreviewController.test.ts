@@ -123,6 +123,67 @@ describe('PreviewController', () => {
     controller.dispose()
   })
 
+  it('snaps floating-point rainfall boundaries before applying the new rate', () => {
+    let frame: FrameRequestCallback | null = null
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frame = callback
+      return 1
+    }))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const instance = solver(grid())
+    const steps = [599.99999995, 1_000]
+    instance.recommendedTimeStepSeconds = () => steps.shift() ?? 1_000
+    const rainy = longScenario()
+    rainy.rainfall = {
+      enabled: true,
+      points: [
+        { timeMinutes: 0, intensityMmPerHour: 0 },
+        { timeMinutes: 10, intensityMmPerHour: 36 },
+      ],
+    }
+    const controller = new PreviewController({
+      grid: instance.grid, scenario: rainy, mode: 'static',
+    }, () => instance)
+    controller.start()
+    frame!(performance.now() + 500)
+    const calls = vi.mocked(instance.step).mock.calls
+    expect(calls[0]).toEqual([599.99999995, 0])
+    expect(calls[1][0]).toBe(1_000)
+    expect(calls[1][1]).toBeCloseTo(0.00001)
+    controller.dispose()
+  })
+
+  it('retains the last boundary snapshot when static work pauses mid-interval', () => {
+    let frame: FrameRequestCallback | null = null
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frame = callback
+      return 1
+    }))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const instance = solver(grid())
+    instance.snapshot = vi.fn(instance.snapshot)
+    const controller = new PreviewController({
+      grid: instance.grid, scenario: longScenario(), mode: 'static',
+    }, () => instance)
+    controller.start()
+    frame!(performance.now() + 500)
+    expect(controller.status().timeSeconds).toBe(64)
+    controller.pause()
+    expect(controller.status().phase).toBe('paused')
+    expect(instance.snapshot).toHaveBeenCalledTimes(1)
+    expect(controller.status().snapshot?.timeSeconds).toBe(0)
+    controller.dispose()
+  })
+
+  it('disposes the solver when the initial snapshot fails', () => {
+    const instance = solver(grid())
+    instance.snapshot = vi.fn(() => { throw new Error('readback failed') })
+    expect(() => new PreviewController({
+      grid: instance.grid, scenario: scenario(),
+    }, () => instance)).toThrow('readback failed')
+    expect(instance.dispose).toHaveBeenCalledOnce()
+  })
+
   it('resumes a paused solver without rebuilding or resetting it', () => {
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())

@@ -69,6 +69,15 @@ export function crossfadeWeight(elapsedMs: number, reducedMotion: boolean) {
   return Math.max(0, elapsedMs / CROSSFADE_MS)
 }
 
+export function waterSurfaceEffects(animated: boolean) {
+  return animated ? {
+    amplitude: waterRippleParams.amplitude,
+    specular: waterRippleParams.specularStrength,
+    sheen: waterRippleParams.sheenStrength,
+    sparkle: waterRippleParams.sparkleStrength,
+  } : { amplitude: 0, specular: 0, sheen: 0, sparkle: 0 }
+}
+
 /** CanvasSource expects clockwise corners starting at the northwest corner. */
 export function waterCanvasCoordinates(field: FlowField) {
   return [
@@ -566,6 +575,7 @@ export class TerrainDrapedWaterLayer {
     }
     const time = this.reducedMotion.matches || !this.animated ? 0 : (now - this.startedAt) / 1000
     const params = waterRippleParams
+    const effects = waterSurfaceEffects(this.animated)
     const sun = sunDirection(params.sunAzimuth, params.sunElevation)
     const cellMeters = cellSizeMeters(field)
     const { program, uniforms } = resources
@@ -586,10 +596,10 @@ export class TerrainDrapedWaterLayer {
     gl.uniform2f(uniforms.u_cell_meters, cellMeters[0], cellMeters[1])
     gl.uniform1f(uniforms.u_time, time)
     gl.uniform3f(uniforms.u_sun, sun[0], sun[1], sun[2])
-    gl.uniform1f(uniforms.u_specular, params.specularStrength)
-    gl.uniform1f(uniforms.u_sheen, params.sheenStrength)
-    gl.uniform1f(uniforms.u_sparkle, params.sparkleStrength)
-    gl.uniform1f(uniforms.u_amplitude, params.amplitude)
+    gl.uniform1f(uniforms.u_specular, effects.specular)
+    gl.uniform1f(uniforms.u_sheen, effects.sheen)
+    gl.uniform1f(uniforms.u_sparkle, effects.sparkle)
+    gl.uniform1f(uniforms.u_amplitude, effects.amplitude)
     gl.uniform2f(uniforms.u_wave_length, params.waveLengthLarge, params.waveLengthSmall)
     gl.uniform1f(uniforms.u_advect, params.advectScale)
     gl.uniform1f(uniforms.u_feather, Math.max(params.featherDepthM, 0.001))

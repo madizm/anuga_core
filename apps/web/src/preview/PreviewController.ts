@@ -12,6 +12,7 @@ const STATIC_PROGRESS_INTERVAL_MS = 250
 const MAX_BACKLOG_REAL_SECONDS = 0.5
 const PREVIEW_SNAPSHOT_INTERVAL_MS = 1000 / 15
 const DEFAULT_PLAYBACK_RATE = 60
+const TIME_BOUNDARY_EPSILON_SECONDS = 1e-7
 
 type Listener = (status: PreviewStatus) => void
 
@@ -40,18 +41,24 @@ export class PreviewController {
     if (this.mode === 'static' && (
       !Number.isFinite(this.snapshotIntervalSeconds) || this.snapshotIntervalSeconds <= 0
     )) throw new Error('静态快照间隔必须大于零')
-    this.solver = solverFactory(input.grid)
-    this.statusValue = {
-      mode: this.mode,
-      phase: 'idle',
-      timeSeconds: 0,
-      durationSeconds: input.scenario.durationSeconds,
-      playbackRate: input.playbackRate ?? (this.mode === 'static' ? 3_600 : DEFAULT_PLAYBACK_RATE),
-      gridCellCount: input.grid.width * input.grid.height,
-      snapshotIntervalSeconds: this.snapshotIntervalSeconds,
-      nextSnapshotTimeSeconds: this.nextSnapshotAfter(0),
-      snapshot: this.solver.snapshot(0),
-      error: null,
+    const solver = solverFactory(input.grid)
+    this.solver = solver
+    try {
+      this.statusValue = {
+        mode: this.mode,
+        phase: 'idle',
+        timeSeconds: 0,
+        durationSeconds: input.scenario.durationSeconds,
+        playbackRate: input.playbackRate ?? (this.mode === 'static' ? 3_600 : DEFAULT_PLAYBACK_RATE),
+        gridCellCount: input.grid.width * input.grid.height,
+        snapshotIntervalSeconds: this.snapshotIntervalSeconds,
+        nextSnapshotTimeSeconds: this.nextSnapshotAfter(0),
+        snapshot: solver.snapshot(0),
+        error: null,
+      }
+    } catch (error) {
+      solver.dispose()
+      throw error
     }
     document.addEventListener('visibilitychange', this.visibilityChanged)
   }
@@ -83,6 +90,11 @@ export class PreviewController {
   pause() {
     if (this.disposed || this.statusValue.phase !== 'running') return
     this.cancelFrame()
+    if (this.mode === 'static') {
+      this.statusValue = { ...this.statusValue, phase: 'paused' }
+      this.emit()
+      return
+    }
     try {
       this.statusValue = {
         ...this.statusValue,
@@ -172,6 +184,15 @@ export class PreviewController {
       ) {
         const nextSnapshotTime = this.statusValue.nextSnapshotTimeSeconds
         const nextRainfallChange = this.nextRainfallChangeAfter(timeSeconds)
+        if (
+          nextRainfallChange != null
+          && nextRainfallChange - timeSeconds <= TIME_BOUNDARY_EPSILON_SECONDS
+        ) {
+          const boundaryGap = Math.max(nextRainfallChange - timeSeconds, 0)
+          timeSeconds = nextRainfallChange
+          this.backlogSeconds = Math.max(this.backlogSeconds - boundaryGap, 0)
+          continue
+        }
         const dt = Math.min(
           this.solver.recommendedTimeStepSeconds(),
           this.backlogSeconds,
@@ -252,9 +273,8 @@ export class PreviewController {
 
   private nextRainfallChangeAfter(timeSeconds: number) {
     if (!this.input.scenario.rainfall.enabled) return null
-    const epsilon = 1e-7
     const next = this.input.scenario.rainfall.points.find(
-      (point) => point.timeMinutes * 60 > timeSeconds + epsilon,
+      (point) => point.timeMinutes * 60 > timeSeconds,
     )
     return next ? Math.min(next.timeMinutes * 60, this.input.scenario.durationSeconds) : null
   }

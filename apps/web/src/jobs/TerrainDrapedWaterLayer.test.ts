@@ -5,6 +5,7 @@ import {
   crossfadeWeight,
   packFieldPixels,
   sunDirection,
+  waterSurfaceEffects,
   waterCanvasCoordinates,
   waterCanvasSize,
 } from './TerrainDrapedWaterLayer'
@@ -93,6 +94,15 @@ describe('crossfadeWeight', () => {
 
   it('snaps to done under reduced motion', () => {
     expect(crossfadeWeight(0, true)).toBe(1)
+  })
+})
+
+describe('waterSurfaceEffects', () => {
+  it('removes wave relief and highlights from static water', () => {
+    expect(waterSurfaceEffects(false)).toEqual({
+      amplitude: 0, specular: 0, sheen: 0, sparkle: 0,
+    })
+    expect(waterSurfaceEffects(true).amplitude).toBeGreaterThan(0)
   })
 })
 

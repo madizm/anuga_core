@@ -257,6 +257,18 @@ interface GpuResources {
   reductionUniforms: Record<string, WebGLUniformLocation | null>
 }
 
+export function initializeWebGlResources<T>(
+  gl: WebGL2RenderingContext,
+  initialize: () => T,
+): T {
+  try {
+    return initialize()
+  } catch (error) {
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    throw new Error(`快速预览初始化失败：${(error as Error).message}`)
+  }
+}
+
 export class WebGL2PreviewSolver implements PreviewSolver {
   readonly grid: DensePreviewGrid
   private readonly canvas: HTMLCanvasElement
@@ -284,21 +296,23 @@ export class WebGL2PreviewSolver implements PreviewSolver {
     if (!(gl instanceof WebGL2RenderingContext)) throw new Error('快速预览需要 WebGL2')
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('显卡不支持浮点预览纹理')
     this.gl = gl
-    try {
-      this.resources = this.createResources()
+    const initialized = initializeWebGlResources(gl, () => {
+      const resources = this.createResources()
       if (gl.getError() !== gl.NO_ERROR) throw new Error('GPU 内存分配失败')
-    } catch (error) {
-      gl.getExtension('WEBGL_lose_context')?.loseContext()
-      throw new Error(`快速预览初始化失败：${(error as Error).message}`)
-    }
-    this.statePixels = new Float32Array(grid.initialState)
-    const cellCount = grid.width * grid.height
-    this.snapshotBuffers = [0, 1].map(() => ({
-      vectors: new Float32Array(cellCount * 2),
-      texels: new Uint16Array(cellCount * 4),
-    }))
-    this.uploadState(this.resources.read, this.statePixels)
-    this.uploadState(this.resources.write, null)
+      const statePixels = new Float32Array(grid.initialState)
+      const cellCount = grid.width * grid.height
+      const snapshotBuffers = [0, 1].map(() => ({
+        vectors: new Float32Array(cellCount * 2),
+        texels: new Uint16Array(cellCount * 4),
+      }))
+      this.uploadState(resources.read, statePixels)
+      this.uploadState(resources.write, null)
+      if (gl.getError() !== gl.NO_ERROR) throw new Error('GPU 状态上传失败')
+      return { resources, statePixels, snapshotBuffers }
+    })
+    this.resources = initialized.resources
+    this.statePixels = initialized.statePixels
+    this.snapshotBuffers = initialized.snapshotBuffers
   }
 
   reset() {
