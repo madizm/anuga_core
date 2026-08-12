@@ -889,6 +889,8 @@ def test_full_preview_config_and_job_lifecycle_are_independent(
 
     assert config.status_code == 200
     assert config.json()["available"] is True
+    assert config.json()["demProductName"] == "Test DEM"
+    assert config.json()["cellSizeM"] == 30
     assert config.json()["assumptionsProfile"]["runoffCoefficient"] == 0.65
     assert created.status_code == 201, created.text
     assert created.json()["rainfallDepthMm"] == 80

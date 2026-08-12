@@ -328,6 +328,8 @@ export interface FullPreviewConfig {
   available: boolean
   domainId: string
   demProductId: string
+  demProductName: string | null
+  cellSizeM: number | null
   durationHours: number
   cacheStatus: 'READY' | 'MISSING' | 'INVALID'
   readinessError: string | null

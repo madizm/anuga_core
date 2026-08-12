@@ -67,7 +67,7 @@ export function FullPreviewConsole() {
               <div><dt>径流系数</dt><dd>{coefficient.toFixed(2)}</dd></div>
               <div><dt>空间分布</dt><dd>全域均匀</dd></div>
               <div><dt>排水系统</dt><dd>未纳入</dd></div>
-              <div><dt>DEM</dt><dd>5 m · {config.data?.datasetVersion ?? '—'}</dd></div>
+              <div><dt>DEM</dt><dd>{config.data ? `${config.data.demProductName ?? config.data.demProductId} · ${config.data.cellSizeM ?? '—'} m · ${config.data.datasetVersion ?? '—'}` : '载入配置…'}</dd></div>
               <div><dt>预处理缓存</dt><dd className={config.data?.cacheStatus === 'READY' ? 'ready' : 'missing'}>{config.data?.cacheStatus ?? '检查中'}</dd></div>
             </dl>
           </div>

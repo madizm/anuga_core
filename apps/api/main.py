@@ -879,6 +879,8 @@ def create_app(
             "available": readiness["available"],
             "domainId": settings.full_preview_domain_id,
             "demProductId": settings.full_preview_dem_product_id,
+            "demProductName": product.name if product is not None else None,
+            "cellSizeM": product.cell_size_m if product is not None else None,
             "durationHours": 24,
             "rainfallLimitsMm": {"minimum": 0.1, "maximum": 500},
             "cacheStatus": readiness["cacheStatus"],
