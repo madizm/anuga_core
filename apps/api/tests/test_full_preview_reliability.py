@@ -16,6 +16,8 @@ from apps.api.models import FullPreviewJob, utcnow
 from apps.worker.full_preview_tasks import (
     ExecutionLeaseLost,
     FullPreviewRunner,
+    MAX_EXECUTION_ATTEMPTS,
+    recover_expired_full_previews,
     run_full_preview,
 )
 
@@ -61,6 +63,42 @@ def test_duplicate_delivery_waits_and_stale_attempt_cannot_regress_terminal(
         assert completed.status == "COMPLETED"
         assert completed.result_cog_uri == "s3://test/result.tif"
         assert completed.error_code is None
+
+
+def test_watchdog_requeues_expired_lease_and_bounds_recovery(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    database.create_schema()
+    recoverable = _job(status="PREPARING")
+    recoverable.execution_attempt = 1
+    recoverable.execution_token = "stale-token"
+    recoverable.execution_lease_expires_at = (
+        utcnow() - timedelta(seconds=1)
+    )
+    exhausted = _job(status="PUBLISHING")
+    exhausted.execution_attempt = MAX_EXECUTION_ATTEMPTS
+    exhausted.execution_token = "exhausted-token"
+    exhausted.execution_lease_expires_at = (
+        utcnow() - timedelta(seconds=1)
+    )
+    with database.session_factory.begin() as session:
+        session.add_all([recoverable, exhausted])
+    dispatched = []
+
+    result = recover_expired_full_previews(
+        database,
+        lambda job_id, queue: dispatched.append((job_id, queue)),
+        queue="full-domain-preview",
+    )
+
+    assert result == (1, 1)
+    assert dispatched == [(recoverable.id, "full-domain-preview")]
+    with database.session_factory() as session:
+        waiting = session.get(FullPreviewJob, recoverable.id)
+        failed = session.get(FullPreviewJob, exhausted.id)
+        assert waiting.status == "PREPARING"
+        assert waiting.execution_token is None
+        assert failed.status == "FAILED"
+        assert failed.error_code == "FULL_PREVIEW_RECOVERY_EXHAUSTED"
 
 
 @pytest.mark.parametrize("interrupted_phase", [

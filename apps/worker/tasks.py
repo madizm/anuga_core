@@ -38,6 +38,13 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    beat_schedule={
+        "recover-expired-full-previews": {
+            "task": "bayuquan.recover_full_previews",
+            "schedule": 60.0,
+            "options": {"queue": "standard"},
+        },
+    },
 )
 
 

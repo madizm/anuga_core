@@ -185,6 +185,22 @@ services:
       minio:
         condition: service_healthy
 
+  celery-beat:
+    build:
+      context: .
+      args:
+        ANUGA_CPU_NATIVE: ${ANUGA_CPU_NATIVE:-false}
+    command: >-
+      celery -A apps.worker.tasks:celery_app beat --loglevel=INFO
+    environment:
+      <<: *service-environment
+    working_dir: /opt/webgis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     image: postgis/postgis:16-3.5-alpine
     platform: linux/amd64

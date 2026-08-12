@@ -21,7 +21,7 @@ import numpy as np
 import rasterio
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image
 from pyproj import Transformer
 from rasterio.enums import Resampling
@@ -1117,17 +1117,38 @@ def create_app(
     def download_full_preview(
         job_id: str,
         session: Session = Depends(session_dependency),
-    ) -> Response:
+    ) -> StreamingResponse:
         job = completed_full_preview_or_404(session, job_id)
         bucket, key = _s3_location(job.result_cog_uri)
-        url = app.state.s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": key},
-            ExpiresIn=900,
-        )
-        return RedirectResponse(
-            url=url,
-            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        try:
+            stored = app.state.s3_client.get_object(
+                Bucket=bucket, Key=key
+            )
+        except (BotoCoreError, ClientError) as error:
+            raise HTTPException(
+                status_code=502, detail="preview COG download failed"
+            ) from error
+        body = stored["Body"]
+
+        def content():
+            try:
+                while block := body.read(1024 * 1024):
+                    yield block
+            finally:
+                body.close()
+
+        headers = {
+            "content-disposition": (
+                f'attachment; filename="full-preview-{job.id}.cog.tif"'
+            ),
+            "cache-control": "private, no-store",
+        }
+        if stored.get("ContentLength") is not None:
+            headers["content-length"] = str(stored["ContentLength"])
+        return StreamingResponse(
+            content(),
+            media_type=stored.get("ContentType", "image/tiff"),
+            headers=headers,
         )
 
     @app.get("/api/jobs/{job_id}/events")

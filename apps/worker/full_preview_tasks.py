@@ -14,7 +14,7 @@ from celery.utils.log import get_task_logger
 from pyproj import Transformer
 from rasterio.windows import Window
 from redis import Redis
-from sqlalchemy import func, or_, update
+from sqlalchemy import func, or_, select, update
 
 from apps.api.config import Settings
 from apps.api.db import Database
@@ -29,6 +29,8 @@ from .tasks import celery_app
 logger = get_task_logger(__name__)
 EXECUTION_LEASE = timedelta(hours=6)
 ACTIVE_STATUSES = ("QUEUED", "PREPARING", "SOLVING", "PUBLISHING")
+RECOVERABLE_STATUSES = ("PREPARING", "SOLVING", "PUBLISHING")
+MAX_EXECUTION_ATTEMPTS = 3
 
 
 class ExecutionLeaseLost(RuntimeError):
@@ -309,6 +311,52 @@ def _geographic_bounds(
     return [west, south, east, north]
 
 
+def recover_expired_full_previews(
+    database: Database,
+    dispatch,
+    *,
+    queue: str,
+) -> tuple[int, int]:
+    now = utcnow()
+    requeue_ids = []
+    failed = 0
+    with database.session_factory.begin() as session:
+        jobs = session.scalars(
+            select(FullPreviewJob)
+            .where(
+                FullPreviewJob.status.in_(RECOVERABLE_STATUSES),
+                or_(
+                    FullPreviewJob.execution_token.is_(None),
+                    FullPreviewJob.execution_lease_expires_at.is_(None),
+                    FullPreviewJob.execution_lease_expires_at <= now,
+                ),
+            )
+            .with_for_update(skip_locked=True)
+        ).all()
+        for job in jobs:
+            job.execution_token = None
+            job.execution_lease_expires_at = None
+            if job.execution_attempt >= MAX_EXECUTION_ATTEMPTS:
+                job.status = "FAILED"
+                job.phase = "FAILED"
+                job.completed_at = now
+                job.error_code = "FULL_PREVIEW_RECOVERY_EXHAUSTED"
+                job.error_message = (
+                    "full preview worker recovery attempts exhausted"
+                )
+                failed += 1
+            else:
+                requeue_ids.append(job.id)
+    for job_id in requeue_ids:
+        try:
+            dispatch(job_id, queue)
+        except Exception:
+            logger.exception(
+                "could not requeue expired full preview %s", job_id
+            )
+    return len(requeue_ids), failed
+
+
 @celery_app.task(
     name="bayuquan.run_full_preview",
     bind=True,
@@ -317,3 +365,18 @@ def _geographic_bounds(
 )
 def run_full_preview(_task, job_id: str) -> None:
     FullPreviewRunner(Settings.from_environment()).run(job_id)
+
+
+@celery_app.task(name="bayuquan.recover_full_previews")
+def recover_full_previews() -> tuple[int, int]:
+    settings = Settings.from_environment()
+    database = Database(settings.database_url)
+
+    def dispatch(job_id: str, queue: str) -> None:
+        celery_app.send_task(
+            "bayuquan.run_full_preview", args=[job_id], queue=queue
+        )
+
+    return recover_expired_full_previews(
+        database, dispatch, queue=settings.full_preview_queue
+    )

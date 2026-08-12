@@ -877,13 +877,14 @@ def test_full_preview_config_and_job_lifecycle_are_independent(
             job.status = "COMPLETED"
             job.result_cog_uri = "s3://test/full-previews/result.tif"
         app.state.s3_client = SimpleNamespace(
-            generate_presigned_url=lambda *args, **kwargs: (
-                "https://objects.example/result.tif?signature=test"
-            )
+            get_object=lambda **kwargs: {
+                "Body": BytesIO(b"test-cog"),
+                "ContentLength": 8,
+                "ContentType": "image/tiff",
+            }
         )
         download = test_client.get(
             f"/api/full-previews/{created.json()['id']}/result.cog",
-            follow_redirects=False,
         )
 
     assert config.status_code == 200
@@ -901,9 +902,11 @@ def test_full_preview_config_and_job_lifecycle_are_independent(
     assert dispatched == [(created.json()["id"], "full-domain-preview")]
     assert listed.json()[0]["id"] == created.json()["id"]
     assert cache_loads == 1
-    assert download.status_code == 307
-    assert download.headers["location"] == (
-        "https://objects.example/result.tif?signature=test"
+    assert download.status_code == 200
+    assert download.content == b"test-cog"
+    assert download.headers["content-type"] == "image/tiff"
+    assert download.headers["content-disposition"] == (
+        f'attachment; filename="full-preview-{created.json()["id"]}.cog.tif"'
     )
 
 
