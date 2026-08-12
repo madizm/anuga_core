@@ -218,6 +218,15 @@ export class PreviewController {
         steps += 1
         if (this.mode === 'static' && nextSnapshotTime != null && timeSeconds >= nextSnapshotTime) break
       }
+      const nextBoundary = Math.min(
+        this.statusValue.nextSnapshotTimeSeconds ?? Number.POSITIVE_INFINITY,
+        this.nextRainfallChangeAfter(timeSeconds) ?? Number.POSITIVE_INFINITY,
+        this.statusValue.durationSeconds,
+      )
+      if (nextBoundary - timeSeconds >= 0 && nextBoundary - timeSeconds <= TIME_BOUNDARY_EPSILON_SECONDS) {
+        this.backlogSeconds = Math.max(this.backlogSeconds - (nextBoundary - timeSeconds), 0)
+        timeSeconds = nextBoundary
+      }
       const completed = timeSeconds >= this.statusValue.durationSeconds
       let snapshot = this.statusValue.snapshot
       const reachedStaticSnapshot = this.mode === 'static'

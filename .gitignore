@@ -43,6 +43,7 @@ anuga/_version.py
 *.toc
 *.npy
 *.html
+!apps/web/index.html
 *.pickle
 tags
 OUTPUT
