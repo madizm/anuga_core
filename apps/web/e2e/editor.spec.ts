@@ -744,6 +744,14 @@ test('browser GPU preview follows draft controls and invalidates on scenario edi
   await expect(page.getByText('场景已修改，预览失效')).toBeVisible()
   await page.getByRole('button', { name: '关闭快速预览' }).click()
   await expect(page.locator('.model-map')).not.toHaveAttribute('data-preview-time', /.+/)
+  await page.getByLabel('预览模式').selectOption('static')
+  await page.getByRole('button', { name: '快速预览' }).click()
+  await expect(page.getByText('STATIC SNAPSHOT · NON-AUTHORITATIVE')).toBeVisible()
+  await expect(page.getByText(/地图每 30 分钟模拟时间更新一次/)).toBeVisible()
+  await expect(page.locator('.preview-rate')).toHaveCount(0)
+  await expect(page.locator('.model-map')).not.toHaveAttribute('data-flow-mode', /.+/)
+  await expect(page.locator('.model-map')).toHaveAttribute('data-preview-time', /.+/, { timeout: 20_000 })
+  await page.getByRole('button', { name: '关闭快速预览' }).click()
   expect(gridRequests).toEqual(expect.arrayContaining([
     expect.stringContaining('/manningMiddle'),
   ]))

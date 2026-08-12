@@ -1,23 +1,22 @@
 import type { Inlet, ScenarioPayload } from '../api/types'
 import { parseCellId, type SimulationGrid } from '../map/simulationGrid'
-import type { DensePreviewGrid } from './types'
+import type { DensePreviewGrid, PreviewMode } from './types'
+import { PREVIEW_MODE_CONFIG } from './types'
 import { compilePreviewHydraulics } from './previewHydraulics'
 
 const ACTIVE = 1
 const EXTERIOR = 0
 const SOLID_HOLE = -1
-// Keep the synchronous GPU readback and diagnostic allocations bounded on
-// ordinary laptops; this is a sketch renderer, not a production raster path.
-const MAX_DENSE_PREVIEW_CELLS = 262_144
+export interface PreviewGridLimits {
+  mode: PreviewMode
+  maxTextureSize?: number
+}
 
-export function buildDensePreviewGrid(
-  source: SimulationGrid,
-  scenario: ScenarioPayload,
-  cellSizeM: number,
-  maxTextureSize = Number.POSITIVE_INFINITY,
-): DensePreviewGrid {
-  const width = source.columnStop - source.columnStart
-  const height = source.rowStop - source.rowStart
+export function validatePreviewGridSize(
+  width: number,
+  height: number,
+  { mode, maxTextureSize = Number.POSITIVE_INFINITY }: PreviewGridLimits,
+) {
   if (
     !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
     || width <= 0 || height <= 0
@@ -26,9 +25,22 @@ export function buildDensePreviewGrid(
     throw new Error('计算区域超过当前显卡的预览纹理上限')
   }
   const length = width * height
-  if (!Number.isSafeInteger(length) || length > MAX_DENSE_PREVIEW_CELLS) {
-    throw new Error('快速预览稠密网格超过浏览器内存上限')
+  if (!Number.isSafeInteger(length) || length > PREVIEW_MODE_CONFIG[mode].maxCells) {
+    const label = mode === 'static' ? '静态快照预览' : '动态预览'
+    throw new Error(`${label}稠密网格超过浏览器内存上限`)
   }
+  return length
+}
+
+export function buildDensePreviewGrid(
+  source: SimulationGrid,
+  scenario: ScenarioPayload,
+  cellSizeM: number,
+  limits: PreviewGridLimits = { mode: 'animated' },
+): DensePreviewGrid {
+  const width = source.columnStop - source.columnStart
+  const height = source.rowStop - source.rowStart
+  const length = validatePreviewGridSize(width, height, limits)
   const mask = new Float32Array(length)
   mask.fill(SOLID_HOLE)
   const elevationM = new Float32Array(length)

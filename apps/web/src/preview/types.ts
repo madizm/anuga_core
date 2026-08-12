@@ -4,6 +4,13 @@ import type { GridCorners } from '../map/simulationGrid'
 export const PREVIEW_DRY_DEPTH_M = 0.01
 export const PREVIEW_GRAVITY_MPS2 = 9.81
 
+export type PreviewMode = 'animated' | 'static'
+
+export const PREVIEW_MODE_CONFIG = {
+  animated: { maxCells: 262_144, snapshotIntervalSeconds: 0 },
+  static: { maxCells: 1_048_576, snapshotIntervalSeconds: 1_800 },
+} as const satisfies Record<PreviewMode, { maxCells: number; snapshotIntervalSeconds: number }>
+
 /** Dense, south-to-north grid used by both the CPU reference and GPU solver. */
 export interface PreviewStructureLink {
   id: string
@@ -58,6 +65,8 @@ export interface PreviewCapabilities {
   webgl2: boolean
   floatFramebuffer: boolean
   maxTextureSize: number
+  staticSupported: boolean
+  staticReason: string | null
   reason: string | null
 }
 
@@ -82,10 +91,14 @@ export interface PreviewSnapshot {
 }
 
 export interface PreviewStatus {
+  mode: PreviewMode
   phase: PreviewPhase
   timeSeconds: number
   durationSeconds: number
   playbackRate: number
+  gridCellCount: number
+  snapshotIntervalSeconds: number
+  nextSnapshotTimeSeconds: number | null
   snapshot: PreviewSnapshot | null
   error: string | null
 }
@@ -102,5 +115,7 @@ export interface PreviewSolver {
 export interface PreviewSessionInput {
   grid: DensePreviewGrid
   scenario: ScenarioPayload
+  mode?: PreviewMode
+  snapshotIntervalSeconds?: number
   playbackRate?: number
 }

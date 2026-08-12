@@ -69,6 +69,15 @@ export function crossfadeWeight(elapsedMs: number, reducedMotion: boolean) {
   return Math.max(0, elapsedMs / CROSSFADE_MS)
 }
 
+export function waterSurfaceEffects(animated: boolean) {
+  return animated ? {
+    amplitude: waterRippleParams.amplitude,
+    specular: waterRippleParams.specularStrength,
+    sheen: waterRippleParams.sheenStrength,
+    sparkle: waterRippleParams.sparkleStrength,
+  } : { amplitude: 0, specular: 0, sheen: 0, sparkle: 0 }
+}
+
 /** CanvasSource expects clockwise corners starting at the northwest corner. */
 export function waterCanvasCoordinates(field: FlowField) {
   return [
@@ -311,6 +320,7 @@ export class TerrainDrapedWaterLayer {
   private fadeStartedAt = 0
   private readonly startedAt = performance.now()
   private colorize = false
+  private animated = true
   private quantity: ResultQuantity = 'depth'
   private repaintTimer: ReturnType<typeof setTimeout> | null = null
   private added = false
@@ -384,7 +394,7 @@ export class TerrainDrapedWaterLayer {
     }
     const sameGrid = previous != null && sameFlowGrid(previous, field)
     this.fadeStartedAt = performance.now()
-    this.upload(field, sameGrid)
+    this.upload(field, sameGrid && this.animated)
     if (this.added) {
       const source = this.map.getSource(this.sourceId) as CanvasSource | undefined
       source?.setCoordinates(waterCanvasCoordinates(field))
@@ -392,6 +402,20 @@ export class TerrainDrapedWaterLayer {
     const container = this.map.getContainer()
     container.dataset.waterRipple = 'active'
     container.dataset.waterRenderer = 'terrain-draped'
+    this.drawFrame()
+    this.scheduleRepaint()
+  }
+
+  setAnimated(animated: boolean) {
+    if (this.animated === animated) return
+    this.animated = animated
+    if (!animated) {
+      this.cancelRepaint()
+      if (this.resources?.previous) {
+        this.gl.deleteTexture(this.resources.previous)
+        this.resources.previous = null
+      }
+    }
     this.drawFrame()
     this.scheduleRepaint()
   }
@@ -542,15 +566,16 @@ export class TerrainDrapedWaterLayer {
     if (!resources || !resources.current || !field || this.gl.isContextLost()) return
     const gl = this.gl
     const now = performance.now()
-    const fade = resources.previous
+    const fade = this.animated && resources.previous
       ? crossfadeWeight(now - this.fadeStartedAt, this.reducedMotion.matches)
       : 1
     if (fade >= 1 && resources.previous) {
       gl.deleteTexture(resources.previous)
       resources.previous = null
     }
-    const time = this.reducedMotion.matches ? 0 : (now - this.startedAt) / 1000
+    const time = this.reducedMotion.matches || !this.animated ? 0 : (now - this.startedAt) / 1000
     const params = waterRippleParams
+    const effects = waterSurfaceEffects(this.animated)
     const sun = sunDirection(params.sunAzimuth, params.sunElevation)
     const cellMeters = cellSizeMeters(field)
     const { program, uniforms } = resources
@@ -571,10 +596,10 @@ export class TerrainDrapedWaterLayer {
     gl.uniform2f(uniforms.u_cell_meters, cellMeters[0], cellMeters[1])
     gl.uniform1f(uniforms.u_time, time)
     gl.uniform3f(uniforms.u_sun, sun[0], sun[1], sun[2])
-    gl.uniform1f(uniforms.u_specular, params.specularStrength)
-    gl.uniform1f(uniforms.u_sheen, params.sheenStrength)
-    gl.uniform1f(uniforms.u_sparkle, params.sparkleStrength)
-    gl.uniform1f(uniforms.u_amplitude, params.amplitude)
+    gl.uniform1f(uniforms.u_specular, effects.specular)
+    gl.uniform1f(uniforms.u_sheen, effects.sheen)
+    gl.uniform1f(uniforms.u_sparkle, effects.sparkle)
+    gl.uniform1f(uniforms.u_amplitude, effects.amplitude)
     gl.uniform2f(uniforms.u_wave_length, params.waveLengthLarge, params.waveLengthSmall)
     gl.uniform1f(uniforms.u_advect, params.advectScale)
     gl.uniform1f(uniforms.u_feather, Math.max(params.featherDepthM, 0.001))
@@ -615,7 +640,7 @@ export class TerrainDrapedWaterLayer {
   }
 
   private scheduleRepaint() {
-    if (this.reducedMotion.matches || !this.field || this.repaintTimer != null) return
+    if (!this.animated || this.reducedMotion.matches || !this.field || this.repaintTimer != null) return
     this.repaintTimer = setTimeout(() => {
       this.repaintTimer = null
       if (!this.field || this.destroyed) return
