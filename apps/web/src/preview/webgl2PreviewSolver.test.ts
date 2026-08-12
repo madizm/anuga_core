@@ -24,6 +24,7 @@ function productionContext(failAt: 'program' | 'vertexArray' | 'framebuffer' | '
     handles[kind].push(handle)
     return handle
   }
+  let textureCreationCount = 0
   class FakeWebGL2RenderingContext {}
   const gl = Object.assign(new FakeWebGL2RenderingContext(), {
     VERTEX_SHADER: 1, FRAGMENT_SHADER: 2, COMPILE_STATUS: 3, LINK_STATUS: 4,
@@ -42,7 +43,10 @@ function productionContext(failAt: 'program' | 'vertexArray' | 'framebuffer' | '
     deleteVertexArray: vi.fn(),
     createFramebuffer: vi.fn(() => failAt === 'framebuffer' ? null : make('framebuffers')),
     deleteFramebuffer: vi.fn(),
-    createTexture: vi.fn(() => failAt === 'texture' ? null : make('textures')),
+    createTexture: vi.fn(() => {
+      textureCreationCount += 1
+      return failAt === 'texture' && textureCreationCount === 4 ? null : make('textures')
+    }),
     deleteTexture: vi.fn(),
     bindTexture: vi.fn(), texParameteri: vi.fn(), texImage2D: vi.fn(),
     getExtension: vi.fn((name: string) => name === 'EXT_color_buffer_float' ? {} : null),
@@ -122,6 +126,13 @@ describe('initializeWebGlResources', () => {
       }
       for (const texture of fake.handles.textures) {
         expect(fake.gl.deleteTexture).toHaveBeenCalledWith(texture)
+      }
+      if (failAt === 'texture') {
+        expect(fake.handles.textures).toHaveLength(3)
+        expect(fake.gl.deleteTexture).toHaveBeenCalledTimes(3)
+        expect(fake.gl.deleteProgram).toHaveBeenCalledTimes(fake.handles.programs.length)
+        expect(fake.gl.deleteFramebuffer).toHaveBeenCalledTimes(fake.handles.framebuffers.length)
+        expect(fake.gl.deleteVertexArray).toHaveBeenCalledTimes(fake.handles.vertexArrays.length)
       }
       getContext.mockRestore()
       vi.unstubAllGlobals()
