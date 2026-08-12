@@ -23,9 +23,15 @@ class Settings:
     dem_product_manifest: Path | None = None
     simulation_area_cache: Path | None = None
     write_sww: bool = True
+    full_preview_dem_product_id: str = "bayuquan-dem-5m-v1"
+    full_preview_domain_id: str = "bayuquan-regional-v1"
+    full_preview_cache: Path | None = None
+    full_preview_window: tuple[int, int, int, int] | None = None
+    full_preview_runoff_coefficient: float = 1.0
+    full_preview_queue: str = "full-domain-preview"
 
     @classmethod
-    def from_environment(cls) -> "Settings":
+    def from_environment(cls) -> Settings:
         root = Path(os.getenv("BAYUQUAN_PROJECT_ROOT", "/workspace"))
         redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
         return cls(
@@ -57,4 +63,34 @@ class Settings:
             write_sww=os.getenv(
                 "BAYUQUAN_WRITE_SWW", "true"
             ).lower() in {"1", "true", "yes"},
+            full_preview_dem_product_id=os.getenv(
+                "FULL_PREVIEW_DEM_PRODUCT_ID", "bayuquan-dem-5m-v1"
+            ),
+            full_preview_domain_id=os.getenv(
+                "FULL_PREVIEW_DOMAIN_ID", "bayuquan-regional-v1"
+            ),
+            full_preview_cache=Path(os.getenv(
+                "FULL_PREVIEW_CACHE",
+                str(root / "OUTPUT/full_preview/preprocessing-v1.npz"),
+            )),
+            full_preview_window=_optional_window(
+                os.getenv("FULL_PREVIEW_WINDOW")
+            ),
+            full_preview_runoff_coefficient=float(os.getenv(
+                "FULL_PREVIEW_RUNOFF_COEFFICIENT", "1.0"
+            )),
+            full_preview_queue=os.getenv(
+                "FULL_PREVIEW_QUEUE", "full-domain-preview"
+            ),
         )
+
+
+def _optional_window(value: str | None) -> tuple[int, int, int, int] | None:
+    if not value:
+        return None
+    parts = tuple(int(item.strip()) for item in value.split(","))
+    if len(parts) != 4 or parts[2] <= 0 or parts[3] <= 0:
+        raise ValueError(
+            "FULL_PREVIEW_WINDOW must be col,row,width,height"
+        )
+    return parts

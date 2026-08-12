@@ -7,21 +7,26 @@ import json
 import math
 import struct
 import warnings
-from functools import partial
-from io import BytesIO
-
-import numpy as np
-import rasterio
-from PIL import Image
-from rasterio.enums import Resampling
-from rasterio.io import MemoryFile
 from collections.abc import Callable
 from contextlib import ExitStack, asynccontextmanager
+from functools import partial
+from io import BytesIO
 from urllib.parse import urlparse
+
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
 import httpx
+import numpy as np
+import rasterio
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from PIL import Image
 from pyproj import Transformer
+from rasterio.enums import Resampling
+from rasterio.io import MemoryFile
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from bayuquan.simulation.area_catalog import (
     SimulationAreaCatalog,
 )
@@ -30,11 +35,6 @@ from bayuquan.simulation.feature_compiler import (
     sample_elevation_profile,
 )
 from bayuquan.simulation.hydraulic_features import HydraulicFeaturesSpec
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi import status
-from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db import Database
@@ -45,6 +45,7 @@ from .dem_products import (
     register_manifest,
 )
 from .models import (
+    FullPreviewJob,
     Scenario,
     SimulationFrame,
     SimulationJob,
@@ -59,13 +60,13 @@ from .scenarios.service import (
 )
 from .schemas import (
     ElevationProfileRequest,
-    HydraulicMeshPreviewRequest,
+    FullPreviewCreateRequest,
     GridSelectionRequest,
+    HydraulicMeshPreviewRequest,
     JobCreateRequest,
     ScenarioRequest,
     SimulationAreaResolveRequest,
 )
-
 
 JobDispatcher = Callable[[str, str], None]
 
@@ -77,6 +78,7 @@ def create_app(
     area_catalog: SimulationAreaCatalog | None = None,
     dem_catalog: DemProductCatalog | None = None,
     dispatcher: JobDispatcher | None = None,
+    preview_dispatcher: JobDispatcher | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
     database = database or Database(settings.database_url)
@@ -107,6 +109,9 @@ def create_app(
     app.state.database = database
     app.state.dem_products = dem_catalog
     app.state.dispatcher = dispatcher or _celery_dispatcher(settings)
+    app.state.preview_dispatcher = (
+        preview_dispatcher or _full_preview_dispatcher(settings)
+    )
     app.state.s3_client = boto3.client(
         "s3",
         endpoint_url=settings.s3_endpoint_url,
@@ -847,6 +852,230 @@ def create_app(
         )
         return Response(content=masked, media_type="image/png")
 
+    @app.get("/api/full-previews/config")
+    def full_preview_config() -> dict:
+        cache = settings.full_preview_cache
+        window = settings.full_preview_window
+        cache_ready = cache is not None and cache.is_file()
+        try:
+            product = product_or_404(settings.full_preview_dem_product_id)
+            product_available = True
+        except HTTPException:
+            product = None
+            product_available = False
+        available = cache_ready and product_available and window is not None
+        return {
+            "available": available,
+            "domainId": settings.full_preview_domain_id,
+            "demProductId": settings.full_preview_dem_product_id,
+            "durationHours": 24,
+            "rainfallLimitsMm": {"minimum": 0.1, "maximum": 500},
+            "cacheStatus": "READY" if cache_ready else "MISSING",
+            "windowConfigured": window is not None,
+            "datasetVersion": (
+                product.dataset_version if product is not None else None
+            ),
+            "assumptionsProfile": {
+                "id": "terrain-storage-v1",
+                "name": "地形蓄水快览 V1",
+                "runoffCoefficient": (
+                    settings.full_preview_runoff_coefficient
+                ),
+                "drainageIncluded": False,
+                "infiltrationIncluded": (
+                    settings.full_preview_runoff_coefficient < 1.0
+                ),
+                "spatialDistribution": "uniform",
+            },
+            "authority": "non-authoritative",
+        }
+
+    @app.post(
+        "/api/full-previews", status_code=status.HTTP_201_CREATED
+    )
+    def create_full_preview(
+        request: FullPreviewCreateRequest,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        config = full_preview_config()
+        if not config["available"]:
+            raise HTTPException(
+                status_code=409,
+                detail="full preview preprocessing cache is not ready",
+            )
+        coefficient = settings.full_preview_runoff_coefficient
+        if not 0.0 < coefficient <= 1.0:
+            raise HTTPException(
+                status_code=503,
+                detail="full preview runoff coefficient is invalid",
+            )
+        job = FullPreviewJob(
+            dem_product_id=settings.full_preview_dem_product_id,
+            domain_id=settings.full_preview_domain_id,
+            assumptions_profile_id="terrain-storage-v1",
+            rainfall_depth_mm=request.rainfall_depth_mm,
+            effective_rainfall_depth_mm=(
+                request.rainfall_depth_mm * coefficient
+            ),
+            status="QUEUED",
+            phase="QUEUED",
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        app.state.preview_dispatcher(job.id, settings.full_preview_queue)
+        return full_preview_response(job)
+
+    @app.get("/api/full-previews")
+    def list_full_previews(
+        limit: int = Query(default=100, ge=1, le=500),
+        session: Session = Depends(session_dependency),
+    ) -> list[dict]:
+        jobs = session.scalars(
+            select(FullPreviewJob)
+            .order_by(FullPreviewJob.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [full_preview_response(job) for job in jobs]
+
+    @app.get("/api/full-previews/{job_id}")
+    def read_full_preview(
+        job_id: str,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        job = session.get(FullPreviewJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="preview not found")
+        return full_preview_response(job)
+
+    @app.get("/api/full-previews/{job_id}/events")
+    async def full_preview_events(
+        job_id: str, request: Request
+    ) -> StreamingResponse:
+        async def events():
+            previous = None
+            while True:
+                if await request.is_disconnected():
+                    return
+                with database.session_factory() as session:
+                    job = session.get(FullPreviewJob, job_id)
+                    if job is None:
+                        yield _sse("preview.failed", {
+                            "errorCode": "PREVIEW_NOT_FOUND",
+                            "message": "preview not found",
+                        })
+                        return
+                    response = full_preview_response(job)
+                    marker = (job.status, job.phase)
+                    if marker != previous:
+                        previous = marker
+                        yield _sse("preview.status", response)
+                    if job.status == "COMPLETED":
+                        yield _sse("preview.completed", response)
+                        return
+                    if job.status == "FAILED":
+                        yield _sse("preview.failed", response)
+                        return
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.get("/api/full-previews/{job_id}/tilejson")
+    def full_preview_tilejson(
+        job_id: str,
+        threshold_m: float = Query(default=0.05, ge=0.0, le=10.0),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        job = completed_full_preview_or_404(session, job_id)
+        return {
+            "tilejson": "3.0.0",
+            "name": f"maximum depth preview {job_id}",
+            "tiles": [
+                (
+                    f"/api/full-previews/{job_id}/tiles/"
+                    f"{{z}}/{{x}}/{{y}}.png?thresholdM={threshold_m:g}"
+                )
+            ],
+            "bounds": job.bounds,
+            "minzoom": 0,
+            "maxzoom": 22,
+        }
+
+    @app.get(
+        "/api/full-previews/{job_id}/tiles/{z}/{x}/{y}.png"
+    )
+    def full_preview_tile(
+        job_id: str,
+        z: int,
+        x: int,
+        y: int,
+        threshold_m: float = Query(
+            default=0.05, alias="thresholdM", ge=0.0, le=10.0
+        ),
+        session: Session = Depends(session_dependency),
+    ) -> Response:
+        job = completed_full_preview_or_404(session, job_id)
+        upstream = (
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
+            f"{z}/{x}/{y}.png"
+        )
+        response = httpx.get(
+            upstream,
+            params={
+                "url": job.result_cog_uri,
+                "rescale": f"{threshold_m:g},3",
+                "colormap_name": "blues",
+                "nodata": -9999,
+            },
+            timeout=20,
+        )
+        if response.status_code == 404:
+            return Response(content=TRANSPARENT_TILE, media_type="image/png")
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="tile renderer failed")
+        return Response(content=response.content, media_type="image/png")
+
+    @app.get("/api/full-previews/{job_id}/point")
+    def full_preview_point(
+        job_id: str,
+        longitude: float,
+        latitude: float,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        job = completed_full_preview_or_404(session, job_id)
+        response = httpx.get(
+            f"{settings.titiler_url}/cog/point/{longitude},{latitude}",
+            params={"url": job.result_cog_uri, "bidx": 1},
+            timeout=20,
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="point query failed")
+        values = response.json().get("values", [])
+        value = values[0] if values else None
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if value is None or value == -9999 or not math.isfinite(float(value)):
+            value = None
+        return {
+            "longitude": longitude,
+            "latitude": latitude,
+            "maximumDepthM": value,
+        }
+
+    @app.get("/api/full-previews/{job_id}/result.cog")
+    def download_full_preview(
+        job_id: str,
+        session: Session = Depends(session_dependency),
+    ) -> Response:
+        job = completed_full_preview_or_404(session, job_id)
+        bucket, key = _s3_location(job.result_cog_uri)
+        url = app.state.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=900,
+        )
+        return JSONResponse({"url": url})
+
     @app.get("/api/jobs/{job_id}/events")
     async def job_events(job_id: str, request: Request) -> StreamingResponse:
         raw_cursor = request.headers.get("last-event-id", "-1")
@@ -947,6 +1176,18 @@ def _single_product_catalog(area_catalog: SimulationAreaCatalog):
     return _SingleProductCatalog(area_catalog)
 
 
+def _full_preview_dispatcher(settings: Settings) -> JobDispatcher:
+    if not settings.dispatch_jobs:
+        return lambda job_id, queue: None
+
+    def dispatch(job_id: str, queue: str) -> None:
+        from celery import Celery
+        celery = Celery(broker=settings.celery_broker_url)
+        celery.send_task("bayuquan.run_full_preview", args=[job_id], queue=queue)
+
+    return dispatch
+
+
 def _celery_dispatcher(settings: Settings) -> JobDispatcher:
     if not settings.dispatch_jobs:
         return lambda job_id, queue: None
@@ -957,6 +1198,59 @@ def _celery_dispatcher(settings: Settings) -> JobDispatcher:
         celery.send_task("bayuquan.run_job", args=[job_id], queue=queue)
 
     return dispatch
+
+
+def completed_full_preview_or_404(
+    session: Session, job_id: str
+) -> FullPreviewJob:
+    job = session.get(FullPreviewJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="preview not found")
+    if job.status != "COMPLETED" or not job.result_cog_uri:
+        raise HTTPException(status_code=409, detail="preview is not completed")
+    return job
+
+
+def full_preview_response(job: FullPreviewJob) -> dict:
+    result = None
+    if job.result_cog_uri:
+        result = {
+            "tilejsonUrl": f"/api/full-previews/{job.id}/tilejson",
+            "cogDownloadUrl": f"/api/full-previews/{job.id}/result.cog",
+            "bounds": job.bounds,
+            "maximumDepthM": job.maximum_depth_m,
+            "wetAreaM2": job.wet_area_m2,
+            "thresholdAreasM2": job.threshold_areas_m2 or {},
+            "inputVolumeM3": job.input_volume_m3,
+            "retainedVolumeM3": job.retained_volume_m3,
+            "outflowVolumeM3": job.outflow_volume_m3,
+            "massBalanceErrorM3": job.mass_balance_error_m3,
+        }
+    return {
+        "id": job.id,
+        "status": job.status,
+        "phase": job.phase,
+        "demProductId": job.dem_product_id,
+        "domainId": job.domain_id,
+        "rainfallDepthMm": job.rainfall_depth_mm,
+        "effectiveRainfallDepthMm": job.effective_rainfall_depth_mm,
+        "assumptionsProfileId": job.assumptions_profile_id,
+        "cacheHit": job.cache_hit,
+        "result": result,
+        "errorCode": job.error_code,
+        "errorMessage": job.error_message,
+        "createdAt": job.created_at,
+        "startedAt": job.started_at,
+        "completedAt": job.completed_at,
+        "authority": "non-authoritative",
+    }
+
+
+def _s3_location(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path:
+        raise HTTPException(status_code=500, detail="artifact URI is invalid")
+    return parsed.netloc, parsed.path.lstrip("/")
 
 
 def job_response(job: SimulationJob) -> dict:
@@ -1054,11 +1348,10 @@ def _quantity_band(quantity: str) -> tuple[int, str, str]:
 
 
 def _apply_depth_mask(png: bytes, depth_tiff: bytes) -> bytes:
-    with MemoryFile(depth_tiff) as memory_file:
-        with memory_file.open() as dataset:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                depth = dataset.read(1)
+    with MemoryFile(depth_tiff) as memory_file, memory_file.open() as dataset:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            depth = dataset.read(1)
     wet = np.isfinite(depth) & (depth >= 0.01) & (depth != -9999)
     image = Image.open(BytesIO(png)).convert("RGBA")
     pixels = np.asarray(image).copy()

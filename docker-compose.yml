@@ -83,6 +83,12 @@ services:
       GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
       DEM_PRODUCT_MANIFEST: /workspace/OUTPUT/model/dem-products.json
       BAYUQUAN_WRITE_SWW: ${BAYUQUAN_WRITE_SWW:-true}
+      FULL_PREVIEW_DEM_PRODUCT_ID: ${FULL_PREVIEW_DEM_PRODUCT_ID:-bayuquan-dem-5m-v1}
+      FULL_PREVIEW_DOMAIN_ID: ${FULL_PREVIEW_DOMAIN_ID:-bayuquan-regional-v1}
+      FULL_PREVIEW_CACHE: /workspace/OUTPUT/full_preview/preprocessing-v1.npz
+      FULL_PREVIEW_WINDOW: ${FULL_PREVIEW_WINDOW:-}
+      FULL_PREVIEW_RUNOFF_COEFFICIENT: ${FULL_PREVIEW_RUNOFF_COEFFICIENT:-1.0}
+      FULL_PREVIEW_QUEUE: full-domain-preview
     ports:
       - "8000:8000"
     working_dir: /opt/webgis
@@ -147,6 +153,31 @@ services:
     depends_on:
       simulation-area-permissions:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  full-preview-worker:
+    build:
+      context: .
+      args:
+        ANUGA_CPU_NATIVE: ${ANUGA_CPU_NATIVE:-false}
+    command: >-
+      celery -A apps.worker.tasks:celery_app worker
+      --loglevel=INFO --concurrency=1 --prefetch-multiplier=1
+      -Q full-domain-preview -n full-preview@%h
+    environment:
+      <<: *service-environment
+      OMP_NUM_THREADS: ${FULL_PREVIEW_OMP_THREADS:-16}
+      OMP_DYNAMIC: "FALSE"
+    working_dir: /opt/webgis
+    volumes:
+      - ./OUTPUT:/workspace/OUTPUT
+      - ./OUTPUT/simulation_areas:/workspace/simulation_areas
+    depends_on:
       postgres:
         condition: service_healthy
       redis:

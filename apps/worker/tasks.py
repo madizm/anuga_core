@@ -307,3 +307,7 @@ class JobRunner:
 @celery_app.task(name="bayuquan.run_job", bind=True, max_retries=0)
 def run_job(_task, job_id: str) -> None:
     JobRunner(settings).run(job_id)
+
+
+# Register the independent regional preview task on this Celery application.
+from . import full_preview_tasks as _full_preview_tasks  # noqa: E402,F401

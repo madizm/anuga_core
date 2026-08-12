@@ -94,3 +94,11 @@ class HydraulicMeshPreviewRequest(BaseModel):
     hydraulic_features: list[dict] = Field(
         default_factory=list, alias="hydraulicFeatures"
     )
+
+
+class FullPreviewCreateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    rainfall_depth_mm: float = Field(
+        alias="rainfallDepthMm", gt=0.0, le=500.0
+    )

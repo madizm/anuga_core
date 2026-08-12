@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { LineString, Point, Polygon } from 'geojson'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { api } from './api/client'
 import type {
   FrictionScenario,
@@ -37,6 +38,7 @@ import { previewCompatibility } from './preview/previewScenario'
 import type { PreviewStatus } from './preview/types'
 
 export default function App() {
+  const navigate = useNavigate()
   const inlets = useInletStore((state) => state.inlets)
   const queryClient = useQueryClient()
   const [name, setName] = useState('鲅鱼圈多入口推演')
@@ -288,7 +290,7 @@ export default function App() {
       closePreview()
       void queryClient.invalidateQueries({ queryKey: ['jobs'] })
       setJobId(job.id)
-      window.history.replaceState(null, '', `?job=${job.id}`)
+      navigate(`/simulations/${job.id}`)
       setShowCheck(false)
       setMessage(`任务 ${job.id.slice(0, 8)} 已进入队列`)
     },
@@ -376,7 +378,7 @@ export default function App() {
   if (jobId) {
     return <ResultWorkspace jobId={jobId} onClose={() => {
       setJobId(null)
-      window.history.replaceState(null, '', window.location.pathname)
+      navigate('/workbench/local')
     }} />
   }
 
@@ -390,6 +392,10 @@ export default function App() {
             <h1>鲅鱼圈 <b>洪水模拟调度台</b></h1>
           </div>
         </div>
+        <nav className="workspace-modes" aria-label="工作模式">
+          <button className="active" onClick={() => navigate('/workbench/local')}>局部水动力</button>
+          <button onClick={() => navigate('/workbench/regional-preview')}>全域雨洪快览</button>
+        </nav>
         <div className="scenario-name">
           <span>SCENARIO</span>
           <input value={name} onChange={(event) => setName(event.target.value)} aria-label="场景名称" />

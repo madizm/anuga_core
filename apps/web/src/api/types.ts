@@ -319,3 +319,65 @@ export interface HydraulicMeshPreview extends FeatureCollection {
   displayedEdgeCount: number
   decimated: boolean
 }
+
+
+export type FullPreviewStatus = 'QUEUED' | 'PREPARING' | 'SOLVING'
+  | 'PUBLISHING' | 'COMPLETED' | 'FAILED'
+
+export interface FullPreviewConfig {
+  available: boolean
+  domainId: string
+  demProductId: string
+  durationHours: number
+  cacheStatus: 'READY' | 'MISSING'
+  windowConfigured: boolean
+  datasetVersion: string | null
+  rainfallLimitsMm: { minimum: number; maximum: number }
+  assumptionsProfile: {
+    id: string
+    name: string
+    runoffCoefficient: number
+    drainageIncluded: boolean
+    infiltrationIncluded: boolean
+    spatialDistribution: 'uniform'
+  }
+  authority: 'non-authoritative'
+}
+
+export interface FullPreviewResult {
+  tilejsonUrl: string
+  cogDownloadUrl: string
+  bounds: [number, number, number, number]
+  maximumDepthM: number
+  wetAreaM2: number
+  thresholdAreasM2: Record<string, number>
+  inputVolumeM3: number
+  retainedVolumeM3: number
+  outflowVolumeM3: number
+  massBalanceErrorM3: number
+}
+
+export interface FullPreviewJob {
+  id: string
+  status: FullPreviewStatus
+  phase: string | null
+  demProductId: string
+  domainId: string
+  rainfallDepthMm: number
+  effectiveRainfallDepthMm: number
+  assumptionsProfileId: string
+  cacheHit: boolean | null
+  result: FullPreviewResult | null
+  errorCode: string | null
+  errorMessage: string | null
+  createdAt: string
+  startedAt: string | null
+  completedAt: string | null
+  authority: 'non-authoritative'
+}
+
+export interface FullPreviewPoint {
+  longitude: number
+  latitude: number
+  maximumDepthM: number | null
+}

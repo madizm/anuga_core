@@ -1,19 +1,17 @@
 from __future__ import annotations
 
+from io import BytesIO
+from pathlib import Path
+from struct import unpack_from
 from types import SimpleNamespace
 
-from pathlib import Path
-from io import BytesIO
-from struct import unpack_from
-
-from PIL import Image
+import numpy as np
+import pytest
 import rasterio
+from fastapi.testclient import TestClient
+from PIL import Image
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
-
-import pytest
-import numpy as np
-from fastapi.testclient import TestClient
 
 from apps.api.config import Settings
 from apps.api.db import Database
@@ -816,3 +814,76 @@ def test_hydraulic_features_are_persisted_and_snapshotted(
         assert job.status_code == 202
         assert job.json()["scenarioSnapshot"]["hydraulicFeatures"] \
             == payload["hydraulicFeatures"]
+
+
+def test_full_preview_config_and_job_lifecycle_are_independent(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    dispatched = []
+    configured = settings(str(database.engine.url))
+    configured = configured.__class__(
+        **{
+            **configured.__dict__,
+            "full_preview_dem_product_id": "dem-test",
+            "full_preview_domain_id": "bayuquan-regional-v1",
+            "full_preview_cache": tmp_path / "regional-cache.npz",
+            "full_preview_window": (20, 10, 3, 2),
+            "full_preview_runoff_coefficient": 0.65,
+        }
+    )
+    (tmp_path / "regional-cache.npz").write_bytes(b"prepared")
+    app = create_app(
+        settings=configured,
+        database=database,
+        area_catalog=FakeAreaCatalog(),
+        preview_dispatcher=lambda job_id, queue: dispatched.append(
+            (job_id, queue)
+        ),
+    )
+
+    with TestClient(app) as test_client:
+        config = test_client.get("/api/full-previews/config")
+        created = test_client.post(
+            "/api/full-previews",
+            json={"rainfallDepthMm": 80},
+        )
+        listed = test_client.get("/api/full-previews")
+
+    assert config.status_code == 200
+    assert config.json()["available"] is True
+    assert config.json()["assumptionsProfile"]["runoffCoefficient"] == 0.65
+    assert created.status_code == 201, created.text
+    assert created.json()["rainfallDepthMm"] == 80
+    assert created.json()["effectiveRainfallDepthMm"] == 52
+    assert created.json()["authority"] == "non-authoritative"
+    assert created.json()["status"] == "QUEUED"
+    assert dispatched == [(created.json()["id"], "full-domain-preview")]
+    assert listed.json()[0]["id"] == created.json()["id"]
+
+
+def test_full_preview_rejects_submission_when_cache_is_not_ready(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    configured = settings(str(database.engine.url))
+    configured = configured.__class__(
+        **{
+            **configured.__dict__,
+            "full_preview_dem_product_id": "dem-test",
+            "full_preview_cache": tmp_path / "missing.npz",
+            "full_preview_window": (20, 10, 3, 2),
+        }
+    )
+    app = create_app(
+        settings=configured,
+        database=database,
+        area_catalog=FakeAreaCatalog(),
+    )
+
+    with TestClient(app) as test_client:
+        config = test_client.get("/api/full-previews/config")
+        created = test_client.post(
+            "/api/full-previews",
+            json={"rainfallDepthMm": 80},
+        )
+
+    assert config.json()["available"] is False
+    assert config.json()["cacheStatus"] == "MISSING"
+    assert created.status_code == 409
