@@ -157,3 +157,24 @@ describe('api.flowField', () => {
     await expect(api.flowField('job-a', 7)).rejects.toThrow('流向场格式不受支持')
   })
 })
+
+
+describe('full preview API', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('submits only the accumulated rainfall parameter', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'preview-a' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+
+    await api.createFullPreview(80)
+
+    expect(fetch).toHaveBeenCalledWith('/api/full-previews', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ rainfallDepthMm: 80 }),
+    }))
+  })
+})

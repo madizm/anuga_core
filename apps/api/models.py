@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -16,7 +17,6 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    CheckConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -88,7 +88,7 @@ class Scenario(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=utcnow,
                                                  onupdate=utcnow)
-    inlets: Mapped[list["ScenarioInlet"]] = relationship(
+    inlets: Mapped[list[ScenarioInlet]] = relationship(
         cascade="all, delete-orphan",
         order_by="ScenarioInlet.sort_order",
         back_populates="scenario",
@@ -115,7 +115,7 @@ class ScenarioInlet(Base):
     display_color: Mapped[str] = mapped_column(String(20), default="#00D8FF")
     sort_order: Mapped[int] = mapped_column(Integer)
     scenario: Mapped[Scenario] = relationship(back_populates="inlets")
-    cells: Mapped[list["ScenarioInletCell"]] = relationship(
+    cells: Mapped[list[ScenarioInletCell]] = relationship(
         cascade="all, delete-orphan", order_by="ScenarioInletCell.cell_id"
     )
 
@@ -201,3 +201,72 @@ class SimulationArtifact(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=utcnow)
+
+
+class FullPreviewJob(Base):
+    """Immutable execution record for one regional rainfall preview."""
+
+    __tablename__ = "full_preview_jobs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=uuid_string
+    )
+    dem_product_id: Mapped[str] = mapped_column(
+        ForeignKey("dem_products.id"), index=True
+    )
+    domain_id: Mapped[str] = mapped_column(String(100))
+    dataset_version: Mapped[str] = mapped_column(String(200))
+    assumptions_profile_id: Mapped[str] = mapped_column(String(100))
+    runoff_coefficient: Mapped[float] = mapped_column(Float)
+    cache_identity_hash: Mapped[str] = mapped_column(String(64))
+    compatibility_version: Mapped[str] = mapped_column(String(64), index=True)
+    rainfall_depth_mm: Mapped[float] = mapped_column(Float)
+    effective_rainfall_depth_mm: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED")
+    phase: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    execution_attempt: Mapped[int] = mapped_column(Integer, default=0)
+    execution_token: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cache_hit: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    result_cog_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    report_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bounds: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    maximum_depth_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wet_area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold_areas_m2: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True
+    )
+    input_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    retained_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    outflow_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    mass_balance_error_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('QUEUED', 'PREPARING', 'SOLVING', 'PUBLISHING', "
+            "'COMPLETED', 'FAILED')",
+            name="ck_full_preview_status",
+        ),
+    )

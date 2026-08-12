@@ -1,24 +1,29 @@
 from __future__ import annotations
 
+from io import BytesIO
+from pathlib import Path
+from struct import unpack_from
 from types import SimpleNamespace
 
-from pathlib import Path
-from io import BytesIO
-from struct import unpack_from
-
-from PIL import Image
+import numpy as np
+import pytest
 import rasterio
+from fastapi.testclient import TestClient
+from PIL import Image
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
-
-import pytest
-import numpy as np
-from fastapi.testclient import TestClient
 
 from apps.api.config import Settings
 from apps.api.db import Database
 from apps.api.main import _apply_depth_mask, _simulation_area_bounds, create_app
-from apps.api.models import SimulationFrame, SimulationJob
+from apps.api.models import FullPreviewJob, SimulationFrame, SimulationJob
+from bayuquan.preview.cache import (
+    cache_identity,
+    load_preprocessed,
+    save_preprocessed,
+)
+from bayuquan.preview.fill_spill import DepressionNetwork
+from bayuquan.preview.preprocessing import PreprocessedDem
 from bayuquan.simulation.grid_mapping import GridTriangleMapping
 
 
@@ -577,7 +582,9 @@ def test_tile_display_mask_uses_depth_threshold():
             transform=from_origin(0, 1, 1, 1),
         ) as dataset:
             dataset.write(np.array([[[0.0, 0.2]]], dtype=np.float32))
-        masked = _apply_depth_mask(png.getvalue(), memory_file.read())
+        masked = _apply_depth_mask(
+            png.getvalue(), memory_file.read(), threshold_m=0.15
+        )
 
     alpha = np.asarray(Image.open(BytesIO(masked)))[..., 3]
     np.testing.assert_array_equal(alpha, [[0, 255]])
@@ -816,3 +823,237 @@ def test_hydraulic_features_are_persisted_and_snapshotted(
         assert job.status_code == 202
         assert job.json()["scenarioSnapshot"]["hydraulicFeatures"] \
             == payload["hydraulicFeatures"]
+
+
+def test_full_preview_config_and_job_lifecycle_are_independent(
+    tmp_path, monkeypatch
+):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    dispatched = []
+    configured = settings(str(database.engine.url))
+    configured = configured.__class__(
+        **{
+            **configured.__dict__,
+            "full_preview_dem_product_id": "dem-test",
+            "full_preview_domain_id": "bayuquan-regional-v1",
+            "full_preview_cache": tmp_path / "regional-cache.npz",
+            "full_preview_window": (0, 0, 3, 2),
+            "full_preview_runoff_coefficient": 0.65,
+        }
+    )
+    catalog = FakeAreaCatalog()
+    catalog.dem_path = tmp_path / "regional-dem.tif"
+    _write_preview_cache(
+        catalog.dem_path,
+        tmp_path / "regional-cache.npz",
+        (0, 0, 3, 2),
+    )
+    cache_loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal cache_loads
+        cache_loads += 1
+        return load_preprocessed(*args, **kwargs)
+
+    monkeypatch.setattr("apps.api.main.load_preprocessed", counted_load)
+    app = create_app(
+        settings=configured,
+        database=database,
+        area_catalog=catalog,
+        preview_dispatcher=lambda job_id, queue: dispatched.append(
+            (job_id, queue)
+        ),
+    )
+
+    with TestClient(app) as test_client:
+        config = test_client.get("/api/full-previews/config")
+        created = test_client.post(
+            "/api/full-previews",
+            json={"rainfallDepthMm": 80},
+        )
+        listed = test_client.get("/api/full-previews")
+        with database.session_factory.begin() as session:
+            job = session.get(FullPreviewJob, created.json()["id"])
+            job.status = "COMPLETED"
+            job.result_cog_uri = "s3://test/full-previews/result.tif"
+        app.state.s3_client = SimpleNamespace(
+            get_object=lambda **kwargs: {
+                "Body": BytesIO(b"test-cog"),
+                "ContentLength": 8,
+                "ContentType": "image/tiff",
+            }
+        )
+        download = test_client.get(
+            f"/api/full-previews/{created.json()['id']}/result.cog",
+        )
+
+    assert config.status_code == 200
+    assert config.json()["available"] is True
+    assert config.json()["demProductName"] == "Test DEM"
+    assert config.json()["cellSizeM"] == 30
+    assert config.json()["assumptionsProfile"]["runoffCoefficient"] == 0.65
+    assert created.status_code == 201, created.text
+    assert created.json()["rainfallDepthMm"] == 80
+    assert created.json()["effectiveRainfallDepthMm"] == 52
+    assert created.json()["datasetVersion"] == "dataset-v1"
+    assert created.json()["runoffCoefficient"] == 0.65
+    assert len(created.json()["cacheIdentityHash"]) == 64
+    assert len(created.json()["compatibilityVersion"]) == 64
+    assert created.json()["authority"] == "non-authoritative"
+    assert created.json()["status"] == "QUEUED"
+    assert dispatched == [(created.json()["id"], "full-domain-preview")]
+    assert listed.json()[0]["id"] == created.json()["id"]
+    assert cache_loads == 1
+    assert download.status_code == 200
+    assert download.content == b"test-cog"
+    assert download.headers["content-type"] == "image/tiff"
+    assert download.headers["content-disposition"] == (
+        f'attachment; filename="full-preview-{created.json()["id"]}.cog.tif"'
+    )
+
+
+def test_full_preview_rejects_submission_when_cache_is_not_ready(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    configured = settings(str(database.engine.url))
+    configured = configured.__class__(
+        **{
+            **configured.__dict__,
+            "full_preview_dem_product_id": "dem-test",
+            "full_preview_cache": tmp_path / "missing.npz",
+            "full_preview_window": (20, 10, 3, 2),
+        }
+    )
+    app = create_app(
+        settings=configured,
+        database=database,
+        area_catalog=FakeAreaCatalog(),
+    )
+
+    with TestClient(app) as test_client:
+        config = test_client.get("/api/full-previews/config")
+        created = test_client.post(
+            "/api/full-previews",
+            json={"rainfallDepthMm": 80},
+        )
+
+    assert config.json()["available"] is False
+    assert config.json()["cacheStatus"] == "MISSING"
+    assert created.status_code == 409
+
+
+def test_full_preview_dispatch_failure_terminalizes_job(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    cache = tmp_path / "regional-cache.npz"
+    dem = tmp_path / "regional-dem.tif"
+    window = (0, 0, 3, 2)
+    _write_preview_cache(dem, cache, window)
+    catalog = FakeAreaCatalog()
+    catalog.dem_path = dem
+    configured = settings(str(database.engine.url))
+    configured = configured.__class__(**{
+        **configured.__dict__,
+        "full_preview_dem_product_id": "dem-test",
+        "full_preview_cache": cache,
+        "full_preview_window": window,
+    })
+
+    def unavailable_broker(job_id, queue):
+        raise RuntimeError("broker unavailable")
+
+    app = create_app(
+        settings=configured,
+        database=database,
+        area_catalog=catalog,
+        preview_dispatcher=unavailable_broker,
+    )
+    with TestClient(app) as test_client:
+        created = test_client.post(
+            "/api/full-previews", json={"rainfallDepthMm": 80}
+        )
+        jobs = test_client.get("/api/full-previews").json()
+
+    assert created.status_code == 503
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "FAILED"
+    assert jobs[0]["errorCode"] == "FULL_PREVIEW_DISPATCH_FAILED"
+    assert jobs[0]["errorMessage"] == "broker unavailable"
+
+
+@pytest.mark.parametrize(("configured_window", "cache_shape", "message"), [
+    ((2, 1, 3, 2), None, "outside the DEM"),
+    ((0, 0, 3, 2), (1, 3), "basin shape"),
+])
+def test_full_preview_rejects_invalid_cache_and_unknown_event_stream(
+    tmp_path, configured_window, cache_shape, message
+):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    cache = tmp_path / "regional-cache.npz"
+    dem = tmp_path / "regional-dem.tif"
+    _write_preview_cache(
+        dem, cache, (0, 0, 3, 2), cache_shape=cache_shape
+    )
+    catalog = FakeAreaCatalog()
+    catalog.dem_path = dem
+    configured = settings(str(database.engine.url))
+    configured = configured.__class__(**{
+        **configured.__dict__,
+        "full_preview_dem_product_id": "dem-test",
+        "full_preview_cache": cache,
+        "full_preview_window": configured_window,
+    })
+    app = create_app(
+        settings=configured,
+        database=database,
+        area_catalog=catalog,
+    )
+
+    with TestClient(app) as test_client:
+        config = test_client.get("/api/full-previews/config")
+        created = test_client.post(
+            "/api/full-previews", json={"rainfallDepthMm": 80}
+        )
+        events = test_client.get("/api/full-previews/unknown/events")
+
+    assert config.json()["available"] is False
+    assert config.json()["cacheStatus"] == "INVALID"
+    assert message in config.json()["readinessError"]
+    assert created.status_code == 409
+    assert events.status_code == 404
+
+
+def _write_preview_cache(
+    dem_path, cache_path, window, *, cache_shape=None
+):
+    with rasterio.open(
+        dem_path,
+        "w",
+        driver="GTiff",
+        width=4,
+        height=3,
+        count=1,
+        dtype="float32",
+        crs="EPSG:32651",
+        transform=from_origin(430_000, 4_462_000, 5, 5),
+    ) as dataset:
+        dataset.write(np.ones((1, 3, 4), dtype=np.float32))
+    with rasterio.open(dem_path) as dataset:
+        transform = dataset.window_transform(rasterio.windows.Window(*window))
+    identity = cache_identity(
+        dem_path=dem_path,
+        window=window,
+        transform=tuple(transform),
+    )
+    shape = cache_shape or (window[3], window[2])
+    cell_area = 25.0
+    preprocessed = PreprocessedDem(
+        basin_ids=np.full(shape, -1, dtype=np.int32),
+        filled_elevations_m=np.ones(shape, dtype=np.float32),
+        depressions=(),
+        network=DepressionNetwork(
+            (),
+            cell_area_m2=cell_area,
+            open_catchment_area_m2=float(np.prod(shape)) * cell_area,
+        ),
+        cell_area_m2=cell_area,
+    )
+    save_preprocessed(cache_path, preprocessed, identity=identity)

@@ -38,6 +38,13 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    beat_schedule={
+        "recover-expired-full-previews": {
+            "task": "bayuquan.recover_full_previews",
+            "schedule": 60.0,
+            "options": {"queue": "standard"},
+        },
+    },
 )
 
 
@@ -307,3 +314,9 @@ class JobRunner:
 @celery_app.task(name="bayuquan.run_job", bind=True, max_retries=0)
 def run_job(_task, job_id: str) -> None:
     JobRunner(settings).run(job_id)
+
+
+# Register the independent regional preview task on this Celery application.
+from . import full_preview_tasks as _full_preview_tasks  # noqa: E402,F401
+
+del _full_preview_tasks

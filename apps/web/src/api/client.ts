@@ -11,6 +11,9 @@ import type {
   SimulationArea,
   FramePointValue,
   FlowField,
+  FullPreviewConfig,
+  FullPreviewJob,
+  FullPreviewPoint,
   HydraulicFeature,
   HydraulicMeshPreview,
   ValidationResult,
@@ -200,4 +203,22 @@ export const api = {
       `/api/jobs/${jobId}/frames/${frameIndex}/point?longitude=${longitude}&latitude=${latitude}`,
     ),
   flowField,
+  fullPreviewConfig: () => request<FullPreviewConfig>(
+    '/api/full-previews/config',
+  ),
+  fullPreviews: (limit = 100) => request<FullPreviewJob[]>(
+    `/api/full-previews?limit=${limit}`,
+  ),
+  fullPreview: (id: string) => request<FullPreviewJob>(
+    `/api/full-previews/${id}`,
+  ),
+  createFullPreview: (rainfallDepthMm: number) => request<FullPreviewJob>(
+    '/api/full-previews',
+    { method: 'POST', body: JSON.stringify({ rainfallDepthMm }) },
+  ),
+  fullPreviewPoint: (
+    id: string, longitude: number, latitude: number,
+  ) => request<FullPreviewPoint>(
+    `/api/full-previews/${id}/point?longitude=${longitude}&latitude=${latitude}`,
+  ),
 }

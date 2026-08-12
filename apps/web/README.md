@@ -1,21 +1,41 @@
-# Bayuquan Web GIS editor
+# Bayuquan Web GIS console
 
-A React, TypeScript, and MapLibre implementation of the phase-D inlet editor.
-The visual direction is a dense hydrodynamic operations console: graphite map,
-cyan inlet controls, explicit engineering units, and high-contrast risk states.
+A React, TypeScript, and MapLibre console for local ANUGA simulations and the
+separate non-authoritative regional rainfall preview.
 
 ## Development
 
 Start the API stack, then Vite:
 
 ```bash
-docker compose up -d postgres redis minio titiler api worker
+docker compose up -d postgres redis minio titiler api worker \
+  high-resource-worker full-preview-worker celery-beat
 cd apps/web
 npm install
 npm run dev
 ```
 
 Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
+
+## Routes
+
+- `/workbench/local` opens the local-domain editor;
+- `/simulations/:jobId` is the reload-safe formal simulation result route;
+- `/workbench/regional-preview` opens the regional preview submission and
+  history console;
+- `/previews/:previewId` is the reload-safe regional preview result route.
+
+The regional console accepts one 24-hour accumulated-rainfall value. It always
+shows the configured runoff coefficient, derived effective rainfall, fixed
+assumptions, cache readiness, and non-authoritative status. Submission remains
+disabled when the API reports that the fixed domain or versioned preprocessing
+cache is unavailable; it does not fall back to browser GPU preview or an
+in-memory full-DEM preprocessing run.
+
+A completed preview displays a static maximum-water-depth map with threshold
+area statistics and point sampling. Operators can download its COG, copy its
+rainfall value into another run, and overlay a completed result only when its
+dataset, fixed domain, cache, and assumptions compatibility version matches.
 
 ## Supported editor interactions
 
@@ -44,7 +64,7 @@ Open <http://localhost:5173>. Vite proxies `/api` to port 8000.
 - terrain-draped procedural water, with animated flow particles and no independent water/terrain depth mesh;
 - double-buffered raster sources with a short cross-fade;
 - point sampling of all three quantities;
-- Job deep links (`?job=<uuid>`) that survive page reloads.
+- formal simulation result routes that survive page reloads.
 
 ## Checks
 
@@ -63,7 +83,8 @@ single/triple display modes.
 ## Production container
 
 ```bash
-docker compose up --build web api worker postgres redis minio titiler
+docker compose up --build web api worker high-resource-worker \
+  full-preview-worker celery-beat postgres redis minio titiler
 ```
 
 Nginx serves the production bundle at <http://localhost:5173> and proxies API

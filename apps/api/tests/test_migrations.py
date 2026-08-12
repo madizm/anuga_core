@@ -16,6 +16,7 @@ def test_initial_migration_round_trip(tmp_path, monkeypatch):
     assert set(inspector.get_table_names()) == {
         "alembic_version",
         "dem_products",
+        "full_preview_jobs",
         "scenario_inlet_cells",
         "scenario_inlets",
         "scenarios",

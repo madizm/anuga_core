@@ -3,25 +3,45 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import struct
 import warnings
-from functools import partial
-from io import BytesIO
-
-import numpy as np
-import rasterio
-from PIL import Image
-from rasterio.enums import Resampling
-from rasterio.io import MemoryFile
 from collections.abc import Callable
 from contextlib import ExitStack, asynccontextmanager
+from functools import partial
+from io import BytesIO
+from pathlib import Path
 from urllib.parse import urlparse
+
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
 import httpx
+import numpy as np
+import rasterio
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
+from fastapi.responses import JSONResponse, StreamingResponse
+from PIL import Image
 from pyproj import Transformer
+from rasterio.enums import Resampling
+from rasterio.io import MemoryFile
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from bayuquan.preview.cache import (
+    PreprocessingCacheMismatch,
+    cache_identity,
+    load_preprocessed,
+)
 from bayuquan.simulation.area_catalog import (
     SimulationAreaCatalog,
 )
@@ -30,11 +50,6 @@ from bayuquan.simulation.feature_compiler import (
     sample_elevation_profile,
 )
 from bayuquan.simulation.hydraulic_features import HydraulicFeaturesSpec
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi import status
-from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db import Database
@@ -45,9 +60,11 @@ from .dem_products import (
     register_manifest,
 )
 from .models import (
+    FullPreviewJob,
     Scenario,
     SimulationFrame,
     SimulationJob,
+    utcnow,
 )
 from .scenarios.service import (
     get_scenario,
@@ -59,13 +76,13 @@ from .scenarios.service import (
 )
 from .schemas import (
     ElevationProfileRequest,
-    HydraulicMeshPreviewRequest,
+    FullPreviewCreateRequest,
     GridSelectionRequest,
+    HydraulicMeshPreviewRequest,
     JobCreateRequest,
     ScenarioRequest,
     SimulationAreaResolveRequest,
 )
-
 
 JobDispatcher = Callable[[str, str], None]
 
@@ -77,6 +94,7 @@ def create_app(
     area_catalog: SimulationAreaCatalog | None = None,
     dem_catalog: DemProductCatalog | None = None,
     dispatcher: JobDispatcher | None = None,
+    preview_dispatcher: JobDispatcher | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
     database = database or Database(settings.database_url)
@@ -107,12 +125,16 @@ def create_app(
     app.state.database = database
     app.state.dem_products = dem_catalog
     app.state.dispatcher = dispatcher or _celery_dispatcher(settings)
+    app.state.preview_dispatcher = (
+        preview_dispatcher or _full_preview_dispatcher(settings)
+    )
     app.state.s3_client = boto3.client(
         "s3",
         endpoint_url=settings.s3_endpoint_url,
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
     )
+    preview_readiness_cache: dict[tuple, dict] = {}
 
     def session_dependency() -> Session:
         with database.session_factory() as session:
@@ -847,6 +869,298 @@ def create_app(
         )
         return Response(content=masked, media_type="image/png")
 
+    @app.get("/api/full-previews/config")
+    def full_preview_config() -> dict:
+        cache = settings.full_preview_cache
+        window = settings.full_preview_window
+        try:
+            product = product_or_404(settings.full_preview_dem_product_id)
+        except HTTPException:
+            product = None
+        readiness = _full_preview_readiness(
+            product=product,
+            cache=cache,
+            window=window,
+            memo=preview_readiness_cache,
+        )
+        return {
+            "available": readiness["available"],
+            "domainId": settings.full_preview_domain_id,
+            "demProductId": settings.full_preview_dem_product_id,
+            "demProductName": product.name if product is not None else None,
+            "cellSizeM": product.cell_size_m if product is not None else None,
+            "durationHours": 24,
+            "rainfallLimitsMm": {"minimum": 0.1, "maximum": 500},
+            "cacheStatus": readiness["cacheStatus"],
+            "readinessError": readiness.get("error"),
+            "windowConfigured": window is not None,
+            "datasetVersion": (
+                product.dataset_version if product is not None else None
+            ),
+            "cacheIdentityHash": readiness.get("cacheIdentityHash"),
+            "assumptionsProfile": {
+                "id": "terrain-storage-v1",
+                "name": "地形蓄水快览 V1",
+                "runoffCoefficient": (
+                    settings.full_preview_runoff_coefficient
+                ),
+                "drainageIncluded": False,
+                "infiltrationIncluded": (
+                    settings.full_preview_runoff_coefficient < 1.0
+                ),
+                "spatialDistribution": "uniform",
+            },
+            "authority": "non-authoritative",
+        }
+
+    @app.post(
+        "/api/full-previews", status_code=status.HTTP_201_CREATED
+    )
+    def create_full_preview(
+        request: FullPreviewCreateRequest,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        config = full_preview_config()
+        if not config["available"]:
+            raise HTTPException(
+                status_code=409,
+                detail="full preview preprocessing cache is not ready",
+            )
+        coefficient = settings.full_preview_runoff_coefficient
+        if not 0.0 < coefficient <= 1.0:
+            raise HTTPException(
+                status_code=503,
+                detail="full preview runoff coefficient is invalid",
+            )
+        identity_hash = config["cacheIdentityHash"]
+        compatibility_version = _compatibility_version(
+            dataset_version=config["datasetVersion"],
+            domain_id=config["domainId"],
+            assumptions_profile_id=config["assumptionsProfile"]["id"],
+            runoff_coefficient=coefficient,
+            cache_identity_hash=identity_hash,
+        )
+        job = FullPreviewJob(
+            dem_product_id=settings.full_preview_dem_product_id,
+            domain_id=settings.full_preview_domain_id,
+            dataset_version=config["datasetVersion"],
+            assumptions_profile_id="terrain-storage-v1",
+            runoff_coefficient=coefficient,
+            cache_identity_hash=identity_hash,
+            compatibility_version=compatibility_version,
+            rainfall_depth_mm=request.rainfall_depth_mm,
+            effective_rainfall_depth_mm=(
+                request.rainfall_depth_mm * coefficient
+            ),
+            status="QUEUED",
+            phase="QUEUED",
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        try:
+            app.state.preview_dispatcher(job.id, settings.full_preview_queue)
+        except Exception as error:
+            job.status = "FAILED"
+            job.phase = "FAILED"
+            job.completed_at = utcnow()
+            job.error_code = "FULL_PREVIEW_DISPATCH_FAILED"
+            job.error_message = str(error)[:2000]
+            session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="full preview dispatch failed",
+            ) from error
+        return full_preview_response(job)
+
+    @app.get("/api/full-previews")
+    def list_full_previews(
+        limit: int = Query(default=100, ge=1, le=500),
+        session: Session = Depends(session_dependency),
+    ) -> list[dict]:
+        jobs = session.scalars(
+            select(FullPreviewJob)
+            .order_by(FullPreviewJob.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [full_preview_response(job) for job in jobs]
+
+    @app.get("/api/full-previews/{job_id}")
+    def read_full_preview(
+        job_id: str,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        job = session.get(FullPreviewJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="preview not found")
+        return full_preview_response(job)
+
+    @app.get("/api/full-previews/{job_id}/events")
+    async def full_preview_events(
+        job_id: str, request: Request,
+    ) -> StreamingResponse:
+        with database.session_factory() as session:
+            if session.get(FullPreviewJob, job_id) is None:
+                raise HTTPException(
+                    status_code=404, detail="preview not found"
+                )
+
+        async def events():
+            previous = None
+            while True:
+                if await request.is_disconnected():
+                    return
+                with database.session_factory() as session:
+                    job = session.get(FullPreviewJob, job_id)
+                    if job is None:
+                        return
+                    response = full_preview_response(job)
+                    marker = (job.status, job.phase)
+                    if marker != previous:
+                        previous = marker
+                        yield _sse("preview.status", response)
+                    if job.status == "COMPLETED":
+                        yield _sse("preview.completed", response)
+                        return
+                    if job.status == "FAILED":
+                        yield _sse("preview.failed", response)
+                        return
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.get("/api/full-previews/{job_id}/tilejson")
+    def full_preview_tilejson(
+        job_id: str,
+        threshold_m: float = Query(default=0.05, ge=0.0, le=10.0),
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        job = completed_full_preview_or_404(session, job_id)
+        return {
+            "tilejson": "3.0.0",
+            "name": f"maximum depth preview {job_id}",
+            "tiles": [
+                (
+                    f"/api/full-previews/{job_id}/tiles/"
+                    f"{{z}}/{{x}}/{{y}}.png?thresholdM={threshold_m:g}"
+                )
+            ],
+            "bounds": job.bounds,
+            "minzoom": 0,
+            "maxzoom": 22,
+        }
+
+    @app.get(
+        "/api/full-previews/{job_id}/tiles/{z}/{x}/{y}.png"
+    )
+    def full_preview_tile(
+        job_id: str,
+        z: int,
+        x: int,
+        y: int,
+        threshold_m: float = Query(
+            default=0.05, alias="thresholdM", ge=0.0, le=10.0
+        ),
+        session: Session = Depends(session_dependency),
+    ) -> Response:
+        job = completed_full_preview_or_404(session, job_id)
+        upstream = (
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/"
+            f"{z}/{x}/{y}.png"
+        )
+        response = httpx.get(
+            upstream,
+            params={
+                "url": job.result_cog_uri,
+                "rescale": f"{threshold_m:g},3",
+                "colormap_name": "blues",
+                "nodata": -9999,
+            },
+            timeout=20,
+        )
+        if response.status_code == 404:
+            return Response(content=TRANSPARENT_TILE, media_type="image/png")
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="tile renderer failed")
+        depth_response = httpx.get(
+            upstream.removesuffix(".png") + ".tif",
+            params={"url": job.result_cog_uri, "bidx": 1},
+            timeout=20,
+        )
+        if depth_response.status_code != 200:
+            raise HTTPException(
+                status_code=502, detail="tile mask renderer failed"
+            )
+        masked = _apply_depth_mask(
+            response.content, depth_response.content, threshold_m=threshold_m
+        )
+        return Response(content=masked, media_type="image/png")
+
+    @app.get("/api/full-previews/{job_id}/point")
+    def full_preview_point(
+        job_id: str,
+        longitude: float,
+        latitude: float,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        job = completed_full_preview_or_404(session, job_id)
+        response = httpx.get(
+            f"{settings.titiler_url}/cog/point/{longitude},{latitude}",
+            params={"url": job.result_cog_uri, "bidx": 1},
+            timeout=20,
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="point query failed")
+        values = response.json().get("values", [])
+        value = values[0] if values else None
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if value is None or value == -9999 or not math.isfinite(float(value)):
+            value = None
+        return {
+            "longitude": longitude,
+            "latitude": latitude,
+            "maximumDepthM": value,
+        }
+
+    @app.get("/api/full-previews/{job_id}/result.cog")
+    def download_full_preview(
+        job_id: str,
+        session: Session = Depends(session_dependency),
+    ) -> StreamingResponse:
+        job = completed_full_preview_or_404(session, job_id)
+        bucket, key = _s3_location(job.result_cog_uri)
+        try:
+            stored = app.state.s3_client.get_object(
+                Bucket=bucket, Key=key
+            )
+        except (BotoCoreError, ClientError) as error:
+            raise HTTPException(
+                status_code=502, detail="preview COG download failed"
+            ) from error
+        body = stored["Body"]
+
+        def content():
+            try:
+                while block := body.read(1024 * 1024):
+                    yield block
+            finally:
+                body.close()
+
+        headers = {
+            "content-disposition": (
+                f'attachment; filename="full-preview-{job.id}.cog.tif"'
+            ),
+            "cache-control": "private, no-store",
+        }
+        if stored.get("ContentLength") is not None:
+            headers["content-length"] = str(stored["ContentLength"])
+        return StreamingResponse(
+            content(),
+            media_type=stored.get("ContentType", "image/tiff"),
+            headers=headers,
+        )
+
     @app.get("/api/jobs/{job_id}/events")
     async def job_events(job_id: str, request: Request) -> StreamingResponse:
         raw_cursor = request.headers.get("last-event-id", "-1")
@@ -947,6 +1261,20 @@ def _single_product_catalog(area_catalog: SimulationAreaCatalog):
     return _SingleProductCatalog(area_catalog)
 
 
+def _full_preview_dispatcher(settings: Settings) -> JobDispatcher:
+    if not settings.dispatch_jobs:
+        return lambda job_id, queue: None
+
+    def dispatch(job_id: str, queue: str) -> None:
+        from celery import Celery
+        celery = Celery(broker=settings.celery_broker_url)
+        celery.send_task(
+            "bayuquan.run_full_preview", args=[job_id], queue=queue
+        )
+
+    return dispatch
+
+
 def _celery_dispatcher(settings: Settings) -> JobDispatcher:
     if not settings.dispatch_jobs:
         return lambda job_id, queue: None
@@ -957,6 +1285,173 @@ def _celery_dispatcher(settings: Settings) -> JobDispatcher:
         celery.send_task("bayuquan.run_job", args=[job_id], queue=queue)
 
     return dispatch
+
+
+def completed_full_preview_or_404(
+    session: Session, job_id: str
+) -> FullPreviewJob:
+    job = session.get(FullPreviewJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="preview not found")
+    if job.status != "COMPLETED" or not job.result_cog_uri:
+        raise HTTPException(status_code=409, detail="preview is not completed")
+    return job
+
+
+def _full_preview_readiness(
+    *,
+    product: DemProductView | None,
+    cache,
+    window: tuple[int, int, int, int] | None,
+    memo: dict[tuple, dict],
+) -> dict:
+    if cache is None or not cache.is_file():
+        return {
+            "available": False,
+            "cacheStatus": "MISSING",
+            "error": "preprocessing cache is missing",
+        }
+    if product is None:
+        return {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": "DEM product is unavailable",
+        }
+    if window is None:
+        return {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": "full preview domain window is not configured",
+        }
+
+    dem_path = Path(product.compute_dem_uri)
+    try:
+        cache_stat = cache.stat()
+        dem_stat = dem_path.stat()
+    except OSError:
+        return {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": "DEM or preprocessing cache cannot be read",
+        }
+    signature = (
+        str(cache.resolve()), cache_stat.st_size, cache_stat.st_mtime_ns,
+        str(dem_path.resolve()), dem_stat.st_size, dem_stat.st_mtime_ns,
+        product.dataset_version, window,
+    )
+    cached = memo.get(signature)
+    if cached is not None:
+        return cached
+
+    try:
+        column, row, width, height = window
+        with rasterio.open(dem_path) as source:
+            if (
+                column < 0 or row < 0 or width <= 0 or height <= 0
+                or column + width > source.width
+                or row + height > source.height
+            ):
+                raise ValueError("full preview window is outside the DEM")
+            source_window = rasterio.windows.Window(*window)
+            transform = source.window_transform(source_window)
+        identity = cache_identity(
+            dem_path=dem_path,
+            window=window,
+            transform=tuple(transform),
+        )
+        preprocessed = load_preprocessed(
+            cache, expected_identity=identity
+        )
+        if preprocessed.basin_ids.shape != (height, width):
+            raise PreprocessingCacheMismatch(
+                "preprocessing basin shape does not match domain window"
+            )
+    except (
+        OSError,
+        PreprocessingCacheMismatch,
+        ValueError,
+        rasterio.errors.RasterioError,
+    ) as error:
+        result = {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": str(error),
+        }
+    else:
+        result = {
+            "available": True,
+            "cacheStatus": "READY",
+            "cacheIdentityHash": hashlib.sha256(
+                identity.encode()
+            ).hexdigest(),
+        }
+    memo.clear()
+    memo[signature] = result
+    return result
+
+
+def _compatibility_version(
+    *,
+    dataset_version: str,
+    domain_id: str,
+    assumptions_profile_id: str,
+    runoff_coefficient: float,
+    cache_identity_hash: str,
+) -> str:
+    identity = json.dumps({
+        "datasetVersion": dataset_version,
+        "domainId": domain_id,
+        "assumptionsProfileId": assumptions_profile_id,
+        "runoffCoefficient": runoff_coefficient,
+        "cacheIdentityHash": cache_identity_hash,
+    }, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def full_preview_response(job: FullPreviewJob) -> dict:
+    result = None
+    if job.result_cog_uri:
+        result = {
+            "tilejsonUrl": f"/api/full-previews/{job.id}/tilejson",
+            "cogDownloadUrl": f"/api/full-previews/{job.id}/result.cog",
+            "bounds": job.bounds,
+            "maximumDepthM": job.maximum_depth_m,
+            "wetAreaM2": job.wet_area_m2,
+            "thresholdAreasM2": job.threshold_areas_m2 or {},
+            "inputVolumeM3": job.input_volume_m3,
+            "retainedVolumeM3": job.retained_volume_m3,
+            "outflowVolumeM3": job.outflow_volume_m3,
+            "massBalanceErrorM3": job.mass_balance_error_m3,
+        }
+    return {
+        "id": job.id,
+        "status": job.status,
+        "phase": job.phase,
+        "demProductId": job.dem_product_id,
+        "domainId": job.domain_id,
+        "datasetVersion": job.dataset_version,
+        "rainfallDepthMm": job.rainfall_depth_mm,
+        "effectiveRainfallDepthMm": job.effective_rainfall_depth_mm,
+        "assumptionsProfileId": job.assumptions_profile_id,
+        "runoffCoefficient": job.runoff_coefficient,
+        "cacheIdentityHash": job.cache_identity_hash,
+        "compatibilityVersion": job.compatibility_version,
+        "cacheHit": job.cache_hit,
+        "result": result,
+        "errorCode": job.error_code,
+        "errorMessage": job.error_message,
+        "createdAt": job.created_at,
+        "startedAt": job.started_at,
+        "completedAt": job.completed_at,
+        "authority": "non-authoritative",
+    }
+
+
+def _s3_location(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path:
+        raise HTTPException(status_code=500, detail="artifact URI is invalid")
+    return parsed.netloc, parsed.path.lstrip("/")
 
 
 def job_response(job: SimulationJob) -> dict:
@@ -1053,13 +1548,14 @@ def _quantity_band(quantity: str) -> tuple[int, str, str]:
         ) from error
 
 
-def _apply_depth_mask(png: bytes, depth_tiff: bytes) -> bytes:
-    with MemoryFile(depth_tiff) as memory_file:
-        with memory_file.open() as dataset:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                depth = dataset.read(1)
-    wet = np.isfinite(depth) & (depth >= 0.01) & (depth != -9999)
+def _apply_depth_mask(
+    png: bytes, depth_tiff: bytes, *, threshold_m: float = 0.01
+) -> bytes:
+    with MemoryFile(depth_tiff) as memory_file, memory_file.open() as dataset:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            depth = dataset.read(1)
+    wet = np.isfinite(depth) & (depth >= threshold_m) & (depth != -9999)
     image = Image.open(BytesIO(png)).convert("RGBA")
     pixels = np.asarray(image).copy()
     pixels[..., 3] = np.where(wet, pixels[..., 3], 0)
