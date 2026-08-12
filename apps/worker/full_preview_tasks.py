@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -79,10 +80,25 @@ class FullPreviewRunner:
                     window=raw_window,
                     transform=tuple(transform),
                 )
+            identity_hash = hashlib.sha256(identity.encode()).hexdigest()
+            if product.dataset_version != job.dataset_version:
+                raise RuntimeError(
+                    "full preview DEM dataset version changed after submission"
+                )
+            if identity_hash != job.cache_identity_hash:
+                raise RuntimeError(
+                    "full preview cache identity changed after submission"
+                )
             preprocessed = load_preprocessed(
                 cache_path,
                 expected_identity=identity,
             )
+            if preprocessed.basin_ids.shape != (
+                int(window.height), int(window.width)
+            ):
+                raise RuntimeError(
+                    "full preview basin shape does not match domain window"
+                )
             self._status(job_id, "SOLVING", cache_hit=True)
             result = preprocessed.network.solve(
                 effective_rainfall_depth_m=rainfall_depth_m,

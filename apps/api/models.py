@@ -215,7 +215,11 @@ class FullPreviewJob(Base):
         ForeignKey("dem_products.id"), index=True
     )
     domain_id: Mapped[str] = mapped_column(String(100))
+    dataset_version: Mapped[str] = mapped_column(String(200))
     assumptions_profile_id: Mapped[str] = mapped_column(String(100))
+    runoff_coefficient: Mapped[float] = mapped_column(Float)
+    cache_identity_hash: Mapped[str] = mapped_column(String(64))
+    compatibility_version: Mapped[str] = mapped_column(String(64), index=True)
     rainfall_depth_mm: Mapped[float] = mapped_column(Float)
     effective_rainfall_depth_mm: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(20), default="QUEUED")

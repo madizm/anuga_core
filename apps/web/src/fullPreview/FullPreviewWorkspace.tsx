@@ -22,7 +22,15 @@ export function FullPreviewWorkspace({
   const history = useQuery({
     queryKey: ['full-previews'], queryFn: () => api.fullPreviews(100),
   })
-  const compareJob = history.data?.find((item) => item.id === compareId) ?? null
+  const compareJob = history.data?.find((item) => (
+    item.id === compareId
+    && item.compatibilityVersion === job?.compatibilityVersion
+  )) ?? null
+  const compatibleJobs = history.data?.filter((item) => (
+    item.id !== job?.id
+    && item.status === 'COMPLETED'
+    && item.compatibilityVersion === job?.compatibilityVersion
+  )) ?? []
   const pointQuery = useMutation({
     mutationFn: ({ longitude, latitude }: { longitude: number; latitude: number }) => (
       api.fullPreviewPoint(previewId, longitude, latitude)
@@ -63,6 +71,7 @@ export function FullPreviewWorkspace({
             <span className="section-index">IMPACT SUMMARY</span>
             <h2>潜在积水统计</h2>
             <div className="impact-hero"><span>MAX DEPTH</span><strong>{result.maximumDepthM.toFixed(2)}<em> m</em></strong></div>
+            <dl className="preview-assumptions"><div><dt>有效降雨</dt><dd>{job.effectiveRainfallDepthMm.toFixed(1)} mm</dd></div><div><dt>径流系数</dt><dd>{job.runoffCoefficient.toFixed(2)}</dd></div><div><dt>固定假设</dt><dd>{job.assumptionsProfileId}</dd></div><div><dt>兼容版本</dt><dd>{job.compatibilityVersion.slice(0, 8)}</dd></div></dl>
             <div className="threshold-selector" role="radiogroup" aria-label="最小显示水深">
               {THRESHOLDS.map((value) => (
                 <button key={value} className={threshold === value ? 'active' : ''} onClick={() => setThreshold(value)}>
@@ -72,9 +81,9 @@ export function FullPreviewWorkspace({
               ))}
             </div>
             <div className="water-balance"><span>WATER BALANCE</span><dl><div><dt>输入</dt><dd>{formatVolume(result.inputVolumeM3)}</dd></div><div><dt>蓄存</dt><dd>{formatVolume(result.retainedVolumeM3)}</dd></div><div><dt>出流</dt><dd>{formatVolume(result.outflowVolumeM3)}</dd></div><div><dt>误差</dt><dd>{result.massBalanceErrorM3.toExponential(2)} m³</dd></div></dl></div>
-            <label className="compare-select"><span>场景叠加比较</span><select value={compareId} onChange={(event) => setCompareId(event.target.value)}><option value="">关闭比较</option>{history.data?.filter((item) => item.id !== job.id && item.status === 'COMPLETED').map((item) => <option key={item.id} value={item.id}>{item.rainfallDepthMm} mm · {item.id.slice(0, 8)}</option>)}</select><small>主场景显示蓝色，比较场景显示青绿色叠加。</small></label>
+            <label className="compare-select"><span>场景叠加比较</span><select value={compareId} onChange={(event) => setCompareId(event.target.value)}><option value="">关闭比较</option>{compatibleJobs.map((item) => <option key={item.id} value={item.id}>{item.rainfallDepthMm} mm · {item.id.slice(0, 8)} · {item.compatibilityVersion.slice(0, 8)}</option>)}</select><small>仅列出同数据集、范围、缓存及假设版本的结果。主场景显示蓝色，比较场景显示青绿色叠加。</small></label>
             <div className="result-actions"><button onClick={() => download.mutate()}>下载 COG</button><button onClick={() => navigate(`/workbench/regional-preview?rainfallMm=${job.rainfallDepthMm}`)}>基于此值再次运行</button></div>
-            <p className="impact-note">不包含流速、洪峰传播、排水管网和动态潮位。</p>
+            <p className="impact-note">非权威地形蓄水快览，不用于工程决策；不包含流速、洪峰传播、排水管网和动态潮位。</p>
           </aside>
         </div>
       ) : (
@@ -83,7 +92,7 @@ export function FullPreviewWorkspace({
           <span className="section-index">FILL–SPILL PREVIEW</span>
           <h1>{status}</h1>
           <p>{phaseDescription(job.status)}</p>
-          <dl><div><dt>累计降雨</dt><dd>{job.rainfallDepthMm} mm</dd></div><div><dt>有效降雨</dt><dd>{job.effectiveRainfallDepthMm.toFixed(1)} mm</dd></div><div><dt>预处理缓存</dt><dd>{job.cacheHit == null ? '等待确认' : job.cacheHit ? '已命中' : '未命中'}</dd></div><div><dt>任务 ID</dt><dd>{job.id}</dd></div></dl>
+          <dl><div><dt>累计降雨</dt><dd>{job.rainfallDepthMm} mm</dd></div><div><dt>有效降雨</dt><dd>{job.effectiveRainfallDepthMm.toFixed(1)} mm</dd></div><div><dt>径流系数</dt><dd>{job.runoffCoefficient.toFixed(2)}</dd></div><div><dt>固定假设</dt><dd>{job.assumptionsProfileId}</dd></div><div><dt>预处理缓存</dt><dd>{job.cacheHit == null ? '等待确认' : job.cacheHit ? '已命中' : '未命中'}</dd></div><div><dt>任务 ID</dt><dd>{job.id}</dd></div></dl>
           {job.status === 'FAILED' && <div className="regional-warning">{job.errorCode}: {job.errorMessage}</div>}
         </section>
       )}

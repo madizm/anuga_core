@@ -72,7 +72,7 @@ export function FullPreviewConsole() {
             </dl>
           </div>
           {!config.data?.available && config.isSuccess && (
-            <div className="regional-warning">全域缓存或固定范围尚未配置，当前不能提交生产任务。</div>
+            <div className="regional-warning">全域缓存或固定范围不可用，当前不能提交生产任务。{config.data.readinessError && ` ${config.data.readinessError}`}</div>
           )}
           <button className="regional-submit" disabled={!config.data?.available || rainfall <= 0 || rainfall > 500} onClick={() => setConfirming(true)}>生成全域快览 <span>→</span></button>
           {create.error && <div className="regional-warning">{create.error.message}</div>}

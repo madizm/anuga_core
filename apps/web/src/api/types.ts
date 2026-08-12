@@ -329,9 +329,11 @@ export interface FullPreviewConfig {
   domainId: string
   demProductId: string
   durationHours: number
-  cacheStatus: 'READY' | 'MISSING'
+  cacheStatus: 'READY' | 'MISSING' | 'INVALID'
+  readinessError: string | null
   windowConfigured: boolean
   datasetVersion: string | null
+  cacheIdentityHash: string | null
   rainfallLimitsMm: { minimum: number; maximum: number }
   assumptionsProfile: {
     id: string
@@ -363,9 +365,13 @@ export interface FullPreviewJob {
   phase: string | null
   demProductId: string
   domainId: string
+  datasetVersion: string
   rainfallDepthMm: number
   effectiveRainfallDepthMm: number
   assumptionsProfileId: string
+  runoffCoefficient: number
+  cacheIdentityHash: string
+  compatibilityVersion: string
   cacheHit: boolean | null
   result: FullPreviewResult | null
   errorCode: string | null

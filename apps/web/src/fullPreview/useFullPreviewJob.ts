@@ -17,8 +17,13 @@ export function useFullPreviewJob(previewId: string) {
     const events = new EventSource(`/api/full-previews/${previewId}/events`)
     const receive = (event: MessageEvent) => {
       if (!active) return
+      const value = JSON.parse(event.data) as FullPreviewJob
+      if (!value.id) {
+        setError(value.errorMessage ?? '快览状态事件无效')
+        return
+      }
       setConnected(true)
-      setJob(JSON.parse(event.data) as FullPreviewJob)
+      setJob(value)
     }
     events.addEventListener('preview.status', receive as EventListener)
     events.addEventListener('preview.completed', receive as EventListener)

@@ -24,9 +24,13 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("domain_id", sa.String(length=100), nullable=False),
+        sa.Column("dataset_version", sa.String(length=200), nullable=False),
         sa.Column(
             "assumptions_profile_id", sa.String(length=100), nullable=False
         ),
+        sa.Column("runoff_coefficient", sa.Float(), nullable=False),
+        sa.Column("cache_identity_hash", sa.String(length=64), nullable=False),
+        sa.Column("compatibility_version", sa.String(length=64), nullable=False),
         sa.Column("rainfall_depth_mm", sa.Float(), nullable=False),
         sa.Column("effective_rainfall_depth_mm", sa.Float(), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
@@ -58,9 +62,18 @@ def upgrade() -> None:
         "full_preview_jobs",
         ["dem_product_id"],
     )
+    op.create_index(
+        "ix_full_preview_jobs_compatibility_version",
+        "full_preview_jobs",
+        ["compatibility_version"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_full_preview_jobs_compatibility_version",
+        table_name="full_preview_jobs",
+    )
     op.drop_index(
         "ix_full_preview_jobs_dem_product_id",
         table_name="full_preview_jobs",

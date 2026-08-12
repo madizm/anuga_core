@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import struct
@@ -11,6 +12,7 @@ from collections.abc import Callable
 from contextlib import ExitStack, asynccontextmanager
 from functools import partial
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import urlparse
 
 import boto3
@@ -35,6 +37,11 @@ from bayuquan.simulation.feature_compiler import (
     sample_elevation_profile,
 )
 from bayuquan.simulation.hydraulic_features import HydraulicFeaturesSpec
+from bayuquan.preview.cache import (
+    PreprocessingCacheMismatch,
+    cache_identity,
+    load_preprocessed,
+)
 
 from .config import Settings
 from .db import Database
@@ -118,6 +125,7 @@ def create_app(
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
     )
+    preview_readiness_cache: dict[tuple, dict] = {}
 
     def session_dependency() -> Session:
         with database.session_factory() as session:
@@ -856,25 +864,29 @@ def create_app(
     def full_preview_config() -> dict:
         cache = settings.full_preview_cache
         window = settings.full_preview_window
-        cache_ready = cache is not None and cache.is_file()
         try:
             product = product_or_404(settings.full_preview_dem_product_id)
-            product_available = True
         except HTTPException:
             product = None
-            product_available = False
-        available = cache_ready and product_available and window is not None
+        readiness = _full_preview_readiness(
+            product=product,
+            cache=cache,
+            window=window,
+            memo=preview_readiness_cache,
+        )
         return {
-            "available": available,
+            "available": readiness["available"],
             "domainId": settings.full_preview_domain_id,
             "demProductId": settings.full_preview_dem_product_id,
             "durationHours": 24,
             "rainfallLimitsMm": {"minimum": 0.1, "maximum": 500},
-            "cacheStatus": "READY" if cache_ready else "MISSING",
+            "cacheStatus": readiness["cacheStatus"],
+            "readinessError": readiness.get("error"),
             "windowConfigured": window is not None,
             "datasetVersion": (
                 product.dataset_version if product is not None else None
             ),
+            "cacheIdentityHash": readiness.get("cacheIdentityHash"),
             "assumptionsProfile": {
                 "id": "terrain-storage-v1",
                 "name": "地形蓄水快览 V1",
@@ -909,10 +921,22 @@ def create_app(
                 status_code=503,
                 detail="full preview runoff coefficient is invalid",
             )
+        identity_hash = config["cacheIdentityHash"]
+        compatibility_version = _compatibility_version(
+            dataset_version=config["datasetVersion"],
+            domain_id=config["domainId"],
+            assumptions_profile_id=config["assumptionsProfile"]["id"],
+            runoff_coefficient=coefficient,
+            cache_identity_hash=identity_hash,
+        )
         job = FullPreviewJob(
             dem_product_id=settings.full_preview_dem_product_id,
             domain_id=settings.full_preview_domain_id,
+            dataset_version=config["datasetVersion"],
             assumptions_profile_id="terrain-storage-v1",
+            runoff_coefficient=coefficient,
+            cache_identity_hash=identity_hash,
+            compatibility_version=compatibility_version,
             rainfall_depth_mm=request.rainfall_depth_mm,
             effective_rainfall_depth_mm=(
                 request.rainfall_depth_mm * coefficient
@@ -950,8 +974,14 @@ def create_app(
 
     @app.get("/api/full-previews/{job_id}/events")
     async def full_preview_events(
-        job_id: str, request: Request
+        job_id: str, request: Request,
     ) -> StreamingResponse:
+        with database.session_factory() as session:
+            if session.get(FullPreviewJob, job_id) is None:
+                raise HTTPException(
+                    status_code=404, detail="preview not found"
+                )
+
         async def events():
             previous = None
             while True:
@@ -960,10 +990,6 @@ def create_app(
                 with database.session_factory() as session:
                     job = session.get(FullPreviewJob, job_id)
                     if job is None:
-                        yield _sse("preview.failed", {
-                            "errorCode": "PREVIEW_NOT_FOUND",
-                            "message": "preview not found",
-                        })
                         return
                     response = full_preview_response(job)
                     marker = (job.status, job.phase)
@@ -1033,7 +1059,19 @@ def create_app(
             return Response(content=TRANSPARENT_TILE, media_type="image/png")
         if response.status_code != 200:
             raise HTTPException(status_code=502, detail="tile renderer failed")
-        return Response(content=response.content, media_type="image/png")
+        depth_response = httpx.get(
+            upstream.removesuffix(".png") + ".tif",
+            params={"url": job.result_cog_uri, "bidx": 1},
+            timeout=20,
+        )
+        if depth_response.status_code != 200:
+            raise HTTPException(
+                status_code=502, detail="tile mask renderer failed"
+            )
+        masked = _apply_depth_mask(
+            response.content, depth_response.content, threshold_m=threshold_m
+        )
+        return Response(content=masked, media_type="image/png")
 
     @app.get("/api/full-previews/{job_id}/point")
     def full_preview_point(
@@ -1211,6 +1249,116 @@ def completed_full_preview_or_404(
     return job
 
 
+def _full_preview_readiness(
+    *,
+    product: DemProductView | None,
+    cache,
+    window: tuple[int, int, int, int] | None,
+    memo: dict[tuple, dict],
+) -> dict:
+    if cache is None or not cache.is_file():
+        return {
+            "available": False,
+            "cacheStatus": "MISSING",
+            "error": "preprocessing cache is missing",
+        }
+    if product is None:
+        return {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": "DEM product is unavailable",
+        }
+    if window is None:
+        return {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": "full preview domain window is not configured",
+        }
+
+    dem_path = Path(product.compute_dem_uri)
+    try:
+        cache_stat = cache.stat()
+        dem_stat = dem_path.stat()
+    except OSError:
+        return {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": "DEM or preprocessing cache cannot be read",
+        }
+    signature = (
+        str(cache.resolve()), cache_stat.st_size, cache_stat.st_mtime_ns,
+        str(dem_path.resolve()), dem_stat.st_size, dem_stat.st_mtime_ns,
+        product.dataset_version, window,
+    )
+    cached = memo.get(signature)
+    if cached is not None:
+        return cached
+
+    try:
+        column, row, width, height = window
+        with rasterio.open(dem_path) as source:
+            if (
+                column < 0 or row < 0 or width <= 0 or height <= 0
+                or column + width > source.width
+                or row + height > source.height
+            ):
+                raise ValueError("full preview window is outside the DEM")
+            source_window = rasterio.windows.Window(*window)
+            transform = source.window_transform(source_window)
+        identity = cache_identity(
+            dem_path=dem_path,
+            window=window,
+            transform=tuple(transform),
+        )
+        preprocessed = load_preprocessed(
+            cache, expected_identity=identity
+        )
+        if preprocessed.basin_ids.shape != (height, width):
+            raise PreprocessingCacheMismatch(
+                "preprocessing basin shape does not match domain window"
+            )
+    except (
+        OSError,
+        PreprocessingCacheMismatch,
+        ValueError,
+        rasterio.errors.RasterioError,
+    ) as error:
+        result = {
+            "available": False,
+            "cacheStatus": "INVALID",
+            "error": str(error),
+        }
+    else:
+        result = {
+            "available": True,
+            "cacheStatus": "READY",
+            "cacheIdentityHash": hashlib.sha256(
+                identity.encode()
+            ).hexdigest(),
+        }
+    memo.clear()
+    memo[signature] = result
+    return result
+
+
+def _compatibility_version(
+    *,
+    dataset_version: str,
+    domain_id: str,
+    assumptions_profile_id: str,
+    runoff_coefficient: float,
+    cache_identity_hash: str,
+) -> str:
+    identity = json.dumps({
+        "datasetVersion": dataset_version,
+        "domainId": domain_id,
+        "assumptionsProfileId": assumptions_profile_id,
+        "runoffCoefficient": runoff_coefficient,
+        "cacheIdentityHash": cache_identity_hash,
+    }, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
 def full_preview_response(job: FullPreviewJob) -> dict:
     result = None
     if job.result_cog_uri:
@@ -1232,9 +1380,13 @@ def full_preview_response(job: FullPreviewJob) -> dict:
         "phase": job.phase,
         "demProductId": job.dem_product_id,
         "domainId": job.domain_id,
+        "datasetVersion": job.dataset_version,
         "rainfallDepthMm": job.rainfall_depth_mm,
         "effectiveRainfallDepthMm": job.effective_rainfall_depth_mm,
         "assumptionsProfileId": job.assumptions_profile_id,
+        "runoffCoefficient": job.runoff_coefficient,
+        "cacheIdentityHash": job.cache_identity_hash,
+        "compatibilityVersion": job.compatibility_version,
         "cacheHit": job.cache_hit,
         "result": result,
         "errorCode": job.error_code,
@@ -1347,12 +1499,14 @@ def _quantity_band(quantity: str) -> tuple[int, str, str]:
         ) from error
 
 
-def _apply_depth_mask(png: bytes, depth_tiff: bytes) -> bytes:
+def _apply_depth_mask(
+    png: bytes, depth_tiff: bytes, *, threshold_m: float = 0.01
+) -> bytes:
     with MemoryFile(depth_tiff) as memory_file, memory_file.open() as dataset:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             depth = dataset.read(1)
-    wet = np.isfinite(depth) & (depth >= 0.01) & (depth != -9999)
+    wet = np.isfinite(depth) & (depth >= threshold_m) & (depth != -9999)
     image = Image.open(BytesIO(png)).convert("RGBA")
     pixels = np.asarray(image).copy()
     pixels[..., 3] = np.where(wet, pixels[..., 3], 0)
