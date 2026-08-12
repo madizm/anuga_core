@@ -52,13 +52,18 @@ class FullPreviewRunner:
                 raise ValueError(f"full preview does not exist: {job_id}")
             if job.status in {"COMPLETED", "FAILED"}:
                 return
-            if job.status != "QUEUED":
+            if job.status not in {
+                "QUEUED", "PREPARING", "SOLVING", "PUBLISHING",
+            }:
                 raise RuntimeError(
                     f"full preview {job_id} cannot start from {job.status}"
                 )
             job.status = "PREPARING"
             job.phase = "PREPARING"
-            job.started_at = utcnow()
+            job.started_at = job.started_at or utcnow()
+            job.completed_at = None
+            job.error_code = None
+            job.error_message = None
             rainfall_depth_m = job.effective_rainfall_depth_mm / 1000.0
             product_id = job.dem_product_id
         self._event(job_id, "preview.status", {"status": "PREPARING"})
@@ -198,10 +203,16 @@ class FullPreviewRunner:
         })
 
     def _event(self, job_id: str, event: str, payload: dict) -> None:
-        self.redis.publish(
-            f"full-previews:{job_id}",
-            json.dumps({"event": event, "data": payload}),
-        )
+        try:
+            self.redis.publish(
+                f"full-previews:{job_id}",
+                json.dumps({"event": event, "data": payload}),
+            )
+        except Exception:
+            logger.warning(
+                "could not publish full preview event for %s", job_id,
+                exc_info=True,
+            )
 
 
 def _geographic_bounds(

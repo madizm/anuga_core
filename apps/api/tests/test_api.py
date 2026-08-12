@@ -936,6 +936,44 @@ def test_full_preview_rejects_submission_when_cache_is_not_ready(tmp_path):
     assert created.status_code == 409
 
 
+def test_full_preview_dispatch_failure_terminalizes_job(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'preview.sqlite'}")
+    cache = tmp_path / "regional-cache.npz"
+    dem = tmp_path / "regional-dem.tif"
+    window = (0, 0, 3, 2)
+    _write_preview_cache(dem, cache, window)
+    catalog = FakeAreaCatalog()
+    catalog.dem_path = dem
+    configured = settings(str(database.engine.url))
+    configured = configured.__class__(**{
+        **configured.__dict__,
+        "full_preview_dem_product_id": "dem-test",
+        "full_preview_cache": cache,
+        "full_preview_window": window,
+    })
+
+    def unavailable_broker(job_id, queue):
+        raise RuntimeError("broker unavailable")
+
+    app = create_app(
+        settings=configured,
+        database=database,
+        area_catalog=catalog,
+        preview_dispatcher=unavailable_broker,
+    )
+    with TestClient(app) as test_client:
+        created = test_client.post(
+            "/api/full-previews", json={"rainfallDepthMm": 80}
+        )
+        jobs = test_client.get("/api/full-previews").json()
+
+    assert created.status_code == 503
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "FAILED"
+    assert jobs[0]["errorCode"] == "FULL_PREVIEW_DISPATCH_FAILED"
+    assert jobs[0]["errorMessage"] == "broker unavailable"
+
+
 @pytest.mark.parametrize(("configured_window", "cache_shape", "message"), [
     ((2, 1, 3, 2), None, "outside the DEM"),
     ((0, 0, 3, 2), (1, 3), "basin shape"),

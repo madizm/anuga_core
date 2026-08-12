@@ -56,6 +56,7 @@ from .models import (
     Scenario,
     SimulationFrame,
     SimulationJob,
+    utcnow,
 )
 from .scenarios.service import (
     get_scenario,
@@ -947,7 +948,19 @@ def create_app(
         session.add(job)
         session.commit()
         session.refresh(job)
-        app.state.preview_dispatcher(job.id, settings.full_preview_queue)
+        try:
+            app.state.preview_dispatcher(job.id, settings.full_preview_queue)
+        except Exception as error:
+            job.status = "FAILED"
+            job.phase = "FAILED"
+            job.completed_at = utcnow()
+            job.error_code = "FULL_PREVIEW_DISPATCH_FAILED"
+            job.error_message = str(error)[:2000]
+            session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="full preview dispatch failed",
+            ) from error
         return full_preview_response(job)
 
     @app.get("/api/full-previews")
