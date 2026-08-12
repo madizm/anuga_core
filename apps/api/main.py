@@ -20,7 +20,15 @@ import httpx
 import numpy as np
 import rasterio
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image
 from pyproj import Transformer
@@ -1260,7 +1268,9 @@ def _full_preview_dispatcher(settings: Settings) -> JobDispatcher:
     def dispatch(job_id: str, queue: str) -> None:
         from celery import Celery
         celery = Celery(broker=settings.celery_broker_url)
-        celery.send_task("bayuquan.run_full_preview", args=[job_id], queue=queue)
+        celery.send_task(
+            "bayuquan.run_full_preview", args=[job_id], queue=queue
+        )
 
     return dispatch
 

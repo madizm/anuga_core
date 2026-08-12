@@ -237,10 +237,18 @@ class FullPreviewJob(Base):
     bounds: Mapped[list | None] = mapped_column(JSON, nullable=True)
     maximum_depth_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     wet_area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
-    threshold_areas_m2: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    input_volume_m3: Mapped[float | None] = mapped_column(Float, nullable=True)
-    retained_volume_m3: Mapped[float | None] = mapped_column(Float, nullable=True)
-    outflow_volume_m3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold_areas_m2: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True
+    )
+    input_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    retained_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    outflow_volume_m3: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
     mass_balance_error_m3: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )

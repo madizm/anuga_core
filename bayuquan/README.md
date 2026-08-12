@@ -5,7 +5,11 @@ immutable, area-hashed local mesh generated from its selected DEM product.
 See [`WEB_GIS_IMPLEMENTATION_PLAN.md`](WEB_GIS_IMPLEMENTATION_PLAN.md) for the
 full product plan.
 
-For the separate non-authoritative, small-window CPU Fill–Spill preview, see
+The runtime also exposes a non-authoritative regional Fill–Spill preview.
+Deployment and API configuration are documented in
+[`apps/api/README.md`](../apps/api/README.md), the browser routes and
+interactions in [`apps/web/README.md`](../apps/web/README.md), and the
+underlying algorithm and bounded local CLI in
 [`preview/README.md`](preview/README.md).
 
 ## 1. Build DEM products

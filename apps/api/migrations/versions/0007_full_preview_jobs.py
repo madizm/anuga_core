@@ -30,7 +30,9 @@ def upgrade() -> None:
         ),
         sa.Column("runoff_coefficient", sa.Float(), nullable=False),
         sa.Column("cache_identity_hash", sa.String(length=64), nullable=False),
-        sa.Column("compatibility_version", sa.String(length=64), nullable=False),
+        sa.Column(
+            "compatibility_version", sa.String(length=64), nullable=False
+        ),
         sa.Column("rainfall_depth_mm", sa.Float(), nullable=False),
         sa.Column("effective_rainfall_depth_mm", sa.Float(), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),

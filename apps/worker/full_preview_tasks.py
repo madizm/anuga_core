@@ -64,7 +64,9 @@ class FullPreviewRunner:
             cache_path = self.settings.full_preview_cache
             raw_window = self.settings.full_preview_window
             if cache_path is None or not cache_path.is_file():
-                raise RuntimeError("full preview preprocessing cache is missing")
+                raise RuntimeError(
+                    "full preview preprocessing cache is missing"
+                )
             if raw_window is None:
                 raise RuntimeError("full preview domain window is missing")
             product = self.products.get(product_id)

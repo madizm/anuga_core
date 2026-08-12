@@ -19,12 +19,16 @@ The simulation workers use ANUGA's compiled OpenMP kernels with four threads
 per job by default. Override that value when starting Compose, for example
 `ANUGA_OMP_NUM_THREADS=1 docker compose up --build`, to benchmark thread counts
 on the target host. Keep the combined thread count of the standard and
-high-resource workers within the host's available CPU cores.
+high-resource workers within the host's available CPU cores. The independent
+`full-preview-worker` consumes only the `full-domain-preview` queue with
+concurrency and prefetch both set to 1; `FULL_PREVIEW_OMP_THREADS` defaults to
+16. Include it when sizing the host's combined thread count.
 
 Build a CPU-specific image on the deployment host with:
 
 ```bash
-ANUGA_CPU_NATIVE=true docker compose build api worker high-resource-worker
+ANUGA_CPU_NATIVE=true docker compose build api worker high-resource-worker \
+  full-preview-worker
 ```
 
 This enables the compiler's native ISA and tuning flags. The resulting images
@@ -55,6 +59,60 @@ Standard and high-resource workers each run with concurrency 1. The 5 m
 product uses the high-resource queue and is the default product. A worker loads the immutable area and scenario
 snapshot, validates the cached local mesh, publishes every completed frame to
 MinIO, and commits frame metadata before emitting its Redis event.
+
+## Regional non-authoritative preview
+
+The regional preview is an independent database Job and Celery task. It is not
+an ANUGA frame and does not use the browser GPU preview. An administrator must
+configure both a bounded fixed domain and a matching, versioned Fill–Spill
+preprocessing cache:
+
+```text
+FULL_PREVIEW_DEM_PRODUCT_ID=bayuquan-dem-5m-v1
+FULL_PREVIEW_DOMAIN_ID=bayuquan-regional-v1
+FULL_PREVIEW_WINDOW=column,row,width,height
+FULL_PREVIEW_CACHE=/workspace/OUTPUT/full_preview/preprocessing-v1.npz
+FULL_PREVIEW_RUNOFF_COEFFICIENT=1.0
+FULL_PREVIEW_QUEUE=full-domain-preview
+```
+
+The window and cache must have the same DEM identity and transform. Use the
+bounded preprocessing workflow documented in
+[`bayuquan/preview/README.md`](../../bayuquan/preview/README.md) to prepare the
+cache before enabling submission. `GET /api/full-previews/config` validates the
+DEM product, window bounds, cache identity, and cached basin shape. It returns
+`available: false` with a readiness error when any prerequisite is absent or
+incompatible, and `POST /api/full-previews` then returns HTTP 409. There is no
+fallback that preprocesses the full DEM in API or Worker memory.
+
+The submission body contains only `rainfallDepthMm` (0.1–500 mm for the fixed
+24-hour duration). The API snapshots the DEM dataset version, fixed domain,
+assumptions profile, runoff coefficient, and cache identity into the Job, then
+derives effective rainfall. The serial Worker consumes the existing cache,
+publishes `maximum-depth.cog.tif` and `report.json` under the Job's MinIO
+prefix, and records threshold areas and water-balance totals. Celery Beat checks
+expired execution leases every minute and requeues them up to the configured
+attempt limit.
+
+Preview endpoints:
+
+```text
+GET  /api/full-previews/config
+POST /api/full-previews
+GET  /api/full-previews
+GET  /api/full-previews/{id}
+GET  /api/full-previews/{id}/events
+GET  /api/full-previews/{id}/tilejson
+GET  /api/full-previews/{id}/tiles/{z}/{x}/{y}.png
+GET  /api/full-previews/{id}/point
+GET  /api/full-previews/{id}/result.cog
+```
+
+The SSE stream reports `QUEUED`, `PREPARING`, `SOLVING`, `PUBLISHING`, and a
+terminal `COMPLETED` or `FAILED` state from PostgreSQL. Completed result APIs
+serve threshold-filtered TileJSON/PNG tiles, point depth queries, and the COG
+download. Configuration and Job responses identify the result as
+non-authoritative.
 
 ## Main API flow
 
